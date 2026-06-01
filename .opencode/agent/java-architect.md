@@ -8,12 +8,7 @@ tools:
   write: true
   edit: true
 permission:
-  bash:
-    allow:
-      - "mvn *"
-      - "mkdir *"
-      - "find *"
-      - "ls *"
+  bash: allow
 ---
 
 # Agent: java-architect

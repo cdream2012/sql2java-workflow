@@ -8,14 +8,7 @@ tools:
   write: true
   edit: false
 permission:
-  bash:
-    allow:
-      - "mvn *"
-      - "find *"
-      - "grep *"
-      - "wc *"
-      - "cat *"
-      - "ls *"
+  bash: allow
 ---
 
 # Agent: reviewer

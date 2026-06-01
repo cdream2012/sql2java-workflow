@@ -8,15 +8,7 @@ tools:
   write: true
   edit: false
 permission:
-  bash:
-    allow:
-      - "find *"
-      - "wc *"
-      - "grep *"
-      - "head *"
-      - "tail *"
-      - "cat *"
-      - "ls *"
+  bash: allow
 ---
 
 # Agent: sql-analyst

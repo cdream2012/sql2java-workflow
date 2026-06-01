@@ -173,6 +173,12 @@ export class WorkflowEngine {
       }
     }
 
+    // ── Step 2-3: 跨 Schema 校验 (D9) ──
+    const crossSchemaWarnings = this.validateCrossSchema(run, run.currentPhase!)
+    for (const w of crossSchemaWarnings) {
+      this.appendEvent(runId, "WARN", run.currentPhase ?? "", w)
+    }
+
     // ── Step 4: fix 阶段特殊处理 ──
     const currentPhaseConfig = def.phases.find(p => p.name === run.currentPhase)
     if (currentPhaseConfig?.isFixPhase) {
@@ -324,6 +330,9 @@ export class WorkflowEngine {
     if (!currentEntry) throw new Error("No current in_progress phase to retry")
 
     const phaseConfig = def.phases.find(p => p.name === run.currentPhase)
+
+    // 重置 entry status 为 in_progress（设计要求）
+    currentEntry.status = "in_progress"
     currentEntry.retryCount++
     const maxRetries = phaseConfig?.maxRetries ?? 2
 
