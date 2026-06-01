@@ -220,7 +220,7 @@ find "${sourcePath}" -type d | sort
 | 情况 | 处理方式 |
 |------|---------|
 | **重载子程序** | 同名不同参数签名全部记录。参数签名差异即为区分依据 |
-| **仅有 spec 无 body** | `bodyFile` 留空字符串。procedures 的 `lineRange` 基于 spec。`loc` 为 spec 中声明的行数 |
+| **仅有 spec 无 body** | `bodyFile` 省略（不写空字符串）。procedures 的 `lineRange` 基于 spec。`loc` 为 spec 中声明的行数 |
 | **NOCOPY 提示** | `direction` 仍记录 `OUT` / `IN OUT`，忽略 NOCOPY（它是性能提示，不影响语义） |
 | **PRAGMA AUTONOMOUS_TRANSACTION** | 在 procedure 层面不记录（由 analyze 阶段分析） |
 | **超大包（500+ 行 body）** | 分段读取，用 `read` 的 offset/limit 参数分批处理 |
@@ -472,20 +472,25 @@ workflow({ action: "advance", runId: "${runId}", result: "passed" })
 
 - **artifact 路径**：`${artifactsDir}/analysis.json`
 - **格式**：符合 AnalysisSchema（引擎 advance 时做 Zod 校验）
+- **副产物**：逐子程序 FSD 文档，写入 `${artifactsDir}/fsd/{package}/{subprogram}.md`
+  - `{package}` 使用 inventory 中的 Oracle 包名（如 `INVENTORY_PKG`）
+  - `{subprogram}` 使用子程序名（小写 snake_case，如 `receive_stock`）
+  - FSD 为 Markdown 格式，不参与 Zod 校验，不参与 advance 流程
+  - 消解规则：FSD 内容与 `analysis.json` / `inventory.json` 不一致时，以 JSON artifact 为准
 
 ### 分步策略
 
-analyze 阶段需要处理大量数据（每个包 × 每个子程序 × 语句块），采用**自控两轮策略**：
+analyze 阶段需要处理大量数据（每个包 × 每个子程序 × 语句块），采用**自控三轮策略**：
 
 ```
-第一轮（全局）                    第二轮（逐包）
-─────────────────────            ──────────────────────────────
-读 inventory.json                按 translationOrder 顺序
-↓                                ↓
-读所有包的源码                    对每个包：
-↓                                ├─ 读源码
-提取调用关系 → callGraph          ├─ 逐子程序解析 blocks
-↓                                ├─ 提取 variables / cursors
+第一轮（全局）                    第二轮（逐包子程序结构）          第三轮（逐子程序 FSD）
+─────────────────────            ──────────────────────────────   ──────────────────────────────
+读 inventory.json                按 translationOrder 顺序         按第二轮的顺序
+↓                                ↓                                ↓
+读所有包的源码                    对每个包：                        对每个子程序：
+↓                                ├─ 读源码                        ├─ 基于已解析的结构
+提取调用关系 → callGraph          ├─ 逐子程序解析 blocks            ├─ 生成 FSD 文档
+↓                                ├─ 提取 variables / cursors       └─ 立即写入 fsd/{pkg}/{sp}.md
 构建 packageDependency           ├─ 提取 exceptionHandlers
 ↓                                └─ 写 translationNotes
 SCC 检测 → translationOrder
@@ -495,7 +500,9 @@ SCC 检测 → translationOrder
 （保留在内存中，不写入磁盘）
 ```
 
-两轮在一次执行中完成，不需要中途调用 workflow advance。关键是**先做全局后做细节**，避免先处理细节后遗漏全局依赖。
+三轮在一次执行中完成，不需要中途调用 workflow advance。关键是**先做全局后做细节，结构解析与 FSD 生成分开**——第三轮（FSD 生成）不影响 analysis.json 的完整性，即使 FSD 生成被截断，analysis.json 已在第二轮完成。
+
+每完成一个子程序的结构解析（第二轮）和 FSD 生成（第三轮），立即写入磁盘，避免中途崩溃丢失已完成的工作。
 
 ### 工作步骤
 
@@ -731,6 +738,34 @@ OUT NOCOPY 集合参数需用 Java List 模拟，NOCOPY 语义（引用传递）
 
 写入 `${artifactsDir}/analysis.json`。
 
+#### Step 6b: 第三轮 — 逐子程序生成 FSD 文档
+
+analysis.json 写入完成后，按 translationOrder 顺序逐包子程序生成 FSD（Functional Specification Document）。
+
+**对每个子程序**：
+
+1. 基于第二轮已解析的结构（blocks / variables / cursors / exceptionHandlers / translationNotes）和 inventory.json 中的签名、表结构信息
+2. 生成一份 Markdown 格式的 FSD 文档，包含以下 6 个板块：
+
+| 板块 | 内容 | 数据来源 |
+|------|------|---------|
+| 1. 概览（Overview） | 子程序名、签名、功能摘要、参数清单 + Java 类型映射、返回值说明、转换策略概述 | inventory.json（签名）+ analysis.json（translationNotes） |
+| 2. 表结构映射（Table-Entity Mapping） | 本子程序涉及的表 + 操作类型（SELECT/INSERT/UPDATE/DELETE），只列出需特别注意的列和跨表关系，不逐列重复 inventory.json | inventory.json（tables）+ analysis.json（blocks 中引用的表） |
+| 3. 依赖分析（Dependencies） | 调用的其他子程序及已解析的 Java 方法、跨包调用 → Service 注入关系，聚焦翻译 implications | analysis.json（callGraph、packageDependency） |
+| 4. 业务规则（Business Rules） | 校验规则、计算逻辑、状态流转、边界条件（空值/零值/溢出） | analysis.json（blocks）+ 源码分析 |
+| 5. 控制流与异常（Control Flow & Exceptions） | 分支逻辑、循环结构（游标 LOOP → Java for-each）、异常处理路径。复杂子程序可选生成 Mermaid 流程图 | analysis.json（blocks、cursors、exceptionHandlers） |
+| 6. 特殊语法转化规约（Special Syntax Conventions） | Oracle 专有构造 → Java/MyBatis 等价写法、事务边界、需手动审查的构造清单 | analysis.json（translationNotes）+ 源码分析 |
+
+3. 写入 `${artifactsDir}/fsd/{package}/{subprogram}.md`
+   - `{package}` 使用 inventory 中的 Oracle 包名（如 `INVENTORY_PKG`）
+   - `{subprogram}` 使用小写 snake_case（如 `receive_stock`）
+4. 每完成一个子程序的 FSD 立即写入磁盘，崩溃恢复时跳过已存在的文件
+
+**FSD 生成注意事项**：
+- 板块 2/3 不要逐列/逐调用重复 inventory.json 和 analysis.json 的已有数据，只列出差异和翻译 implications，控制文件体积
+- 当 FSD 内容与 `analysis.json` / `inventory.json` 不一致时，以 JSON artifact 为准（FSD 是派生文档）
+- 简单子程序（复杂度 1-3）的 FSD 可适当精简，板块 4/5 可合并为一句话
+
 #### Step 7: 完成
 
 analysis.json 写入后，调用 workflow 工具推进：
@@ -752,3 +787,10 @@ workflow({ action: "advance", runId: "${runId}", result: "passed" })
 - [ ] **translationNotes 存在**：每个子程序都有翻译注意事项（不可为空字符串）
 - [ ] **复杂度范围**：所有 score 在 1-10 范围内，riskLevel 是 low / medium / high 之一
 - [ ] **JSON 合法**：格式正确，无语法错误
+
+FSD 文档自检（Step 6b 完成后）：
+
+- [ ] **FSD 文件覆盖**：每个有 body 的子程序都有对应的 `fsd/{package}/{subprogram}.md`
+- [ ] **6 板块完整**：每份 FSD 包含全部 6 个板块标题（概览、表结构映射、依赖分析、业务规则、控制流与异常、特殊语法转化规约）
+- [ ] **包名正确**：FSD 目录名使用 inventory 中的 Oracle 包名（非 Java 风格）
+- [ ] **子程序名格式**：文件名使用小写 snake_case
