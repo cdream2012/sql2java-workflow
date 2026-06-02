@@ -426,9 +426,12 @@ export class WorkflowEngine {
     }
 
     // inventory 包名 ↔ analysis 包名（双向）
-    const invNames = new Set(
-      (inventory.packages as Array<{ name: string }>).map((p) => p.name)
-    )
+    // 新格式：inventory.packageNames（string[]）；旧格式兼容：inventory.packages[].name
+    const invNames = inventory.packageNames
+      ? new Set(inventory.packageNames as string[])
+      : new Set(
+          ((inventory.packages as Array<{ name: string }>) ?? []).map((p) => p.name)
+        )
     // 新格式：analysis.packageNames；旧格式兼容：analysis.packages[].name
     let anaNames: Set<string>
     if (analysis.packageNames) {
@@ -676,9 +679,11 @@ export class WorkflowEngine {
     // D12: 校验包名存在于 inventory
     const inventory = this.loadArtifactJson(artifactsDir, "inventory")
     if (inventory) {
-      const invPackageNames = new Set(
-        (inventory.packages as Array<{ name: string }>).map(p => p.name.toUpperCase())
-      )
+      const invPackageNames = inventory.packageNames
+        ? new Set((inventory.packageNames as string[]).map(n => n.toUpperCase()))
+        : new Set(
+            ((inventory.packages as Array<{ name: string }>) ?? []).map(p => p.name.toUpperCase())
+          )
       const invalidPackages = fixedPackages.filter(
         p => !invPackageNames.has(p.toUpperCase())
       )

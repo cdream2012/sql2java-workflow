@@ -86,14 +86,6 @@ function buildRuntimeContext(run: WorkflowRun): string {
     }
   }
 
-  // inventory 阶段额外注入预扫描索引（不论 UPSTREAM_ARTIFACTS 配置）
-  if (run.currentPhase === "inventory") {
-    const idxPath = `${ARTIFACT_DIR}/${run.runId}/inventory-index.json`
-    if (!upstream || !upstream.includes("inventory-index.json")) {
-      lines.push(`  - ${idxPath}`)
-    }
-  }
-
   // incrementalContext
   const currentEntry = findCurrentEntry(run)
   if (currentEntry?.incrementalContext) {
@@ -221,7 +213,10 @@ function validateAnalysisPackages(
   try {
     const invRaw = readFileSync(inventoryPath, "utf-8")
     const invParsed = JSON.parse(invRaw)
-    expectedPackages = (invParsed.packages as Array<{ name: string }>).map((p) => p.name)
+    // 新格式：packageNames（string[]）；旧格式兼容：packages[].name
+    expectedPackages = invParsed.packageNames
+      ? (invParsed.packageNames as string[])
+      : ((invParsed.packages as Array<{ name: string }>) ?? []).map((p) => p.name)
   } catch (e: any) {
     return `Failed to read/parse inventory.json: ${e.message}`
   }

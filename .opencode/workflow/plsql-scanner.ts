@@ -8,8 +8,8 @@
  * Regex 降级：Node.js fs + 正则（parser 安装失败时自动降级）
  */
 
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs"
-import { join, extname, relative, basename } from "node:path"
+import { readFileSync, readdirSync, existsSync } from "node:fs"
+import { join, extname, relative } from "node:path"
 import { execSync } from "node:child_process"
 
 // ── 类型 ────────────────────────────────────────────────────────────────────────
@@ -205,7 +205,7 @@ export function scanWithAST(sourcePath: string): InventoryIndex {
     views,
     sequences,
     standaloneProcedures,
-    callGraph,
+    callGraph: Object.keys(callGraph).length > 0 ? callGraph : undefined,
   }
 }
 
@@ -271,22 +271,10 @@ function findIdentifierText(node: ParsedNode): string | null {
   return null
 }
 
-/** 找到第一个叶子节点的文本 */
-function findFirstTerminalText(node: ParsedNode): string | null {
-  if (node.nodes.length === 0) return node.text
-  for (const child of node.nodes) {
-    const text = findFirstTerminalText(child)
-    if (text) return text
-  }
-  return null
-}
-
 /** 解析 "line:col" 格式的位置为行号 */
 function parseLine(pos: string | null): number | null {
   if (!pos) return null
-  const parts = pos.split(":")
-  if (parts.length >= 1) return parseInt(parts[0], 10)
-  return null
+  return parseInt(pos.split(":")[0], 10) || null
 }
 
 /** 提取 Package spec */
@@ -433,15 +421,8 @@ function extractTrigger(node: ParsedNode, triggers: TriggerIndex[], relPath: str
   }
 }
 
-/** 提取视图名 */
+/** 提取视图名（AST 模式下视图名 context 类型不确定，使用 regex 回退） */
 function extractView(node: ParsedNode, views: ViewIndex[], relPath: string): void {
-  // 视图名在 query_name 或类似节点中
-  for (const child of node.nodes) {
-    if (child.type === "Package_nameContext" || child.type === "Table_nameContext") {
-      // view name 可能用不同的 context type，回退到遍历
-    }
-  }
-  // 回退：从文本提取
   const match = node.text.match(/CREATE\s+(OR\s+REPLACE\s+)?VIEW\s+(\w+)/i)
   if (match) {
     views.push({ name: match[2].toUpperCase(), ddlFile: relPath })
@@ -466,7 +447,6 @@ function extractCallGraph(
     "NEXTVAL", "CURRVAL", "COUNT", "EXISTS", "FIRST", "LAST",
     "ROWCOUNT", "FOUND", "NOTFOUND", "ISOPEN", "BULK_ROWCOUNT",
   ])
-  const bindPrefixes = [":NEW", ":OLD", ":PARENT"]
 
   const lines = code.split("\n")
   for (const line of lines) {
@@ -651,8 +631,8 @@ function regexFallbackForFile(
     }
   }
 
-  // 提取调用关系
-  extractCallGraphRegex(code, callGraph)
+  // 提取调用关系（复用统一的 extractCallGraph）
+  extractCallGraph(code, relPath, callGraph)
 }
 
 /** 正则提取辅助 */
@@ -686,9 +666,10 @@ function regexExtractProceduresFromBody(lines: string[], pkg: PackageIndex): voi
     const line = lines[i].trim()
     if (line.startsWith("--")) continue
 
-    // 检测 procedure/function 开始（IS/AS 后跟 BEGIN 的实现体）
-    const procMatch = line.match(/^\s*(PROCEDURE|FUNCTION)\s+(\w+)\s*[\(]/i)
-    if (procMatch && !line.match(/^\s*--/)) {
+    // 检测 procedure/function 开始（支持无参过程如 PROCEDURE init IS）
+    const procMatch = line.match(/^\s*(PROCEDURE|FUNCTION)\s+(\w+)\s*[\(\w]/i)
+    // 排除仅声明但无实现体的情况（如 TYPE ... IS RECORD）
+    if (procMatch && !line.match(/^\s*--/) && line.match(/\b(IS|AS)\b/i)) {
       // 如果之前有未结束的 procedure，先关闭它
       if (currentProc) {
         updateProcedureLineRange(pkg, currentProc.name, currentProc.startLine, i)
@@ -703,11 +684,13 @@ function regexExtractProceduresFromBody(lines: string[], pkg: PackageIndex): voi
     }
 
     // 追踪 BEGIN/END 深度来定位结束行
+    // 注意：END IF / END LOOP / END CASE 不是块结束，需要排除
     if (currentProc) {
       const begins = (line.match(/\bBEGIN\b/gi) || []).length
-      const ends = (line.match(/\bEND\b/gi) || []).length
+      // 排除 END IF / END LOOP / END CASE 等非块结束的 END
+      const ends = (line.replace(/\bEND\s+(IF|LOOP|CASE)\b/gi, "").match(/\bEND\b/gi) || []).length
       depth += begins - ends
-      if (depth <= 0 && line.match(/\bEND\b/i)) {
+      if (depth <= 0 && line.match(/\bEND\b/i) && !line.match(/\bEND\s+(IF|LOOP|CASE)\b/i)) {
         updateProcedureLineRange(pkg, currentProc.name, currentProc.startLine, i + 1, currentProc.type)
         currentProc = null
         depth = 0
@@ -737,30 +720,7 @@ function updateProcedureLineRange(
   }
 }
 
-/** regex 模式的调用关系提取（排除 :NEW/:OLD 绑定变量） */
-function extractCallGraphRegex(code: string, callGraph: Record<string, string[]>): void {
-  const sqlPseudo = new Set([
-    "NEXTVAL", "CURRVAL", "COUNT", "EXISTS", "FIRST", "LAST",
-    "ROWCOUNT", "FOUND", "NOTFOUND", "ISOPEN", "BULK_ROWCOUNT",
-  ])
-
-  const lines = code.split("\n")
-  for (const line of lines) {
-    const trimmed = line.trim()
-    if (trimmed.startsWith("--")) continue
-    // 排除绑定变量上下文
-    const cleaned = trimmed.replace(/:[A-Z]+/gi, " ")
-    const matches = cleaned.matchAll(/\b([A-Z][A-Z0-9_]*)\.([A-Z][A-Z0-9_]*)\b/gi)
-    for (const m of matches) {
-      const pkg = m[1].toUpperCase()
-      const proc = m[2].toUpperCase()
-      if (sqlPseudo.has(proc)) continue
-      if (pkg.length < 2 || proc.length < 2) continue
-      const key = `${pkg}.${proc}`
-      if (!callGraph[key]) callGraph[key] = []
-    }
-  }
-}
+/** regex 模式调用关系提取（复用 extractCallGraph） */
 
 // ── 文件收集 ────────────────────────────────────────────────────────────────────
 
