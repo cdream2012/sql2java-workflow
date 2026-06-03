@@ -104,7 +104,12 @@ export const UPSTREAM_ARTIFACTS: Record<string, string[]> = {
   translate: ["inventory-index.json", "inventory.json", "inventory-packages/*.json", "plan.json", "analysis.json", "analysis-packages/*.json", "scaffold.json", "fsd/*/*.md"],
   review: ["plan.json", "scaffold.json", "analysis.json", "analysis-packages/*.json", "translations/*/translation.json"],
   verify: ["plan.json", "scaffold.json", "translations/*/translation.json"],
-  fix: ["analysis.json", "analysis-packages/*.json", "plan.json", "scaffold.json"],
+  fix: [
+    "analysis.json", "analysis-packages/*.json", "plan.json", "scaffold.json",
+    // 动态路径：取决于触发阶段（review 或 verify），plugin 注入时需根据 branchedFrom 拼接
+    "review-summary.json", "verify-summary.json",
+    "translations/*/translation.json", "translations/*/review.json", "translations/*/verify.json",
+  ],
 }
 
 // ============================================================================

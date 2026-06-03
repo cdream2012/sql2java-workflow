@@ -662,6 +662,24 @@ function regexExtractProceduresFromBody(lines: string[], pkg: PackageIndex): voi
   let currentProc: { name: string; type: "procedure" | "function"; startLine: number } | null = null
   let depth = 0
 
+  /** 向后搜索最多 maxLines 行，检查是否包含 IS/AS（表示有实现体） */
+  function hasBodyKeyword(startIdx: number): boolean {
+    const maxLines = 20
+    for (let j = startIdx; j < Math.min(startIdx + maxLines, lines.length); j++) {
+      const l = lines[j].trim()
+      if (l.startsWith("--")) continue
+      // 检测到 IS 或 AS 关键字（排除 TYPE ... IS RECORD 等声明）
+      if (/\b(IS|AS)\b/i.test(l)) {
+        // 排除纯 TYPE 声明（TYPE xxx IS RECORD / IS TABLE 等）
+        if (/^\s*TYPE\s+/i.test(l)) continue
+        return true
+      }
+      // 如果先遇到下一个 PROCEDURE/FUNCTION/END/CREATE 关键字，说明这不是实现体
+      if (/^\s*(PROCEDURE|FUNCTION|END|CREATE)\b/i.test(l) && j > startIdx) return false
+    }
+    return false
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim()
     if (line.startsWith("--")) continue
@@ -669,18 +687,24 @@ function regexExtractProceduresFromBody(lines: string[], pkg: PackageIndex): voi
     // 检测 procedure/function 开始（支持无参过程如 PROCEDURE init IS）
     const procMatch = line.match(/^\s*(PROCEDURE|FUNCTION)\s+(\w+)\s*[\(\w]/i)
     // 排除仅声明但无实现体的情况（如 TYPE ... IS RECORD）
-    if (procMatch && !line.match(/^\s*--/) && line.match(/\b(IS|AS)\b/i)) {
-      // 如果之前有未结束的 procedure，先关闭它
-      if (currentProc) {
-        updateProcedureLineRange(pkg, currentProc.name, currentProc.startLine, i)
+    // 支持多行签名：IS/AS 可能在后续行（最多 20 行内）
+    if (procMatch && !line.match(/^\s*--/)) {
+      const hasIsOrAs = /\b(IS|AS)\b/i.test(line)
+      const hasBodyElsewhere = !hasIsOrAs && hasBodyKeyword(i + 1)
+
+      if (hasIsOrAs || hasBodyElsewhere) {
+        // 如果之前有未结束的 procedure，先关闭它
+        if (currentProc) {
+          updateProcedureLineRange(pkg, currentProc.name, currentProc.startLine, i)
+        }
+        const procType = procMatch[1].toUpperCase() === "PROCEDURE" ? "procedure" : "function"
+        currentProc = {
+          name: procMatch[2].toLowerCase(),
+          type: procType,
+          startLine: i + 1,
+        }
+        depth = 0
       }
-      const procType = procMatch[1].toUpperCase() === "PROCEDURE" ? "procedure" : "function"
-      currentProc = {
-        name: procMatch[2].toLowerCase(),
-        type: procType,
-        startLine: i + 1,
-      }
-      depth = 0
     }
 
     // 追踪 BEGIN/END 深度来定位结束行

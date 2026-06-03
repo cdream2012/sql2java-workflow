@@ -206,11 +206,14 @@ export class WorkflowEngine {
     currentEntry.completedAt = now
     run.updatedAt = now
 
-    // ── Step 7: condition: "always" 阶段 → 忽略 result ──
+    // ── Step 7: condition: "always" 阶段 → 显式忽略 result (D1) ──
+    // 检查当前 phase 的所有 transition 是否都是 "always"，是则丢弃 result
+    const phaseTransitions = def.transitions.filter(t => t.from === run.currentPhase)
+    const isAlwaysOnly = phaseTransitions.length > 0 && phaseTransitions.every(t => t.condition === "always")
+    const resultForMatching = isAlwaysOnly ? "passed" : (input.result ?? "passed")
 
     // ── Step 8: 匹配 TransitionRule (D1) ──
-    const effectiveResult = input.result ?? "passed"
-    const matchedRule = this.matchTransitionRule(def, run.currentPhase!, effectiveResult)
+    const matchedRule = this.matchTransitionRule(def, run.currentPhase!, resultForMatching)
 
     if (!matchedRule) {
       return {
@@ -219,7 +222,7 @@ export class WorkflowEngine {
         finished: false,
         waitingForConfirmation: false,
         rejected: true,
-        rejectionReason: `No transition rule found for phase "${run.currentPhase}" with result "${effectiveResult}"`,
+        rejectionReason: `No transition rule found for phase "${run.currentPhase}" with result "${resultForMatching}"`,
       }
     }
 
@@ -340,11 +343,12 @@ export class WorkflowEngine {
       // fix 阶段 retry exhausted → completed_with_issues
       if (phaseConfig?.isFixPhase) {
         run.status = "completed_with_issues"
+        run.currentPhase = null
         currentEntry.status = "failed"
         currentEntry.completedAt = new Date().toISOString()
         run.updatedAt = new Date().toISOString()
         this.persist(run)
-        this.appendEvent(runId, "FAIL", run.currentPhase!, "fix retry exhausted → completed_with_issues")
+        this.appendEvent(runId, "FAIL", "", "fix retry exhausted → completed_with_issues")
         return {
           run,
           retryCount: currentEntry.retryCount,
@@ -352,7 +356,10 @@ export class WorkflowEngine {
           terminalState: "completed_with_issues",
         }
       }
-      // 非 fix 阶段 exhausted
+      // 非 fix 阶段 exhausted：标记 entry 为 failed 阻止 advance 绕过
+      currentEntry.status = "failed"
+      currentEntry.completedAt = new Date().toISOString()
+      run.updatedAt = new Date().toISOString()
       this.persist(run)
       this.appendEvent(runId, "FAIL", run.currentPhase!, "retry exhausted")
       return {
@@ -415,6 +422,7 @@ export class WorkflowEngine {
     const warnings: string[] = []
     const artifactsDir = join(this.artifactsRoot, run.runId)
 
+    const inventoryIndex = this.loadArtifactJson(artifactsDir, "inventory-index")
     const inventory = this.loadArtifactJson(artifactsDir, "inventory")
     const analysis = this.loadArtifactJson(artifactsDir, "analysis")
 
@@ -423,6 +431,24 @@ export class WorkflowEngine {
         `跨 Schema 校验跳过：缺少必要的 artifact（inventory: ${!!inventory}, analysis: ${!!analysis}）`
       )
       return warnings
+    }
+
+    // inventory-index ↔ inventory.packageNames（双向）
+    if (inventoryIndex) {
+      const indexNames = new Set(
+        ((inventoryIndex.packages as Array<{ name: string }>) ?? []).map((p) => p.name)
+      )
+      const invNamesForIndex = inventory.packageNames
+        ? new Set(inventory.packageNames as string[])
+        : new Set(
+            ((inventory.packages as Array<{ name: string }>) ?? []).map((p) => p.name)
+          )
+      for (const name of indexNames) {
+        if (!invNamesForIndex.has(name)) warnings.push(`inventory.packageNames 缺少包: ${name}（index 中存在）`)
+      }
+      for (const name of invNamesForIndex) {
+        if (!indexNames.has(name)) warnings.push(`inventory-index 缺少包: ${name}（inventory.packageNames 中存在）`)
+      }
     }
 
     // inventory 包名 ↔ analysis 包名（双向）
@@ -607,11 +633,12 @@ export class WorkflowEngine {
 
     // fix failed：修不完
     if (input.result === "failed") {
-      currentEntry.status = "failed"
-      currentEntry.completedAt = now
       run.updatedAt = now
 
       if (this.isFixExhausted(run, currentEntry.branchedFrom ?? "", false)) {
+        // exhausted → 终态：标记 entry 为 failed，run 为 completed_with_issues
+        currentEntry.status = "failed"
+        currentEntry.completedAt = now
         run.status = "completed_with_issues"
         run.currentPhase = null
         this.persist(run)
@@ -625,7 +652,7 @@ export class WorkflowEngine {
         }
       }
 
-      // 未 exhausted → rejected，提示 LLM 调用 retry
+      // 未 exhausted → rejected，保持 entry 为 in_progress 让 retry 能找到它
       this.persist(run)
       return {
         run,

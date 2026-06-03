@@ -312,8 +312,31 @@ function validateArtifactOnDisk(run: WorkflowRun): string | null {
     if (!existsSync(translationsDir)) {
       return `Translations directory not found: ${translationsDir}. Agent must write per-package artifacts before advancing.`
     }
-    // per-package 校验不阻塞 advance（逐包持久化，可能部分完成）
-    // 但 summary 必须存在且通过校验
+
+    // 逐包 Zod 校验（review/verify 阶段必须有 per-package 文件）
+    if (phase === "review" || phase === "verify") {
+      const pkgDirs = readdirSync(translationsDir, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+      for (const pkgDir of pkgDirs) {
+        const artifactFile = join(translationsDir, pkgDir.name, `${phase}.json`)
+        if (!existsSync(artifactFile)) continue // 跳过无文件的包（增量模式）
+        try {
+          const raw = readFileSync(artifactFile, "utf-8")
+          const parsed = JSON.parse(raw)
+          const result = perPackageSchema.safeParse(parsed)
+          if (!result.success) {
+            const errors = result.error.issues
+              .map((i) => `  - ${i.path.join(".")}: ${i.message}`)
+              .join("\n")
+            return `Zod validation failed for translations/${pkgDir.name}/${phase}.json:\n${errors}`
+          }
+        } catch (e: any) {
+          return `Failed to read/parse translations/${pkgDir.name}/${phase}.json: ${e.message}`
+        }
+      }
+    }
+
+    // summary 必须存在且通过校验（review/verify 阶段）
     const summaryPhase = `${phase}-summary`
     const summarySchema = getSummarySchema(summaryPhase)
     if (summarySchema) {
