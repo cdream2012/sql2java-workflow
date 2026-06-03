@@ -9,7 +9,7 @@
   │
   ▼
 ┌──────────────────────────────────────────────────┐
-│  command/sql2java.md                              │
+│  .opencode/command/sql2java.md                    │
 │  参数解析 → 路由分发 → workflow 工具调用            │
 └──────────────────┬───────────────────────────────┘
                    │
@@ -36,21 +36,29 @@
 
 ```
 sql2java-workflow/
-├── command/
-│   └── sql2java.md                 # /sql2java 命令入口
-├── agent/
-│   ├── sql-analyst.md              # inventory + analyze 阶段
-│   ├── java-architect.md           # plan + scaffold 阶段
-│   ├── translator.md               # translate + fix 阶段
-│   └── reviewer.md                 # review + verify 阶段
-├── workflow/
-│   ├── engine-core.ts              # 状态机核心
-│   ├── workflow-definitions.ts     # 工作流定义 + TransitionRule
-│   ├── artifact-schemas.ts         # Artifact Zod Schemas
-│   ├── plsql-scanner.ts            # PL/SQL AST/regex 预扫描器
-│   └── type-mappings.ts            # Oracle → Java 类型映射表
-├── plugin/
-│   └── workflow-engine.ts          # 插件入口（workflow 工具 + hooks）
+├── .opencode/                        # opencode 框架插件目录
+│   ├── command/
+│   │   └── sql2java.md               # /sql2java 命令入口
+│   ├── agent/
+│   │   ├── sql-analyst.md            # inventory + analyze 阶段
+│   │   ├── java-architect.md         # plan + scaffold 阶段
+│   │   ├── translator.md             # translate + fix 阶段
+│   │   └── reviewer.md               # review + verify 阶段
+│   ├── workflow/
+│   │   ├── engine-core.ts            # 状态机核心
+│   │   ├── workflow-definitions.ts   # 工作流定义 + TransitionRule
+│   │   ├── artifact-schemas.ts       # Artifact Zod Schemas
+│   │   ├── plsql-scanner.ts          # PL/SQL AST/regex 预扫描器
+│   │   └── type-mappings.ts          # Oracle → Java 类型映射表
+│   ├── plugin/
+│   │   └── workflow-engine.ts        # 插件入口（workflow 工具 + hooks）
+│   └── package.json                  # 依赖：@opencode-ai/plugin, zod, ts-plsql-parser
+├── resources/
+│   └── mfg_erp_sql/                  # 示例 PL/SQL 输入（schema/pkg/func/trigger/type）
+├── minimum_feature_design.md         # 最小可行功能设计文档
+├── sp-to-fsd-design.md               # 子程序 → FSD 转换设计
+├── sql2java-run-diagram.md           # 工作流运行图解
+├── sql2java-standard-example.md      # 标准转译示例
 └── README.md
 ```
 
@@ -144,7 +152,7 @@ sql2java-workflow/
 
 ## PL/SQL 预扫描器
 
-`plsql-scanner.ts` 在 workflow start 时执行确定性扫描，不依赖 LLM，不占用上下文窗口。
+`.opencode/workflow/plsql-scanner.ts` 在 workflow start 时执行确定性扫描，不依赖 LLM，不占用上下文窗口。
 
 | 模式 | 实现 | 触发条件 |
 |------|------|---------|
@@ -159,14 +167,15 @@ sql2java-workflow/
 
 ## 技术栈
 
+- **运行框架**：[opencode](https://opencode.ai) AI Agent 插件（`@opencode-ai/plugin`）
 - **Workflow Engine**：TypeScript 确定性状态机
 - **SQL 解析**：AST 预扫描 + regex 降级 + LLM 语义补充
 - **Schema 校验**：Zod
-- **Agent 定义**：Markdown（按 `## Phase: xxx` 分节）
+- **Agent 定义**：Markdown（按 `## Phase: xxx` 分节，位于 `.opencode/agent/`）
 - **LLM**：Claude API
 - **目标框架**：Spring Boot + MyBatis + Lombok + Maven
 
 ## 输入输出
 
-- **输入**：一组 PL/SQL 文件（.sql / .pks / .pkb）
+- **输入**：一组 PL/SQL 文件（.sql / .pks / .pkb），参见 `resources/mfg_erp_sql/` 示例
 - **输出**：可编译的 Java 项目（Spring Boot + MyBatis + Lombok）+ 转译过程记录（artifacts）
