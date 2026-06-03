@@ -668,18 +668,20 @@ flowchart TD
 
 ## Part 3: 与现有 Workflow 的集成路径
 
-### 路径 A：轻量集成（推荐 MVP）
+### 路径 A：轻量集成（已采用 ✅）
 
 ```
 inventory → analyze → plan → scaffold → translate → review → verify
                 │
-                └→ 副产物: fsd/{package}/fsd.md
+                └→ 副产物: fsd/{package}/{subprogram}.md（逐子程序）
 ```
 
-- FSD 作为 **analyze 阶段的副产物**，由 sql-analyst 在写 `analysis.json` 的同时生成
-- 格式为 Markdown（`fsd.md`），不参与 Zod 校验，不参与 advance 流程
-- `plan` 和 `translate` 阶段可参考 `fsd.md`，但不强制消费
-- **改动量**：仅 `agent/sql-analyst.md` 的 `## Phase: analyze` section 增加输出 `fsd.md` 的指令
+- FSD 作为 **analyze 阶段的副产物**，由 sql-analyst 在逐包解析子程序结构时同步生成
+- 格式为 Markdown，不参与 Zod 校验，不参与 advance 流程
+- **粒度**：per-subprogram（每个子程序一个 FSD），存储在 `fsd/{package}/{subprogram}.md`
+- `plan` 和 `translate` 阶段可参考 FSD（upstreamArtifacts 中列出），但不强制消费
+- **消解规则**：FSD 内容与 JSON artifact 不一致时，以 JSON artifact 为准
+- **已实现**：analyze 阶段第三轮分步生成，每完成一个子程序立即写入磁盘
 
 **优点**：零侵入，不改变 workflow 状态机
 **缺点**：FSD 不参与校验，质量依赖 agent 自觉

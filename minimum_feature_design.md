@@ -45,21 +45,29 @@
 
 ```
 sql2java-workflow/
-├── command/
-│   └── sql2java.md                 # /sql2java 命令入口
-├── agent/
-│   ├── sql-analyst.md              # inventory + analyze 阶段
-│   ├── java-architect.md           # plan + scaffold 阶段
-│   ├── translator.md               # translate + fix 阶段
-│   └── reviewer.md                 # review + verify 阶段
-├── workflow/
-│   ├── engine-core.ts              # 状态机核心
-│   ├── workflow-definitions.ts     # 工作流定义 + TransitionRule
-│   ├── artifact-schemas.ts         # Artifact Zod Schemas（独立文件）
-│   ├── plsql-scanner.ts            # PL/SQL AST/regex 预扫描器
-│   └── type-mappings.ts            # Oracle → Java 类型映射表
-├── plugin/
-│   └── workflow-engine.ts          # 插件入口（workflow 工具 + hooks）
+├── .opencode/                          # opencode 框架插件目录
+│   ├── command/
+│   │   └── sql2java.md                 # /sql2java 命令入口
+│   ├── agent/
+│   │   ├── sql-analyst.md              # inventory + analyze 阶段
+│   │   ├── java-architect.md           # plan + scaffold 阶段
+│   │   ├── translator.md               # translate + fix 阶段
+│   │   └── reviewer.md                 # review + verify 阶段
+│   ├── workflow/
+│   │   ├── engine-core.ts              # 状态机核心
+│   │   ├── workflow-definitions.ts     # 工作流定义 + TransitionRule + PHASE_PREREQUISITES
+│   │   ├── artifact-schemas.ts         # Artifact Zod Schemas + getArtifactFilename + getPerPackageSchema
+│   │   ├── plsql-scanner.ts            # PL/SQL AST/regex 预扫描器
+│   │   └── type-mappings.ts            # Oracle → Java/JDBC 类型映射表
+│   ├── plugins/
+│   │   └── workflow-engine.ts          # 插件入口（workflow 工具 + hooks + artifact 校验）
+│   └── package.json                    # 依赖：@opencode-ai/plugin, zod, ts-plsql-parser
+├── resources/
+│   └── mfg_erp_sql/                    # 示例 PL/SQL 输入
+├── minimum_feature_design.md
+├── sp-to-fsd-design.md
+├── sql2java-run-diagram.md
+├── sql2java-standard-example.md
 └── README.md
 ```
 
@@ -161,6 +169,30 @@ LLM 传入 `result: "passed" | "failed"`（可选，见 D8 自动推导）。引
 - **消解规则**：当 FSD 内容与 `analysis.json` / `inventory.json` 不一致时，以 JSON artifact 为准（FSD 是派生文档）
 - FSD 的价值：将 `analysis.json` 中散落的翻译注意事项集中、结构化成人类可读的文档
 - **后续演进**：验证 FSD 格式实用性后，可升级为正式阶段（路径 B），新增 `fsd` phase + Zod Schema 校验
+
+### D14: phase→filename 映射
+
+- `artifact-schemas.ts` 中的 `getArtifactFilename()` 处理 phase 名与磁盘文件名不一致的情况
+- 例如：phase `analyze` → 磁盘文件 `analysis.json`，phase `review` → 磁盘文件 `review-summary.json`
+- 引擎和插件统一通过此函数获取 artifact 文件名，避免硬编码
+
+### D15: OR 前置语义
+
+- `PHASE_PREREQUISITES`（定义在 `workflow-definitions.ts`）支持 string[] 数组组，表示组内任一文件存在即可
+- 例如 fix 阶段前置为 `[["review-summary.json", "verify-summary.json"]]`，两个 summary 文件二选一即可
+- `checkPrerequisites()` 由插件层在 advance 时调用，检查前置 artifact 是否存在
+
+### D16: fix retry 清理
+
+- retry 时清理残留的 `fix.json`（删除磁盘文件），防止下次 advance 误读上次 fix 的产出
+- 重置当前 phaseHistory entry 的 status 为 `in_progress`、清除 `completedAt`
+- 递增 `retryCount`，与 `PhaseConfig.maxRetries` 比较
+
+### D17: artifact 缓存
+
+- 引擎的 `loadArtifactJson()` 方法在单次 advance 调用内缓存磁盘读取结果
+- 同一 advance 流程中多次读取同一 artifact 时命中缓存，减少磁盘 I/O
+- advance 结束后清除缓存，确保下次 advance 读取最新数据
 
 ---
 
@@ -401,6 +433,11 @@ class WorkflowEngine {
 
   // ── 持久化 ──
   loadFromDisk(runId: string): WorkflowRun     // D6: 从 run.json 恢复
+
+  // ── 内部工具方法 ──
+  extractPackageNames(artifact: any): string[]  // 双格式包名提取：packageNames 优先，旧格式回退 packages[].name
+  loadArtifactJson(runId: string, phase: string): any  // D17: 带缓存的 artifact 读取，单次 advance 内缓存
+  clearArtifactCache(): void                    // D17: advance 结束后清除缓存
 }
 ```
 
@@ -602,6 +639,19 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
     { from: "verify",     condition: "failed",  to: "fix" },
     // ── fix 回环：D7 动态路由，不在此写死 ──
   ],
+}
+
+// ── D15: OR 前置语义 ──
+// 每个 phase 的前置 artifact 文件列表；string[] 表示组内任一存在即可（OR 语义）
+export const PHASE_PREREQUISITES: Record<string, string[][]> = {
+  inventory: [],
+  analyze: [["inventory-index.json"], ["inventory.json"]],
+  plan: [["inventory-index.json"], ["inventory.json"], ["analysis.json"]],
+  scaffold: [["plan.json"], ["inventory.json"]],
+  translate: [["inventory-index.json"], ["inventory.json"], ["analysis.json"], ["plan.json"], ["scaffold.json"]],
+  review: [["plan.json"], ["scaffold.json"], ["analysis.json"]],
+  verify: [["plan.json"], ["scaffold.json"]],
+  fix: [["analysis.json"], ["plan.json"], ["scaffold.json"], ["review-summary.json", "verify-summary.json"]],  // summary 二选一
 }
 ```
 
@@ -1055,6 +1105,27 @@ export const FixArtifactSchema = z.object({
 )
 ```
 
+### Artifact Schema 工具函数
+
+```typescript
+// D14: phase 名 → 磁盘文件名映射
+function getArtifactFilename(phase: string): string {
+  // phase "analyze" → 磁盘文件 "analysis.json"
+  // phase "review"  → 磁盘文件 "review-summary.json"（顶层汇总）
+  // phase "verify"  → 磁盘文件 "verify-summary.json"（顶层汇总）
+  // 其他 phase → "{phase}.json"
+}
+
+// 获取 translation/review/verify 的 per-package schema
+function getPerPackageSchema(phase: "translate" | "review" | "verify"): ZodSchema
+
+// 获取 analysis per-package schema
+function getAnalysisPackageSchema(): ZodSchema
+
+// 根据文件名获取 summary schema
+function getSummarySchema(filename: string): ZodSchema
+```
+
 ### 跨 Schema 语义校验
 
 ```typescript
@@ -1227,6 +1298,27 @@ Runtime Context：
 | review | ✓ | ✓ | ✓ | | ✓ |
 | verify | ✓ | ✓ | ✓ | | ✓ |
 | fix | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+### 插件层工具函数
+
+```typescript
+// ── 上下文管理 ──
+setWorkflowContext(ctx: WorkflowContext): void      // 设置当前工作流上下文（runId, phase, agentFile, temperature）
+clearWorkflowContext(): void                        // 工作流完成/中止时清除上下文
+
+// ── System Prompt 构建 ──
+extractCommonPart(agentMd: string): string          // 提取 agent .md 通用部分（文件头到第一个 ## Phase: 之前）
+extractPhaseSection(agentMd: string, phase: string): string  // 提取指定 phase 的 section
+buildRuntimeContext(run: WorkflowRun, phase: string): object // 构建 Runtime Context（含 upstreamArtifacts 路径列表）
+
+// ── Artifact 校验 ──
+validateArtifactOnDisk(artifactsDir: string, phase: string): ValidationResult  // 从磁盘读取 + Zod 校验
+validateInventoryPackages(artifactsDir: string, indexData: any, inventoryData: any): string[]  // inventory-index ↔ inventory 包名一致性
+validateAnalysisPackages(artifactsDir: string, inventoryData: any, analysisData: any): string[]  // inventory ↔ analysis 包名一致性
+
+// ── 前置检查 ──
+checkPrerequisites(artifactsDir: string, phase: string): { met: boolean, missing: string[] }  // D15: 检查 PHASE_PREREQUISITES
+```
 
 ### Artifact 校验（advance 时）
 
@@ -1515,9 +1607,9 @@ analyze 阶段的"内部分步"扩展为三轮：
 | translate | inventory-index.json + inventory.json + inventory-packages/ + analysis.json + analysis-packages/ + plan.json + scaffold.json |
 | review | plan.json + scaffold.json + analysis.json + analysis-packages/ + translations/*/translation.json |
 | verify | plan.json + scaffold.json + translations/*/translation.json |
-| fix | analysis.json + analysis-packages/ + plan.json + scaffold.json + review-summary.json 或 verify-summary.json + 相关包的 per-package artifact（review.json / verify.json） |
+| fix | analysis.json + analysis-packages/ + plan.json + scaffold.json + review-summary.json 或 verify-summary.json（D15: 二选一）+ 相关包的 per-package artifact（review.json / verify.json） |
 
-> 注：此表与上方 "upstreamArtifacts 表" 的核心依赖一致，upstreamArtifacts 额外包含可选参考文件（如 fsd/*/*.md）。两表需同步维护。
+> 注：此表与上方 "upstreamArtifacts 表" 的核心依赖一致，upstreamArtifacts 额外包含可选参考文件（如 fsd/*/*.md）。两表由 PHASE_PREREQUISITES 统一定义，需同步维护。
 
 3. 缺少前置 → 报错退出
 4. start → 连续 advance 跳过前面的阶段 → 激活第一个指定阶段
@@ -1553,68 +1645,76 @@ analyze 阶段的"内部分步"扩展为三轮：
 
 ## 技术栈
 
-- **Workflow Engine**：TypeScript（@opencode-ai/plugin 或 Claude Code hooks）
-- **Schema 校验**：Zod
-- **Agent 定义**：Markdown（按 `## Phase: xxx` 分节）
+- **运行框架**：opencode AI Agent 插件（`@opencode-ai/plugin` 1.15.13）
+- **Workflow Engine**：TypeScript 确定性状态机
+- **Schema 校验**：Zod ^3.23.0
+- **Agent 定义**：Markdown（按 `## Phase: xxx` 分节，位于 `.opencode/agent/`）
 - **LLM**：Claude API
-- **SQL 解析**：AST 预扫描（`@griffithswaite/ts-plsql-parser`，ANTLR4 TypeScript 生成）+ regex 降级 + LLM 语义补充
+- **SQL 解析**：AST 预扫描（`@griffithswaite/ts-plsql-parser` ^1.0.5，ANTLR4 TypeScript 生成）+ regex 降级 + LLM 语义补充
 - **目标 Java 框架**：Spring Boot + MyBatis + Lombok + Maven
 
 ---
 
-## 实现步骤
+## 实现步骤（✅ 已完成）
 
-### Step 1: 项目脚手架
+### Step 1: 项目脚手架 ✅
 - 初始化 TypeScript 项目（tsconfig.json、package.json）
-- 创建目录结构（command/、agent/、workflow/、plugin/）
-- 安装依赖：zod
+- 创建目录结构（`.opencode/` 下的 command/、agent/、workflow/、plugins/）
+- 安装依赖：`@opencode-ai/plugin` 1.15.13、`zod` ^3.23.0、`@griffithswaite/ts-plsql-parser` ^1.0.5
 
-### Step 2: engine-core.ts
+### Step 2: engine-core.ts ✅
 - 实现所有核心类型（WorkflowDefinition、WorkflowRun、PhaseConfig、PhaseHistoryEntry、TransitionRule）
 - 实现 WorkflowEngine 类
   - start：创建 run，进入第一个 phase
-  - advance：完成当前 phase → 匹配 TransitionRule → 推进（D1/D3/D4/D7）
+  - advance：完成当前 phase → 匹配 TransitionRule → 推进（D1/D3/D4/D7/D8）
   - confirm：paused → running，激活 agent（D4）
-  - retry：重试当前 phase，达 maxRetries 则 abort
+  - retry：重试当前 phase（D16: 清理残留 fix.json），达 maxRetries 则 exhausted
   - abort：终止工作流
   - status / listRuns：查询
   - loadFromDisk：从 run.json 恢复（D6）
+  - extractPackageNames：双格式包名提取
+  - loadArtifactJson：带缓存的 artifact 读取（D17）
 - 实现 fix 特殊处理：
+  - handleFixAdvance：fix 完成后的动态路由（D3/D7/D12）
   - isFixExhausted 双层判定（D2）
-  - advanceFromFix 增量回环（D3）
+  - deriveReviewResult：review/verify result 自动推导（D8）
   - branchedFrom 追踪（D7）
 - 实现 persist：每次状态变更写 run.json（D6）
 - 实现 _events.log 追加写入
 
-### Step 3: plsql-scanner.ts + artifact-schemas.ts + type-mappings.ts
+### Step 3: workflow-definitions.ts + plsql-scanner.ts + artifact-schemas.ts + type-mappings.ts ✅
+- 定义 SQL2JAVA_WORKFLOW（phases + transitions）
+- 定义 PHASE_PREREQUISITES（D15: OR 前置语义）
 - 实现 PL/SQL 预扫描器（AST + regex 双模式，自动检测/安装 `@griffithswaite/ts-plsql-parser`）
-  - regex 降级模式：BEGIN/END 深度追踪排除 `END IF` / `END LOOP` / `END CASE` 等非块结束关键字
-  - regex 降级模式：过程检测支持无参过程（`PROCEDURE init IS`，无括号）
+  - regex 降级模式：BEGIN/END 深度追踪排除 `END IF` / `END LOOP` / `END CASE`
+  - regex 降级模式：过程检测支持无参过程（`PROCEDURE init IS`）
 - 定义所有 Zod Schema（InventoryIndexSchema + InventoryPackageSchema + InventorySchema + AnalysisMetaSchema + AnalysisPackageSchema + PlanSchema + ScaffoldSchema + TranslationSchema + ReviewSchema + ReviewSummarySchema + VerifySchema + VerifySummarySchema + FixArtifactSchema + refine 约束）
+- 实现 Schema 工具函数（getArtifactFilename / getPerPackageSchema / getAnalysisPackageSchema / getSummarySchema）（D14）
 - 定义类型映射表（ORACLE_TO_JAVA / ORACLE_TO_JDBC）
 - 实现 validateCrossSchema()
 
-### Step 4: agent .md 文件
+### Step 4: agent .md 文件 ✅
 - sql-analyst.md（inventory：基于 inventory-index.json 分批处理 + analyze：三轮分步 + 逐子程序 FSD 生成）
 - java-architect.md（plan：读 inventory-index + per-package + analysis + scaffold：读 inventory DDL + per-package types）
 - translator.md（translate + fix，translate 逐包持久化，fix 产出 FixArtifact）
 - reviewer.md（review + verify，按包独立产出 + 逐包持久化 + 增量模式支持）
 
-### Step 5: plugin/workflow-engine.ts
+### Step 5: plugins/workflow-engine.ts ✅
 - 注册 workflow 工具（7 个 action：start / advance / confirm / retry / abort / status / list）
 - start action 中集成预扫描：`scanSource(sourcePath)` → 写入 `inventory-index.json`
 - 实现 phaseChange hook：system prompt 构建（agent .md + Runtime Context + upstreamArtifacts）
 - 实现 beforeLlmCall hook：温度控制 + 工具过滤
 - 实现 advance 时 artifact 磁盘校验（含 per-package 校验：inventory-packages/ + analysis-packages/）
+- 实现 checkPrerequisites（D15: OR 前置语义检查）
 - 实现 _events.log 追加写入
 
-### Step 6: command/sql2java.md
+### Step 6: command/sql2java.md ✅
 - 参数解析和路由（--status / --resume / --phases / 默认全流程）
 - --resume 断点续传逻辑（含 run.json 恢复 + per-package 跳过）
-- --phases 前置依赖校验 + 连续 advance 跳过
+- --phases 前置依赖校验（基于 PHASE_PREREQUISITES）+ 连续 advance 跳过
 
 ### Step 7: 端到端验证
-- 用小样本（bank_core_sql 中 2-3 个有依赖关系的包）跑通全流程
+- 用小样本跑通全流程
 - 检查每个阶段的 artifact 格式符合 Zod Schema
 - 检查生成的 Java 项目可 `mvn compile`
 - 模拟 translate 中断后 resume 验证跳过逻辑
@@ -1646,3 +1746,7 @@ analyze 阶段的"内部分步"扩展为三轮：
 10. **parser 降级验证**：模拟 parser 安装失败，确认 regex 降级正常工作
 11. **regex 精度验证**：含 `END IF` / `END LOOP` 的包体行号范围正确；无参过程（`PROCEDURE init IS`）被正确检测
 12. **跨 Schema 兼容验证**：旧格式（`inventory.packages[].name`）和新格式（`inventory.packageNames`）的 artifact 都能通过 validateCrossSchema 校验
+13. **getArtifactFilename 验证**（D14）：phase 名 `analyze` → 文件名 `analysis.json` 等映射正确
+14. **OR 前置验证**（D15）：fix 阶段在只有 `review-summary.json` 或只有 `verify-summary.json` 时都能通过前置检查
+15. **fix retry 清理验证**（D16）：retry 后磁盘上残留的 `fix.json` 被正确删除
+16. **artifact 缓存验证**（D17）：同一 advance 内多次读取同一 artifact 命中缓存，advance 结束后缓存清除

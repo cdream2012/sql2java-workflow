@@ -46,12 +46,12 @@ sql2java-workflow/
 │   │   └── reviewer.md               # review + verify 阶段
 │   ├── workflow/
 │   │   ├── engine-core.ts            # 状态机核心
-│   │   ├── workflow-definitions.ts   # 工作流定义 + TransitionRule
-│   │   ├── artifact-schemas.ts       # Artifact Zod Schemas
+│   │   ├── workflow-definitions.ts   # 工作流定义 + TransitionRule + PHASE_PREREQUISITES
+│   │   ├── artifact-schemas.ts       # Artifact Zod Schemas + getArtifactFilename + getPerPackageSchema
 │   │   ├── plsql-scanner.ts          # PL/SQL AST/regex 预扫描器
-│   │   └── type-mappings.ts          # Oracle → Java 类型映射表
-│   ├── plugin/
-│   │   └── workflow-engine.ts        # 插件入口（workflow 工具 + hooks）
+│   │   └── type-mappings.ts          # Oracle → Java/JDBC 类型映射表
+│   ├── plugins/
+│   │   └── workflow-engine.ts        # 插件入口（workflow 工具 + hooks + artifact 校验）
 │   └── package.json                  # 依赖：@opencode-ai/plugin, zod, ts-plsql-parser
 ├── resources/
 │   └── mfg_erp_sql/                  # 示例 PL/SQL 输入（schema/pkg/func/trigger/type）
@@ -169,12 +169,39 @@ sql2java-workflow/
 - BEGIN/END 深度追踪排除 `END IF` / `END LOOP` / `END CASE`
 - 支持无参过程检测（`PROCEDURE init IS`）
 
+## Workflow Engine 核心方法
+
+| 方法 | 说明 |
+|------|------|
+| `start(defId, runId, metadata)` | 创建 WorkflowRun，进入第一个 phase |
+| `advance(runId, { result })` | 完成当前 phase → 匹配 TransitionRule → 推进 |
+| `confirm(runId)` | paused → running，激活 agent |
+| `retry(runId)` | 重置当前 entry，递增 retryCount |
+| `abort(runId)` | 终止工作流 |
+| `status(runId)` | 查询当前状态 |
+| `listRuns()` | 列出所有 run |
+| `loadFromDisk(runId)` | 从 run.json 恢复 |
+| `validateCrossSchema()` | 跨 Schema 语义校验（D9） |
+| `isFixExhausted()` | 双层 exhausted 判定（D2） |
+| `handleFixAdvance()` | fix 阶段特殊处理（D3/D7/D12） |
+| `deriveReviewResult()` | review/verify result 自动推导（D8） |
+| `extractPackageNames()` | 双格式包名提取（packageNames 优先，旧格式回退） |
+
+## Artifact Schema 工具函数
+
+| 函数 | 说明 |
+|------|------|
+| `getArtifactFilename(phase)` | phase 名 → 磁盘文件名映射（D14） |
+| `getPerPackageSchema(phase)` | 获取 translation/review/verify 的 per-package schema |
+| `getAnalysisPackageSchema()` | 获取 analysis per-package schema |
+| `getSummarySchema(filename)` | 根据文件名获取 summary schema |
+
 ## 技术栈
 
-- **运行框架**：[opencode](https://opencode.ai) AI Agent 插件（`@opencode-ai/plugin`）
+- **运行框架**：[opencode](https://opencode.ai) AI Agent 插件（`@opencode-ai/plugin` 1.15.13）
 - **Workflow Engine**：TypeScript 确定性状态机
-- **SQL 解析**：AST 预扫描 + regex 降级 + LLM 语义补充
-- **Schema 校验**：Zod
+- **SQL 解析**：AST 预扫描（`@griffithswaite/ts-plsql-parser` ^1.0.5）+ regex 降级 + LLM 语义补充
+- **Schema 校验**：Zod ^3.23.0
 - **Agent 定义**：Markdown（按 `## Phase: xxx` 分节，位于 `.opencode/agent/`）
 - **LLM**：Claude API
 - **目标框架**：Spring Boot + MyBatis + Lombok + Maven
