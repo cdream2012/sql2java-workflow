@@ -7,9 +7,8 @@
  *   - system prompt 构建 + Runtime Context 注入（D11）
  *   - 温度控制 + 工具过滤
  *   - 大输出截断
+ *   - 依赖自动安装（node_modules 缺失时自动 npm/bun install）
  */
-import { tool } from "@opencode-ai/plugin"
-import { z } from "zod"
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { WorkflowEngine, type WorkflowRun } from "../workflow/engine-core"
@@ -21,6 +20,7 @@ import {
   getArtifactFilename,
 } from "../workflow/artifact-schemas"
 import { scanSource } from "../workflow/plsql-scanner"
+import { ensureDeps, findOpencodeDir } from "../workflow/ensure-deps"
 
 const engine = new WorkflowEngine()
 engine.registerDefinition(SQL2JAVA_WORKFLOW)
@@ -501,21 +501,62 @@ function validateJsonContent(fullPath: string, name: string): boolean {
 
 // ── 插件导出 ──────────────────────────────────────────────────────────────────
 
-export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => ({
+export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
+  // 尝试安装依赖，失败则注册 stub 工具提供清晰错误信息（Fix #2）
+  let depsOk = false
+  try {
+    await ensureDeps()
+    depsOk = true
+  } catch (e: any) {
+    console.error(`[workflow-engine] 依赖安装失败: ${e.message}`)
+  }
+
+  // 依赖就绪后才 require npm 包；失败时尝试直接 require（可能已从上次安装残留）
+  let toolFn: any
+  let zFn: any
+  if (depsOk) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      toolFn = require("@opencode-ai/plugin").tool
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      zFn = require("zod").z
+    } catch (e: any) {
+      console.error(`[workflow-engine] require 失败: ${e.message}`)
+      depsOk = false
+    }
+  }
+
+  // 依赖不可用：注册 stub workflow 工具，返回安装指引
+  if (!depsOk || !toolFn || !zFn) {
+    return {
+      tool: {
+        workflow: {
+          description: "Workflow engine (依赖未安装)",
+          args: { action: { type: "string" } },
+          execute: async () => ({
+            title: "依赖未安装",
+            output: "❌ 工作流引擎依赖未安装。请手动执行：cd .opencode && npm install",
+          }),
+        },
+      },
+    }
+  }
+
+  return ({
   tool: {
-    workflow: tool({
+    workflow: toolFn({
       description:
         "Deterministic multi-phase workflow engine for SQL→Java translation.",
       args: {
-        action: z.enum([
+        action: zFn.enum([
           "start", "advance", "confirm", "retry", "abort", "status", "list",
           "prerequisites",
         ]),
-        runId: z.string().optional(),
-        sourcePath: z.string().optional(),
-        artifact: z.any().optional(),
-        result: z.enum(["passed", "failed"]).optional(),
-        phases: z.string().optional(),        // --phases 用
+        runId: zFn.string().optional(),
+        sourcePath: zFn.string().optional(),
+        artifact: zFn.any().optional(),
+        result: zFn.enum(["passed", "failed"]).optional(),
+        phases: zFn.string().optional(),        // --phases 用
       },
       execute: async (args: any) => {
         switch (args.action) {
@@ -820,8 +861,8 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => ({
   "experimental.chat.system.transform": async (input: any) => {
     if (!currentWorkflowContext) return input
     try {
-      // 使用 __dirname（plugin/）的父目录（.opencode/）定位 agent 文件，不依赖 process.cwd()
-      const agentPath = join(__dirname, "..", currentWorkflowContext.agentFile)
+      // 使用共享路径工具定位 agent 文件，不依赖 process.cwd()
+      const agentPath = join(findOpencodeDir(), currentWorkflowContext.agentFile)
       if (existsSync(agentPath)) {
         // 1. 读取 agent .md 全文
         let c = readFileSync(agentPath, "utf-8").replace(/^---[\s\S]*?---\n*/, "")
@@ -863,3 +904,4 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => ({
     return input
   },
 })
+}

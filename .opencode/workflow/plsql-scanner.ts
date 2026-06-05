@@ -10,7 +10,7 @@
 
 import { readFileSync, readdirSync, existsSync } from "node:fs"
 import { join, extname, relative } from "node:path"
-import { execSync } from "node:child_process"
+import { ensureDeps, findOpencodeDir } from "./ensure-deps"
 
 // ── 类型 ────────────────────────────────────────────────────────────────────────
 
@@ -82,43 +82,32 @@ interface ParsedNode {
 let parserAvailable: boolean | null = null
 
 /**
- * 检测 parser 是否可用，不可用则尝试 npm install。
+ * 检测 parser 是否可用，不可用则通过 ensureDeps 安装所有依赖。
  * 成功返回 true，失败返回 false（将降级到 regex）。
  */
 export async function ensureParser(): Promise<boolean> {
   if (parserAvailable !== null) return parserAvailable
 
-  // 1. 尝试 require
+  const opencodeDir = findOpencodeDir()
+
+  // 1. 尝试 require（使用显式 paths 确保从 .opencode/node_modules 解析）
   try {
-    require.resolve("@griffithswaite/ts-plsql-parser")
+    require.resolve("@griffithswaite/ts-plsql-parser", { paths: [opencodeDir] })
     parserAvailable = true
     return true
   } catch {}
 
-  // 2. 尝试 npm install（在 .opencode/ 目录下）
+  // 2. 通过统一依赖安装模块安装所有依赖
   try {
-    const opencodeDir = findOpencodeDir()
-    execSync("npm install @griffithswaite/ts-plsql-parser", {
-      cwd: opencodeDir,
-      timeout: 60_000,
-      stdio: "pipe",
-    })
+    await ensureDeps()
     // 安装后再次检测
-    require.resolve("@griffithswaite/ts-plsql-parser")
+    require.resolve("@griffithswaite/ts-plsql-parser", { paths: [opencodeDir] })
     parserAvailable = true
     return true
   } catch {
     parserAvailable = false
     return false
   }
-}
-
-/** 找到 .opencode/ 目录（scanner 文件所在目录的父级） */
-function findOpencodeDir(): string {
-  // 从当前文件路径推导
-  const thisDir = __dirname
-  // __dirname = .opencode/workflow → parent = .opencode
-  return join(thisDir, "..")
 }
 
 // ── AST 扫描 ────────────────────────────────────────────────────────────────────
