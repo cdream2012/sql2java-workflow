@@ -116,9 +116,8 @@ export async function ensureParser(): Promise<boolean> {
  * 使用 @griffithswaite/ts-plsql-parser 的 getParsedNodes 提取结构。
  * 逐文件解析，汇总结果。
  */
-export function scanWithAST(sourcePath: string): InventoryIndex {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { getParserFromInput, getParsedNodes } = require("@griffithswaite/ts-plsql-parser")
+export async function scanWithAST(sourcePath: string): Promise<InventoryIndex> {
+  const { getParserFromInput, getParsedNodes } = await import("@griffithswaite/ts-plsql-parser")
 
   const files = collectSourceFiles(sourcePath)
   const packages = new Map<string, PackageIndex>()
@@ -791,7 +790,7 @@ export async function scanSource(sourcePath: string): Promise<InventoryIndex> {
   const hasParser = await ensureParser()
   if (hasParser) {
     try {
-      return scanWithAST(sourcePath)
+      return await scanWithAST(sourcePath)
     } catch (e) {
       // AST 扫描整体失败，降级到 regex
       console.error(`[plsql-scanner] AST scan failed, falling back to regex: ${e}`)

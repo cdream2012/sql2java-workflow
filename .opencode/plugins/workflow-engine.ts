@@ -511,17 +511,17 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
     console.error(`[workflow-engine] 依赖安装失败: ${e.message}`)
   }
 
-  // 依赖就绪后才 require npm 包；失败时尝试直接 require（可能已从上次安装残留）
+  // 依赖就绪后才动态 import npm 包（ESM-only 包无法用 require 加载）
   let toolFn: any
   let zFn: any
   if (depsOk) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      toolFn = require("@opencode-ai/plugin").tool
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      zFn = require("zod").z
+      const opencodePlugin = await import("@opencode-ai/plugin")
+      toolFn = opencodePlugin.tool
+      const zodMod = await import("zod")
+      zFn = zodMod.z
     } catch (e: any) {
-      console.error(`[workflow-engine] require 失败: ${e.message}`)
+      console.error(`[workflow-engine] import 失败: ${e.message}`)
       depsOk = false
     }
   }
