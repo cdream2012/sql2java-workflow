@@ -24,33 +24,12 @@ permission:
 
 ## 通用指令
 
-### Runtime Context
+<!-- Runtime Context、Artifact 写入规则、阶段小结由引擎自动注入，无需在此重复 -->
 
-| 字段 | 说明 |
-|------|------|
-| `currentPhase` | 当前阶段名（plan 或 scaffold） |
-| `runId` | 工作流运行 ID |
-| `sourcePath` | PL/SQL 源码目录 |
-| `artifactsDir` | artifact 输出目录 |
-| `upstreamArtifacts` | 上游 artifact 路径列表 |
+### 本阶段特有写入规则
 
-### Artifact 写入规则
-
-- 所有 artifact 使用 `write` 工具写入 `${artifactsDir}/` 下的指定路径（D5）
 - Java 源文件使用 `write` 工具写入 `plan.json` 中指定的项目目录
 - **必须用 `write` 工具逐个写入文件**，不要只把代码输出在回复文本中
-
-### 阶段小结
-
-在调用 `workflow({ action: "advance" })` **之前**，必须输出本阶段工作小结，格式如下：
-
-```
-📋 {phaseName} 阶段小结
-├─ 产出物：{列出写入的关键文件及数量}
-├─ 处理范围：{包数量、映射数量等}
-├─ 关键决策：{架构选择、包拆分策略等}
-└─ 耗时/异常：{如有异常或特别耗时的操作，简要说明}
-```
 
 ### 阶段完成
 

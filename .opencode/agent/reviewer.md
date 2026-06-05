@@ -24,33 +24,7 @@ permission:
 
 ## 通用指令
 
-### Runtime Context
-
-| 字段 | 说明 | 用途 |
-|------|------|------|
-| `currentPhase` | 当前阶段名（review 或 verify） | 决定执行哪个 Phase section |
-| `runId` | 工作流运行 ID | 调用 workflow 工具时传入 |
-| `sourcePath` | PL/SQL 源码目录 | 读取原始 SQL 文件对照审查 |
-| `artifactsDir` | artifact 输出目录 | 读取上游 artifact / 写入审查结果 |
-| `incrementalContext` | 增量模式上下文 | fix 后增量审查时传入 targetPackages |
-
-### Artifact 写入规则（D5）
-
-- agent 自己写 artifact 文件到 `${artifactsDir}/` 指定路径
-- **逐包持久化**：每审完一个包立即写入 per-package artifact，避免中途崩溃丢失
-- 写入后不需要读回验证（引擎 advance 时会做 Zod 校验）
-
-### 阶段小结
-
-在调用 `workflow({ action: "advance" })` **之前**，必须输出本阶段工作小结，格式如下：
-
-```
-📋 {phaseName} 阶段小结
-├─ 产出物：{审查/验证的包及文件数}
-├─ 处理范围：{审查的包数量、子程序数}
-├─ 关键指标：{通过/失败数、问题分类统计}
-└─ 耗时/异常：{如有异常或特别耗时的操作，简要说明}
-```
+<!-- Runtime Context、Artifact 写入规则、阶段小结由引擎自动注入，无需在此重复 -->
 
 ### 阶段完成
 
@@ -212,11 +186,42 @@ cd ${projectRoot} && mvn compile 2>&1
    - `todoRemainingCount`：TODO 残留数
    - `mustFix`：必须修复的问题（编译错误 + MyBatis 校验失败）
 
-#### Step 4: 生成测试骨架
+#### Step 4: 生成单元测试
 
-为每个包生成单元测试骨架（仅生成，不执行）：
-- 测试类放在 `src/test/java/{packageBase}/` 下
-- 为每个 Service 方法生成空测试方法
+为每个包生成**完整的单元测试**（仅生成，不执行），包含真实测试逻辑：
+
+**数据准备**（每个包）：
+1. 读取 `analysis-packages/{package}.json` 获取方法签名、参数、返回类型、业务逻辑描述
+2. 读取该包的 `ServiceImpl` Java 源码，理解具体业务逻辑
+3. 读取 `plan.json` 的 typeMappings 和 exceptionStrategy
+
+**测试类结构**：
+- 测试类放在 `src/test/java/{packageBase}/` 下，命名为 `{ServiceName}ImplTest.java`
+- 使用 `@ExtendWith(MockitoExtension.class)`
+- 用 `@Mock` 声明所有依赖（Mapper、其他 Service）
+- 用 `@InjectMocks` 注入被测 ServiceImpl
+
+**测试方法生成规则**（每个 Service 方法生成 1-3 个测试方法）：
+
+1. **happy path 测试**（必须）：验证正常输入下的主流程
+   - 根据方法签名构造合理的输入参数
+   - Mock 依赖返回预期数据（`when(...).thenReturn(...)`）
+   - 调用被测方法并断言结果（`assertEquals`, `assertNotNull`）
+   - 验证关键副作用（`verify(mapper).insert(...)`）
+
+2. **异常/边界测试**（根据复杂度）：
+   - 低复杂度：跳过
+   - 中/高复杂度：生成 1-2 个异常路径测试
+   - 模拟空值、异常抛出等场景
+   - 使用 `assertThrows` 验证异常
+
+3. **命名规范**：`methodName_scenario_expectedBehavior`
+   - 例：`createItem_withValidData_shouldInsertAndReturnId`
+   - 例：`getItem_whenNotFound_shouldThrowException`
+
+**禁止**：
+- 不得生成空方法体或 `// TODO: implement test`
+- 每个测试方法必须有 arrange（Mock 设置）→ act（调用）→ assert（断言）三个部分
 
 #### Step 5: 写入 verify-summary.json
 
@@ -241,6 +246,6 @@ cd ${projectRoot} && mvn compile 2>&1
 - [ ] 编译错误正确归因到具体包和文件
 - [ ] passed=true 时 mustFix 为空，passed=false 时 mustFix 非空
 - [ ] MyBatis XML 的 namespace 和 statement id 校验完成
-- [ ] 测试骨架文件已生成
+- [ ] 测试文件已生成且每个测试方法包含完整的 arrange→act→assert 逻辑（无空方法体）
 - [ ] verify-summary.json 的 compilation.success=false 时 errors 非空
 - [ ] 增量模式下未修改包的结果被正确合并到 summary

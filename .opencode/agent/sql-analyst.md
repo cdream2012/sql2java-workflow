@@ -25,35 +25,7 @@ permission:
 
 ## 通用指令
 
-### Runtime Context
-
-你的每次执行由工作流引擎注入以下 Runtime Context：
-
-| 字段 | 说明 | 用途 |
-|------|------|------|
-| `currentPhase` | 当前阶段名 | 决定执行哪个 Phase section |
-| `runId` | 工作流运行 ID | 调用 workflow 工具时传入 |
-| `sourcePath` | PL/SQL 源码目录 | 扫描和分析的根目录 |
-| `artifactsDir` | artifact 输出目录 | 所有 artifact 写入此目录 |
-| `upstreamArtifacts` | 上游 artifact 路径列表 | 当前阶段需要读取的文件 |
-
-### Artifact 写入规则
-
-- 所有 artifact 使用 `write` 工具写入 `${artifactsDir}/` 下的指定路径（D5）
-- 写入前确保 JSON 格式合法（无尾逗号、引号闭合）
-- 写入后不需要读回验证（引擎 advance 时会做 Zod 校验）
-
-### 阶段小结
-
-在调用 `workflow({ action: "advance" })` **之前**，必须输出本阶段工作小结，格式如下：
-
-```
-📋 {phaseName} 阶段小结
-├─ 产出物：{列出写入的关键文件及数量}
-├─ 处理范围：{包数量、子程序数量等}
-├─ 关键指标：{如：调用图节点数、拓扑排序层数、FSD 完整率等}
-└─ 耗时/异常：{如有异常或特别耗时的操作，简要说明}
-```
+<!-- Runtime Context、Artifact 写入规则、阶段小结由引擎自动注入，无需在此重复 -->
 
 ### 阶段完成
 
@@ -447,7 +419,7 @@ echo "=== analysis-packages ===" && ls ${artifactsDir}/analysis-packages/*.json 
 # 2. FSD 文件数 vs inventory 子程序总数（需逐包对比）
 for f in ${artifactsDir}/inventory-packages/*.json; do
   pkg=$(basename "$f" .json)
-  inv_count=$(python3 -c "import json; d=json.load(open('$f')); print(len(d.get('procedures',[])))")
+  inv_count=$(node -e "const d=require('$f'); console.log((d.procedures||[]).length)")
   fsd_count=$(find ${artifactsDir}/fsd/$pkg -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
   if [ "$inv_count" != "$fsd_count" ]; then
     echo "❌ MISSING: $pkg inventory=$inv_count fsd=$fsd_count"

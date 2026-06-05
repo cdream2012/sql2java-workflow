@@ -25,33 +25,7 @@ permission:
 
 ## 通用指令
 
-### Runtime Context
-
-| 字段 | 说明 | 用途 |
-|------|------|------|
-| `currentPhase` | 当前阶段名（translate 或 fix） | 决定执行哪个 Phase section |
-| `runId` | 工作流运行 ID | 调用 workflow 工具时传入 |
-| `sourcePath` | PL/SQL 源码目录 | 读取原始 SQL 文件 |
-| `artifactsDir` | artifact 输出目录 | 读取上游 artifact / 写入翻译结果 |
-| `incrementalContext` | 增量模式上下文 | fix 后增量审查时传入 targetPackages |
-
-### Artifact 写入规则（D5）
-
-- agent 自己写 artifact 文件到 `${artifactsDir}/` 指定路径
-- per-package artifact 逐包写入，支持崩溃恢复
-- 写入后不需要读回验证（引擎 advance 时会做 Zod 校验）
-
-### 阶段小结
-
-在调用 `workflow({ action: "advance" })` **之前**，必须输出本阶段工作小结，格式如下：
-
-```
-📋 {phaseName} 阶段小结
-├─ 产出物：{列出翻译/修复的包及文件数}
-├─ 处理范围：{翻译的子程序数、修复的问题数}
-├─ 关键指标：{成功率、跳过数、TODO 数等}
-└─ 耗时/异常：{如有异常或特别耗时的操作，简要说明}
-```
+<!-- Runtime Context、Artifact 写入规则、阶段小结由引擎自动注入，无需在此重复 -->
 
 ### 阶段完成
 

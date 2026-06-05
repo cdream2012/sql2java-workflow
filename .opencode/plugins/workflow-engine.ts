@@ -36,17 +36,19 @@ let currentWorkflowContext: {
 // ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
 /** 格式化阶段开始 banner */
-function formatPhaseStartBanner(phaseName: string): string {
-  const phaseConfig = SQL2JAVA_WORKFLOW.phases.find(p => p.name === phaseName)
-  const desc = phaseConfig?.description ?? phaseName
+function formatPhaseStartBanner(phaseName: string | null | undefined): string {
+  const safeName = phaseName ?? "unknown"
+  const phaseConfig = SQL2JAVA_WORKFLOW.phases.find(p => p.name === safeName)
+  const desc = phaseConfig?.description ?? safeName
   const isFix = phaseConfig?.isFixPhase ?? false
   // fix 是条件分支阶段，不属于主线 1-N 进度
   const mainPhases = SQL2JAVA_WORKFLOW.phases.filter(p => !p.isFixPhase)
-  const idx = mainPhases.findIndex(p => p.name === phaseName) + 1
+  const rawIdx = mainPhases.findIndex(p => p.name === safeName)
+  const idx = rawIdx === -1 ? 0 : rawIdx + 1
   const total = mainPhases.length
   const label = isFix
-    ? `${phaseName} — ${desc}`
-    : `阶段 ${idx}/${total}：${phaseName} — ${desc}`
+    ? `${safeName} — ${desc}`
+    : `阶段 ${idx}/${total}：${safeName} — ${desc}`
   return [
     ``,
     `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
@@ -58,6 +60,7 @@ function formatPhaseStartBanner(phaseName: string): string {
 
 /** 格式化阶段完成 banner */
 function formatPhaseEndBanner(phaseName: string, duration?: string): string {
+  if (!phaseName) return ""
   return [
     ``,
     `────────────────────────────────────────────────`,
@@ -142,6 +145,44 @@ function buildRuntimeContext(run: WorkflowRun): string {
   }
 
   return lines.join("\n")
+}
+
+/**
+ * 构建共享指令文本块（Runtime Context 表格 + Artifact 写入规则 + 阶段小结）
+ * 所有 agent 共享，由引擎自动注入，agent .md 文件不再包含这些重复内容
+ */
+function buildSharedInstructions(run: WorkflowRun): string {
+  return `### Runtime Context
+
+你的每次执行由工作流引擎注入以下 Runtime Context：
+
+| 字段 | 说明 | 用途 |
+|------|------|------|
+| \`currentPhase\` | 当前阶段名 | 决定执行哪个 Phase section |
+| \`runId\` | 工作流运行 ID | 调用 workflow 工具时传入 |
+| \`sourcePath\` | PL/SQL 源码目录 | 读取原始 SQL 文件 |
+| \`artifactsDir\` | artifact 输出目录 | 读取上游 artifact / 写入产出 |
+| \`upstreamArtifacts\` | 上游 artifact 路径列表 | 当前阶段需要读取的文件 |
+| \`incrementalContext\` | 增量模式上下文（可选） | fix 后增量处理时传入 targetPackages |
+
+### Artifact 写入规则
+
+- 所有 artifact 使用 \`write\` 工具写入 \`\${artifactsDir}/\` 下的指定路径
+- 写入前确保 JSON 格式合法（无尾逗号、引号闭合）
+- 逐包持久化：每处理完一个包立即写入 per-package artifact，避免中途崩溃丢失
+- 写入后不需要读回验证（引擎 advance 时会做 Zod 校验）
+
+### 阶段小结
+
+在调用 \`workflow({ action: "advance" })\` **之前**，必须输出本阶段工作小结，格式如下：
+
+\`\`\`
+📋 {phaseName} 阶段小结
+├─ 产出物：{列出写入的关键文件及数量}
+├─ 处理范围：{处理的包数量、子程序数量等}
+├─ 关键指标：{通过/失败数、成功率、TODO 数等}
+└─ 耗时/异常：{如有异常或特别耗时的操作，简要说明}
+\`\`\``
 }
 
 /**
@@ -392,6 +433,15 @@ function validateArtifactOnDisk(run: WorkflowRun): string | null {
             .join("\n")
           return `Zod validation failed for ${summaryPhase}.json:\n${errors}`
         }
+        // verify-summary: 校验 testFiles[] 中的路径实际存在
+        if (summaryPhase === "verify-summary" && parsed.testGeneration?.generated) {
+          const missing = (parsed.testGeneration.testFiles as string[]).filter(
+            (f) => !existsSync(f)
+          )
+          if (missing.length > 0) {
+            return `verify-summary declares testFiles that do not exist on disk:\n${missing.map((f) => `  - ${f}`).join("\n")}`
+          }
+        }
       } catch (e: any) {
         return `Failed to read/parse ${summaryFile}: ${e.message}`
       }
@@ -509,7 +559,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => ({
 
             const run = engine.start("sql2java", runId, metadata)
             setWorkflowContext(run)
-            const banner = formatPhaseStartBanner(run.currentPhase!)
+            const banner = formatPhaseStartBanner(run.currentPhase)
             return {
               title: "Started",
               output: `${runId} | ${run.currentPhase} | scan: ${scanStatus}${banner}`,
@@ -591,7 +641,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => ({
             setWorkflowContext(adv.run)
             const prevPhase = statusBefore?.currentPhase ?? ""
             const endBanner = formatPhaseEndBanner(prevPhase)
-            const startBanner = formatPhaseStartBanner(adv.run.currentPhase!)
+            const startBanner = formatPhaseStartBanner(adv.run.currentPhase)
             return {
               title: `→ ${adv.run.currentPhase}`,
               output: `${endBanner}${startBanner}Agent: ${adv.nextPhase?.agentFile}`,
@@ -604,7 +654,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => ({
             if (!args.runId) throw new Error("runId required")
             const r = engine.confirm(args.runId)
             setWorkflowContext(r)
-            const startBanner = formatPhaseStartBanner(r.currentPhase!)
+            const startBanner = formatPhaseStartBanner(r.currentPhase)
             const confirmedPhase = r.currentPhase ?? ""
             const confirmedDesc = SQL2JAVA_WORKFLOW.phases.find(p => p.name === confirmedPhase)?.description ?? confirmedPhase
             return {
@@ -788,10 +838,13 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => ({
         }
 
         // 4. 拼接 system prompt
+        const sharedInstructions = run ? buildSharedInstructions(run) : ""
         const parts = [
           common,
           "",
           phaseSection,
+          "",
+          sharedInstructions,
           "",
           "## Runtime Context",
           runtimeContext,
