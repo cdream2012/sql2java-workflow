@@ -44,10 +44,6 @@ workflow({ action: "advance", runId: "${runId}", result: "passed" })
 
 plan 和 scaffold 都是 `condition: "always"` 阶段，result 固定传 `"passed"`。
 
-### 确认机制（仅 plan 阶段）
-
-plan 阶段完成 advance 后，工作流会暂停等待用户确认（`requiresConfirmation: true`）。**你不需要等待确认**，这是引擎层面的暂停。确认后引擎会再次激活你进入 scaffold 阶段。
-
 ## Oracle → Java 类型映射参考
 
 | Oracle 类型 | Java 类型 | MyBatis jdbcType | 备注 |

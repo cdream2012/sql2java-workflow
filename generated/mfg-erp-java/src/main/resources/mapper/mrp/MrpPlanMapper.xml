@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.mfgerp.domain.mrp.mapper.MrpPlanMapper">
+
+    <select id="nettingDetail" resultType="com.example.mfgerp.domain.mrp.dto.PlanVO">
+        <!-- TODO: translate from MRP_PKG.netting_detail -->
+        SELECT NULL AS item_id, NULL AS item_code, 0 AS gross_req, 0 AS net_req
+         WHERE 1 = 0
+    </select>
+
+    <!-- 翻译自 MRP_PKG.compute_low_level_codes -->
+    <!-- 对应 PL/SQL: 递归遍历 BOM 计算低层码 -->
+    <update id="computeLowLevelCodes">
+        <!-- TODO: [translate] 完整实现需要递归 CTE 计算 LLC 并更新 t_item.low_level_code -->
+        UPDATE t_item SET low_level_code = 0 WHERE low_level_code IS NULL
+    </update>
+
+    <!-- 翻译自 MRP_PKG.run_mrp 核心净算 -->
+    <!-- 对应 PL/SQL: 按 LLC 从低到高逐层净算，BOM 展开算毛需求，FORALL MERGE 写入计划 -->
+    <insert id="runMrpNetting">
+        <!-- TODO: [translate] 完整实现需要复杂的 MRP 净算逻辑 -->
+        SELECT 1
+    </insert>
+
+    <!-- 翻译自 MRP_PKG.release_planned_orders -->
+    <!-- 对应 PL/SQL: 将计划订单转为生产工单或采购建议 -->
+    <update id="releasePlannedOrders">
+        <!-- TODO: [translate] 完整实现需要将计划订单转工单/采购建议 -->
+        UPDATE t_mrp_plan SET status = 'RELEASED'
+         WHERE run_id = #{runId}
+           AND order_type IS NOT NULL
+           AND status = 'PLANNED'
+    </update>
+
+</mapper>

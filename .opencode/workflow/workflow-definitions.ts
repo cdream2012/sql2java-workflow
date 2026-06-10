@@ -32,11 +32,10 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
     },
     {
       name: "plan",
-      description: "Java 架构规划（需人工确认）",
+      description: "Java 架构规划",
       agentFile: "agent/java-architect.md",
       temperature: 0.2,
       maxRetries: 1,
-      requiresConfirmation: true,
       tools: ["read", "bash", "write", "edit", "workflow"],
     },
     {

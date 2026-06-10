@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.mfgerp.domain.forecast.mapper.ForecastMapper">
+
+    <!-- 翻译自 FORECAST_PKG.generate_forecast -->
+    <!-- 对应 PL/SQL: MODEL 子句 → Java 时序算法 -->
+    <insert id="generateForecast">
+        <!-- TODO: [translate] 完整实现需要移动平均预测算法 -->
+        INSERT INTO t_demand_forecast (item_id, period, forecast_qty, method, created_at)
+        SELECT item_id, #{runDate}, 0, #{method}, CURRENT_TIMESTAMP
+          FROM t_item
+         WHERE item_type IN ('FG', 'SEMI')
+           AND 1 = 0
+    </insert>
+
+    <select id="forecastAccuracy" resultType="com.example.mfgerp.domain.forecast.dto.ForecastVO">
+        <!-- TODO: translate from FORECAST_PKG.forecast_accuracy -->
+        SELECT NULL AS item_id, NULL AS item_code, 0 AS mape, 0 AS bias
+         WHERE 1 = 0
+    </select>
+
+    <select id="pivotDemandDynamic" resultType="java.util.HashMap">
+        <!-- TODO: translate from FORECAST_PKG.pivot_demand_dynamic (DBMS_SQL dynamic PIVOT) -->
+        SELECT NULL AS item_id
+         WHERE 1 = 0
+    </select>
+
+</mapper>

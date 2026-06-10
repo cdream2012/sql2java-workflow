@@ -24,8 +24,8 @@ import { z } from "zod"
 
 /** D2: fix 循环双层 exhausted 上限 */
 export const FIX_LIMITS = {
-  globalMax: 3,   // 全局 fix 上限（宽松）
-  phaseMax: 2,    // 单阶段 fix 上限（严格）
+  globalMax: 5,   // 全局 fix 上限
+  phaseMax: 5,    // 单阶段 fix 上限
 } as const
 
 /** 完成哨兵 */
@@ -611,9 +611,11 @@ export class WorkflowEngine {
   }
 
   // ── D2: isFixExhausted 双层判定 ──
+  // 支持 epoch 重置：fixEpoch 之后的 fix entry 才计入计数
 
   isFixExhausted(run: WorkflowRun, triggerPhase: string, preCreate: boolean): boolean {
-    const fixEntries = run.phaseHistory.filter(e => e.phase === "fix")
+    const epoch = Number(run.metadata.fixEpoch) || 0
+    const fixEntries = run.phaseHistory.filter((e, i) => e.phase === "fix" && i >= epoch)
     const globalCount = fixEntries.length
     const phaseCount = fixEntries.filter(e => e.branchedFrom === triggerPhase).length
 
@@ -627,6 +629,50 @@ export class WorkflowEngine {
       if (phaseCount >= FIX_LIMITS.phaseMax) return true
     }
     return false
+  }
+
+  /**
+   * fixContinue — 用户选择继续 fix 时重置计数器并恢复运行
+   * 将 fixEpoch 设为当前 phaseHistory 长度（忽略之前的 fix entry），
+   * 恢复 status=running，创建新 fix entry 指向原始触发阶段。
+   */
+  fixContinue(runId: string): WorkflowRun {
+    const run = this.getRun(runId)
+    if (run.status !== "completed_with_issues") {
+      throw new WorkflowEngineError(`Cannot fixContinue: run status is "${run.status}", expected "completed_with_issues"`, "INVALID_STATE")
+    }
+
+    // 找到最后一个 fix entry 的 branchedFrom 作为触发阶段
+    const fixEntries = run.phaseHistory.filter(e => e.phase === "fix")
+    const lastFix = fixEntries[fixEntries.length - 1]
+    const triggerPhase = lastFix?.branchedFrom
+    if (!triggerPhase) {
+      throw new WorkflowEngineError("Cannot fixContinue: no fix entry found with branchedFrom", "INVALID_STATE")
+    }
+
+    const now = new Date().toISOString()
+
+    // 重置计数器：epoch 设为当前长度
+    run.metadata.fixEpoch = run.phaseHistory.length
+
+    // 恢复运行状态
+    run.status = "running"
+
+    // 创建新 fix entry
+    const newEntry: PhaseHistoryEntry = {
+      phase: "fix",
+      status: "in_progress",
+      startedAt: now,
+      retryCount: 0,
+      branchedFrom: triggerPhase,
+    }
+    run.phaseHistory.push(newEntry)
+    run.currentPhase = "fix"
+    run.updatedAt = now
+
+    this.persist(run)
+    this.appendEvent(runId, "FIX_CONTINUE", "fix", `fix counters reset, resuming fix for trigger: ${triggerPhase}`)
+    return run
   }
 
   // ── 私有方法 ──

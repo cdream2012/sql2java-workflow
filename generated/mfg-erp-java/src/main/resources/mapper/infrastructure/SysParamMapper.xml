@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.mfgerp.infrastructure.util.SysParamMapper">
+
+    <resultMap id="AppParamResultMap" type="com.example.mfgerp.infrastructure.entity.AppParam">
+        <id property="paramKey" column="param_key"/>
+        <result property="paramValue" column="param_value"/>
+        <result property="paramType" column="param_type"/>
+        <result property="description" column="description"/>
+        <result property="updatedBy" column="updated_by"/>
+        <result property="updatedAt" column="updated_at"/>
+    </resultMap>
+
+</mapper>

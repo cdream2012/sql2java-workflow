@@ -139,7 +139,9 @@ export async function scanWithAST(sourcePath: string): Promise<InventoryIndex> {
       const parser = getParserFromInput(code) as any
       // BailErrorStrategy: 遇错即抛 ParseCancellationException，规避 instanceof RecognitionException
       // ESM/CJS 混用可能导致 catch 块 instanceof 检查失败，异常逃出 ANTLR4 内部 catch
-      parser._errHandler = new antlr4.BailErrorStrategy()
+      if (typeof parser._errHandler !== "undefined") {
+        parser._errHandler = new antlr4.BailErrorStrategy()
+      }
       const tree = parser.sql_script()
       const result = getParsedNodes(code, tree)
 

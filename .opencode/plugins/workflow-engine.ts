@@ -725,7 +725,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
       args: {
         action: zFn.enum([
           "start", "advance", "confirm", "retry", "abort", "status", "list",
-          "prerequisites", "resume",
+          "prerequisites", "resume", "fixContinue",
         ]),
         runId: zFn.string().optional(),
         sourcePath: zFn.string().optional(),
@@ -960,11 +960,24 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               const prevPhase = statusBefore?.currentPhase ?? ""
               const duration = phaseMetrics?.wallDurationMs != null ? formatDuration(phaseMetrics.wallDurationMs) : undefined
               const endBanner = formatPhaseEndBanner(prevPhase, duration)
-              const finalMsg = isWithIssues
-                ? "⚠️ 工作流完成，但存在未解决问题"
-                : "🎉 工作流全部完成！"
+
+              if (isWithIssues) {
+                // Fix 耗尽：询问用户选择继续还是接受
+                const reportPath = join(ARTIFACT_DIR, runId, "reports", "final-report.txt")
+                return {
+                  title: "Fix Exhausted — User Decision Required",
+                  output: `${endBanner}⚠️ Fix 循环已达上限，工作流暂停。请选择：\n\n1. 继续修复（重置计数器）：workflow({ action: "fixContinue", runId: "${runId}" })\n2. 接受当前结果：保持 completed_with_issues 状态\n\n详细报告: ${reportPath}`,
+                  metadata: {
+                    status: adv.run.status,
+                    fixExhausted: true,
+                    reportPath,
+                  },
+                }
+              }
+
+              const finalMsg = "🎉 工作流全部完成！"
               return {
-                title: isWithIssues ? "Completed with Issues" : "Completed",
+                title: "Completed",
                 output: `${endBanner}${finalMsg}\nrunId: ${runId} | status: ${adv.run.status}`,
                 metadata: { status: adv.run.status, reportPath: join(ARTIFACT_DIR, runId, "reports", "final-report.txt") },
               }
@@ -1035,6 +1048,20 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             }
           }
 
+          // ── fixContinue — fix 耗尽后用户选择继续修复 ──
+          case "fixContinue": {
+            if (!args.runId) throw new Error("runId required")
+            const r = engine.fixContinue(args.runId)
+            setWorkflowContext(r) // 已内部创建正确的 PhaseMetricsCollector
+            const startBanner = formatPhaseStartBanner("fix")
+
+            return {
+              title: "Fix Continued",
+              output: `${startBanner}🔄 Fix 计数器已重置，继续修复。runId: ${args.runId} | status: ${r.status}`,
+              metadata: { runId: args.runId, phase: "fix", fixReset: true },
+            }
+          }
+
           // ── retry ──
           case "retry": {
             if (!args.runId) throw new Error("runId required")
@@ -1042,6 +1069,22 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             if (ret.exhausted) {
               persistCollectorIfActive(args.runId)
               clearWorkflowContext()
+
+              // fix 阶段 retry 耗尽 → 询问用户
+              if (ret.terminalState === "completed_with_issues") {
+                const reportPath = join(ARTIFACT_DIR, args.runId, "reports", "final-report.txt")
+                return {
+                  title: "Fix Exhausted — User Decision Required",
+                  output: `⚠️ Fix 循环已达上限（retry exhausted: ${ret.retryCount}）。请选择：\n\n1. 继续修复（重置计数器）：workflow({ action: "fixContinue", runId: "${args.runId}" })\n2. 接受当前结果：保持 completed_with_issues 状态\n\n详细报告: ${reportPath}`,
+                  metadata: {
+                    status: ret.run.status,
+                    fixExhausted: true,
+                    terminalState: ret.terminalState,
+                    reportPath,
+                  },
+                }
+              }
+
               return {
                 title: "Exhausted",
                 output: `Retries exhausted: ${ret.retryCount}. Status: ${ret.run.status}`,
@@ -1239,19 +1282,50 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               }
             }
 
-            // 6. 暂停等待确认
+            // 6. 暂停等待确认 — 仅当阶段不需要确认时自动跳过
             if (run.status === "paused") {
-              return {
-                title: "Paused — Confirmation Needed",
-                output: `Workflow ${runId} is paused at phase "${run.currentPhase}". Call:\nworkflow({ action: "confirm", runId: "${runId}" })`,
-                metadata: {
-                  action: "resume",
-                  runId,
-                  status: run.status,
-                  currentPhase: run.currentPhase,
-                  resumeStrategy: "confirm_needed",
-                  message: `Paused at ${run.currentPhase}. Awaiting confirmation.`,
-                },
+              const pausedPhaseConfig = SQL2JAVA_WORKFLOW.phases.find(p => p.name === run.currentPhase)
+              const needsConfirmation = pausedPhaseConfig?.requiresConfirmation === true
+
+              if (needsConfirmation) {
+                return {
+                  title: "Paused — Confirmation Needed",
+                  output: `Workflow ${runId} is paused at phase "${run.currentPhase}"（需人工确认）. Call:\nworkflow({ action: "confirm", runId: "${runId}" })`,
+                  metadata: {
+                    action: "resume",
+                    runId,
+                    status: run.status,
+                    currentPhase: run.currentPhase,
+                    resumeStrategy: "confirm_needed",
+                    message: `Paused at ${run.currentPhase}. Awaiting confirmation.`,
+                  },
+                }
+              }
+
+              // 阶段不再要求确认 → 自动跳过（兼容旧版本 paused 状态的 run）
+              try {
+                const confirmed = engine.confirm(runId)
+                setWorkflowContext(confirmed)
+                const confirmedPhase = confirmed.currentPhase ?? ""
+                const confirmedDesc = SQL2JAVA_WORKFLOW.phases.find(p => p.name === confirmedPhase)?.description ?? confirmedPhase
+                return {
+                  title: "Resumed — Auto Confirmed",
+                  output: `Workflow ${runId} was paused at "${run.currentPhase}". Auto-confirmed (phase no longer requires confirmation), now executing: ${confirmedPhase}（${confirmedDesc}）`,
+                  metadata: {
+                    action: "resume",
+                    runId,
+                    status: confirmed.status,
+                    currentPhase: confirmed.currentPhase,
+                    resumeStrategy: "continue_phase",
+                    message: `Auto-confirmed ${run.currentPhase}, continuing at ${confirmedPhase}`,
+                  },
+                }
+              } catch (e: any) {
+                return {
+                  title: "Resume Failed",
+                  output: `Failed to auto-confirm paused run ${runId}: ${e.message}`,
+                  metadata: { resumeStrategy: "corrupted", runId },
+                }
               }
             }
 

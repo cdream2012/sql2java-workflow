@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.mfgerp.application.report.mapper.BomReportMapper">
+
+    <select id="bomComponentListJson" resultType="java.lang.String">
+        <!-- TODO: translate from REPORT_PKG.bom_component_list (JSON CLOB output) -->
+        SELECT '[]' AS result WHERE 1=0
+    </select>
+
+    <select id="bomComponentList" resultType="com.example.mfgerp.application.report.dto.BomComponentReportVO">
+        <!-- TODO: translate from REPORT_PKG.bom_component_list -->
+        SELECT NULL AS bom_id, NULL AS item_code WHERE 1=0
+    </select>
+
+</mapper>

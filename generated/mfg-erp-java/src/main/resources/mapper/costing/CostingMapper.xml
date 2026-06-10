@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.mfgerp.domain.costing.mapper.CostingMapper">
+
+    <!-- 翻译自 COSTING_PKG.fifo_layers -->
+    <select id="fifoLayers" resultType="com.example.mfgerp.domain.costing.dto.FifoLayerVO">
+        SELECT lot_id AS lotId, lot_no AS lotNo, receipt_date AS receiptDate,
+               ROW_NUMBER() OVER (ORDER BY receipt_date, lot_id) AS layerNo,
+               qty_on_hand - qty_allocated AS availQty,
+               unit_cost AS unitCost,
+               ROUND((qty_on_hand - qty_allocated) * unit_cost, 4) AS layerAmount,
+               SUM(qty_on_hand - qty_allocated) OVER (ORDER BY receipt_date, lot_id) AS cumQty,
+               SUM(ROUND((qty_on_hand - qty_allocated) * unit_cost, 4))
+                   OVER (ORDER BY receipt_date, lot_id) AS cumAmount,
+               CASE WHEN SUM(qty_on_hand - qty_allocated)
+                        OVER (ORDER BY receipt_date, lot_id)
+                    >= (SELECT COALESCE(qty_on_hand - qty_allocated, 0)
+                          FROM t_inventory_balance
+                         WHERE item_id = #{itemId} AND warehouse_id = #{warehouseId})
+                    THEN 'Y' ELSE 'N' END AS isCovering
+          FROM t_inventory_lot
+         WHERE item_id = #{itemId} AND warehouse_id = #{warehouseId}
+           AND status = 'AVAILABLE'
+           AND qty_on_hand - qty_allocated > 0
+         ORDER BY receipt_date, lot_id
+    </select>
+
+    <!-- 翻译自 COSTING_PKG.inventory_value -->
+    <select id="inventoryValue" resultType="com.example.mfgerp.domain.costing.dto.FifoLayerVO">
+        SELECT b.warehouse_id AS warehouseId, w.warehouse_code AS warehouseCode,
+               b.item_id AS itemId, it.item_code AS itemCode, it.item_name AS itemName,
+               it.valuation_method AS valuationMethod,
+               b.qty_on_hand AS qtyOnHand,
+               CASE WHEN it.valuation_method = 'STD' THEN it.std_cost ELSE b.avg_cost END AS valUnitCost,
+               ROUND(b.qty_on_hand * CASE WHEN it.valuation_method = 'STD' THEN it.std_cost ELSE b.avg_cost END, 4) AS stockValue,
+               SUM(ROUND(b.qty_on_hand * CASE WHEN it.valuation_method = 'STD' THEN it.std_cost ELSE b.avg_cost END, 4))
+                   OVER (PARTITION BY b.warehouse_id) AS whTotalValue
+          FROM t_inventory_balance b
+          JOIN t_item it ON it.item_id = b.item_id
+          JOIN t_warehouse w ON w.warehouse_id = b.warehouse_id
+         WHERE b.qty_on_hand > 0
+           AND (#{warehouseId} IS NULL OR b.warehouse_id = #{warehouseId})
+         ORDER BY b.warehouse_id, stockValue DESC
+    </select>
+
+    <!-- 翻译自 COSTING_PKG.recompute_avg_cost -->
+    <update id="recomputeAvgCost">
+        UPDATE t_inventory_balance
+           SET avg_cost = (
+                SELECT CASE WHEN COALESCE(SUM(qty_on_hand), 0) > 0
+                            THEN ROUND(SUM(qty_on_hand * unit_cost) / SUM(qty_on_hand), 6)
+                            ELSE 0 END
+                  FROM t_inventory_lot
+                 WHERE item_id = #{itemId}
+                   AND warehouse_id = #{warehouseId}
+                   AND status = 'AVAILABLE'
+           ),
+               version = version + 1,
+               updated_at = CURRENT_TIMESTAMP
+         WHERE item_id = #{itemId} AND warehouse_id = #{warehouseId}
+    </update>
+
+    <!-- 翻译自 COSTING_PKG.landed_cost_report -->
+    <!-- WITH FUNCTION 用 SQL 表达式替代 Java 方法 -->
+    <select id="landedCostReport" resultType="com.example.mfgerp.domain.costing.dto.LandedCostVO">
+        WITH base AS (
+            SELECT pl.po_line_id AS poLineId, pl.line_no AS lineNo,
+                   pl.item_id AS itemId, it.item_code AS itemCode, it.item_name AS itemName,
+                   pl.qty_ordered AS qtyOrdered, pl.unit_price AS unitPrice,
+                   ROUND(pl.qty_ordered * pl.unit_price, 4) AS lineAmount,
+                   ROUND(pl.qty_ordered * COALESCE(it.weight_kg, 0), 4) AS lineWeight,
+                   CASE WHEN #{basis} = 'WGT'
+                        THEN ROUND(pl.qty_ordered * COALESCE(it.weight_kg, 0), 4)
+                        ELSE ROUND(pl.qty_ordered * pl.unit_price, 4)
+                   END AS allocBase
+              FROM t_po_line pl
+              JOIN t_item it ON it.item_id = pl.item_id
+             WHERE pl.po_id = #{poId}
+        )
+        SELECT poLineId, lineNo, itemId, itemCode, itemName, qtyOrdered, unitPrice,
+               lineAmount, lineWeight,
+               ROUND(#{freight} * allocBase / NULLIF(SUM(allocBase) OVER (), 0), 4) AS freightAlloc,
+               ROUND(#{duty} * allocBase / NULLIF(SUM(allocBase) OVER (), 0), 4) AS dutyAlloc,
+               lineAmount
+                   + ROUND(#{freight} * allocBase / NULLIF(SUM(allocBase) OVER (), 0), 4)
+                   + ROUND(#{duty} * allocBase / NULLIF(SUM(allocBase) OVER (), 0), 4) AS landedTotal,
+               ROUND((lineAmount
+                      + ROUND(#{freight} * allocBase / NULLIF(SUM(allocBase) OVER (), 0), 4)
+                      + ROUND(#{duty} * allocBase / NULLIF(SUM(allocBase) OVER (), 0), 4))
+                     / NULLIF(qtyOrdered, 0), 6) AS landedUnitCost
+          FROM base
+         ORDER BY lineNo
+    </select>
+
+    <!-- 翻译自 COSTING_PKG.roll_standard_cost 的 MERGE 回写 -->
+    <update id="updateStdCost">
+        UPDATE t_item
+           SET std_cost = #{stdCost},
+               updated_by = 'SYSTEM',
+               updated_at = CURRENT_TIMESTAMP
+         WHERE item_id = #{itemId}
+    </update>
+
+</mapper>

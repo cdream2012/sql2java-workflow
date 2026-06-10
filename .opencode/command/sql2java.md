@@ -57,11 +57,11 @@ inventory, analyze, plan, scaffold, translate, review, verify, fix
 ## 工作流程
 
 ```
-inventory → analyze → plan（人工确认）→ scaffold → translate → review → verify → 完成
-                                                              │            │
-                                                              ↓ (failed)   ↓ (failed)
-                                                              fix ←────────┘
-                                                              └→ 增量回到触发阶段
+inventory → analyze → plan → scaffold → translate → review → verify → 完成
+                                                   │            │
+                                                   ↓ (failed)   ↓ (failed)
+                                                   fix ←────────┘
+                                                   └→ 增量回到触发阶段
 ```
 
 ---
@@ -90,8 +90,7 @@ inventory → analyze → plan（人工确认）→ scaffold → translate → r
 | `no_runs` | 报错 "No workflow runs found. Start with /sql2java \<path\>" |
 | `corrupted` | 提示用户 run 数据损坏，建议新建 run |
 | `already_completed` | 输出完成信息，结束 |
-| `confirm_needed` | 提示用户确认后调用 `workflow({ action: "confirm", runId })` |
-| `continue_phase` | 调用 `workflow({ action: "start", runId })` 激活 run，继续当前阶段。对 translate/review/verify，使用 `metadata.skippedPackages` 跳过已完成的包 |
+| `continue_phase` | 自动确认（兼容旧版本 paused 状态）并继续执行。对 translate/review/verify，使用 `metadata.skippedPackages` 跳过已完成的包（见下方阶段内恢复策略） |
 | `restart_phase` | 调用 `workflow({ action: "start", runId })` 激活 run，从头执行当前阶段 |
 
 3. 激活 run 后进入当前阶段，阶段内恢复策略：
@@ -148,7 +147,7 @@ inventory → analyze → plan（人工确认）→ scaffold → translate → r
    ```
 
 5. **遇到 requiresConfirmation 阶段自动 confirm**：
-   当 advance 返回 `waitingForConfirmation: true` 时（如 plan 阶段），自动调用：
+   当 advance 返回 `waitingForConfirmation: true` 时，自动调用：
    ```javascript
    workflow({ action: "confirm", runId })
    ```
@@ -195,10 +194,6 @@ inventory → analyze → plan（人工确认）→ scaffold → translate → r
    ```
 
 4. **进入 inventory 阶段**：后续由 agent + workflow 工具自动推进
-
-5. **plan 阶段等待确认**：当 advance 返回 `waitingForConfirmation: true` 时，暂停并提示用户：
-   > Plan 阶段完成，等待确认。请审阅 plan.json 后调用：
-   > `workflow({ action: "confirm", runId: "run-xxx" })`
 
 ---
 

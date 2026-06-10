@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.mfgerp.domain.inventory.mapper.WarehouseMapper">
+
+    <!-- 对应 PL/SQL: select warehouse_id into v_wh_id from t_warehouse where warehouse_code = p_warehouse_code -->
+    <select id="findIdByCode" resultType="java.lang.Long">
+        SELECT warehouse_id FROM t_warehouse WHERE warehouse_code = #{warehouseCode}
+    </select>
+
+</mapper>

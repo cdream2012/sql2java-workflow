@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.mfgerp.infrastructure.util.BizDateMapper">
+
+    <resultMap id="BusinessDateResultMap" type="com.example.mfgerp.infrastructure.entity.BusinessDate">
+        <id property="sysCode" column="sys_code"/>
+        <result property="currBizDate" column="curr_biz_date"/>
+        <result property="lastBizDate" column="last_biz_date"/>
+        <result property="nextBizDate" column="next_biz_date"/>
+        <result property="periodStatus" column="period_status"/>
+        <result property="updatedAt" column="updated_at"/>
+    </resultMap>
+
+</mapper>

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.mfgerp.domain.inventory.mapper.InventoryBalanceMapper">
+
+    <resultMap id="InventoryBalanceResultMap" type="com.example.mfgerp.domain.inventory.entity.InventoryBalance">
+        <id property="itemId" column="item_id"/>
+        <result property="warehouseId" column="warehouse_id"/>
+        <result property="qtyOnHand" column="qty_on_hand"/>
+        <result property="qtyAllocated" column="qty_allocated"/>
+        <result property="avgCost" column="avg_cost"/>
+        <result property="lastTxnDate" column="last_txn_date"/>
+        <result property="version" column="version"/>
+        <result property="updatedAt" column="updated_at"/>
+    </resultMap>
+
+    <!-- 翻译自 INVENTORY_PKG.sync_balance 的 MERGE -->
+    <!-- 对应 PL/SQL: merge into t_inventory_balance b using (select p_item_id, p_warehouse_id from dual) s
+         on (b.item_id = s.item_id and b.warehouse_id = s.warehouse_id)
+         when matched then update set qty_on_hand = v_qty, qty_allocated = v_alloc, avg_cost = v_avg, ...
+         when not matched then insert (...) values (...)
+    -->
+    <insert id="syncBalanceFromLots">
+        INSERT INTO t_inventory_balance (item_id, warehouse_id, qty_on_hand, qty_allocated, avg_cost, last_txn_date, version, updated_at)
+        SELECT #{itemId}, #{warehouseId},
+               COALESCE(SUM(qty_on_hand), 0),
+               COALESCE(SUM(qty_allocated), 0),
+               CASE WHEN COALESCE(SUM(qty_on_hand), 0) > 0
+                    THEN ROUND(SUM(qty_on_hand * unit_cost) / SUM(qty_on_hand), 6)
+                    ELSE 0 END,
+               #{bizDate}, 0, CURRENT_TIMESTAMP
+          FROM t_inventory_lot
+         WHERE item_id = #{itemId}
+           AND warehouse_id = #{warehouseId}
+           AND status IN ('AVAILABLE', 'QUARANTINE')
+        ON DUPLICATE KEY UPDATE
+            qty_on_hand   = VALUES(qty_on_hand),
+            qty_allocated = VALUES(qty_allocated),
+            avg_cost      = VALUES(avg_cost),
+            last_txn_date = VALUES(last_txn_date),
+            version       = version + 1,
+            updated_at    = CURRENT_TIMESTAMP
+    </insert>
+
+</mapper>
