@@ -119,7 +119,8 @@ export async function ensureParser(): Promise<boolean> {
  */
 export async function scanWithAST(sourcePath: string): Promise<InventoryIndex> {
   const { getParserFromInput, getParsedNodes } = await import("@griffithswaite/ts-plsql-parser")
-
+  // 动态导入 antlr4 的 BailErrorStrategy，避免静态导入找不到模块的类型错误
+  const antlr4 = await import("antlr4")
   const files = collectSourceFiles(sourcePath)
   const packages = new Map<string, PackageIndex>()
   const tables: TableIndex[] = []
@@ -135,7 +136,10 @@ export async function scanWithAST(sourcePath: string): Promise<InventoryIndex> {
     const ext = extname(filePath).toLowerCase()
 
     try {
-      const parser = getParserFromInput(code)
+      const parser = getParserFromInput(code) as any
+      // BailErrorStrategy: 遇错即抛 ParseCancellationException，规避 instanceof RecognitionException
+      // ESM/CJS 混用可能导致 catch 块 instanceof 检查失败，异常逃出 ANTLR4 内部 catch
+      parser._errHandler = new antlr4.BailErrorStrategy()
       const tree = parser.sql_script()
       const result = getParsedNodes(code, tree)
 
