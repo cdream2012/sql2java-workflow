@@ -2,7 +2,7 @@
  * Workflow Logger — 将日志写入文件，避免 console.warn/error 泄漏到 opencode 输入框。
  *
  * 日志路径：.workflow-artifacts/${runId}/logs/workflow.log
- * runId 未初始化前，所有 warn/error 静默忽略。
+ * runId 未初始化前，所有 info/warn/error 静默忽略。
  */
 
 import { appendFileSync, mkdirSync } from "node:fs"
@@ -11,6 +11,7 @@ import { join } from "node:path"
 const ARTIFACT_DIR = ".workflow-artifacts"
 
 export interface WorkflowLogger {
+  info(tag: string, msg: string): void
   warn(tag: string, msg: string): void
   error(tag: string, msg: string): void
 }
@@ -29,6 +30,10 @@ class FileLogger implements WorkflowLogger {
     } catch {
       // 写日志失败时不再 console，避免死循环
     }
+  }
+
+  info(tag: string, msg: string): void {
+    this.write("INFO", tag, msg)
   }
 
   warn(tag: string, msg: string): void {
@@ -51,7 +56,7 @@ export function initLogger(runId: string): void {
   logFilePath = join(logsDir, "workflow.log")
 }
 
-/** 获取 logger 单例。未初始化时 warn/error 静默忽略。 */
+/** 获取 logger 单例。未初始化时 info/warn/error 静默忽略。 */
 export function getLogger(): WorkflowLogger {
   return instance
 }

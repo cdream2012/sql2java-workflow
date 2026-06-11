@@ -864,6 +864,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             }
 
             const run = engine.start("sql2java", runId, metadata)
+            getLogger().info("[workflow]", `工作流启动: runId=${runId} sourcePath=${args.sourcePath ?? "N/A"} scan=${scanStatus}`)
             setWorkflowContext(run)
             const banner = formatPhaseStartBanner(run.currentPhase)
             return {
@@ -913,6 +914,12 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               }
             }
 
+            // ★ BUG FIX: engine.advance() 就地修改 run 对象（statusBefore 是同一引用），
+            // advance 后 statusBefore.currentPhase 变成下一阶段而非完成阶段。
+            // 必须在 advance 之前保存完成阶段名。
+            const completedPhase = statusBefore?.currentPhase ?? ""
+            getLogger().info("[advance]", `阶段 ${completedPhase} 请求 advance, result=${args.result ?? "auto"}`)
+
             const adv = engine.advance(runId, { result: args.result })
 
             // ── Metrics: finalize 当前 collector（仅当阶段成功完成时） ──
@@ -920,8 +927,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             let phaseReportText: string | undefined
             let phaseMetrics: PhaseMetrics | undefined
             try {
-              if (activeCollector && !adv.rejected && !adv.fixFailed && statusBefore?.currentPhase) {
-                const completedPhase = statusBefore.currentPhase
+              if (activeCollector && !adv.rejected && !adv.fixFailed && completedPhase) {
                 const entries = adv.run.phaseHistory.filter(
                   (e: any) => e.phase === completedPhase && e.status === "completed" && e.completedAt
                 )
@@ -929,6 +935,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                 if (entry) {
                   phaseMetrics = activeCollector.finalize(entry, join(ARTIFACT_DIR, runId))
                   activeCollector.persist()
+                  getLogger().info("[metrics]", `阶段 ${completedPhase} metrics 已持久化: ${phaseMetrics.apiCallCount} API 调用, $${phaseMetrics.totalCost.toFixed(4)}, ${phaseMetrics.totalToolCallCount} 工具调用`)
                   phaseReportText = formatPhaseReport(phaseMetrics)
                   const reportsDir = join(ARTIFACT_DIR, runId, "reports")
                   const reportFile = phaseMetrics.fixIndex != null
@@ -954,14 +961,14 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                 const reportsDir = join(ARTIFACT_DIR, runId, "reports")
                 mkdirSync(reportsDir, { recursive: true })
                 writeFileSync(join(reportsDir, "final-report.txt"), finalText, "utf-8")
+                getLogger().info("[metrics]", `最终报告已生成: ${runMetrics.totalApiCallCount} API 调用, $${runMetrics.totalCost.toFixed(4)}, ${runMetrics.phases.length} 阶段`)
               } catch (e: any) {
                 getLogger().warn("[metrics]", `最终报告生成失败: ${e.message}`)
               }
               clearWorkflowContext()
               const isWithIssues = adv.run.status === "completed_with_issues"
-              const prevPhase = statusBefore?.currentPhase ?? ""
               const duration = phaseMetrics?.wallDurationMs != null ? formatDuration(phaseMetrics.wallDurationMs) : undefined
-              const endBanner = formatPhaseEndBanner(prevPhase, duration)
+              const endBanner = formatPhaseEndBanner(completedPhase, duration)
 
               if (isWithIssues) {
                 // Fix 耗尽：询问用户选择继续还是接受
@@ -986,21 +993,21 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             }
 
             if (adv.waitingForConfirmation) {
-              const prevPhase = statusBefore?.currentPhase ?? ""
               const duration = phaseMetrics?.wallDurationMs != null ? formatDuration(phaseMetrics.wallDurationMs) : undefined
-              const endBanner = formatPhaseEndBanner(prevPhase, duration)
+              const endBanner = formatPhaseEndBanner(completedPhase, duration)
               const pausedPhase = adv.run.currentPhase ?? ""
               const pausedDesc = adv.nextPhase?.description ?? pausedPhase
               return {
                 title: "Paused",
                 output: `${endBanner}⏸ ${pausedPhase}（${pausedDesc}）等待确认。请审阅后调用：\nworkflow({action:"confirm",runId:"${runId}"})`,
-                metadata: { waitingForConfirmation: true, reportPath: phaseReportText ? join(ARTIFACT_DIR, runId, "reports", `${statusBefore?.currentPhase ?? "unknown"}-report.txt`) : undefined },
+                metadata: { waitingForConfirmation: true, reportPath: phaseReportText ? join(ARTIFACT_DIR, runId, "reports", `${completedPhase || "unknown"}-report.txt`) : undefined },
               }
             }
 
             if (adv.rejected) {
               // 不清理 workflowContext：LLM 应修正 artifact 后重新 advance，当前 phase context 仍有效
               // activeCollector 保持活跃，继续累计
+              getLogger().warn("[advance]", `阶段 ${completedPhase} advance 被拒绝: ${adv.rejectionReason}`)
               return {
                 title: "Rejected",
                 output: adv.rejectionReason!,
@@ -1021,17 +1028,18 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             // try-catch 保护：metrics collector 构造失败不应阻断流程
             try {
               setWorkflowContext(adv.run)
+              getLogger().info("[advance]", `阶段转换: ${completedPhase} → ${adv.run.currentPhase}`)
             } catch (e: any) {
               getLogger().warn("[metrics]", `collector 创建失败: ${e.message}`)
             }
-            const prevPhase = statusBefore?.currentPhase ?? ""
+            getLogger().info("[advance]", `阶段 ${completedPhase} 完成${phaseMetrics?.wallDurationMs != null ? ` (${formatDuration(phaseMetrics.wallDurationMs)})` : ""}, 进入 ${adv.run.currentPhase}`)
             const duration = phaseMetrics?.wallDurationMs != null ? formatDuration(phaseMetrics.wallDurationMs) : undefined
-            const endBanner = formatPhaseEndBanner(prevPhase, duration)
+            const endBanner = formatPhaseEndBanner(completedPhase, duration)
             const startBanner = formatPhaseStartBanner(adv.run.currentPhase)
             return {
               title: `→ ${adv.run.currentPhase}`,
               output: `${endBanner}${startBanner}Agent: ${adv.nextPhase?.agentFile}`,
-              metadata: { runId, phase: adv.run.currentPhase, reportPath: phaseReportText ? join(ARTIFACT_DIR, runId, "reports", `${statusBefore?.currentPhase ?? "unknown"}-report.txt`) : undefined },
+              metadata: { runId, phase: adv.run.currentPhase, reportPath: phaseReportText ? join(ARTIFACT_DIR, runId, "reports", `${completedPhase || "unknown"}-report.txt`) : undefined },
             }
           }
 
