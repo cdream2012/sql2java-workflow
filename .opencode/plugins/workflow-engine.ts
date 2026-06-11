@@ -9,8 +9,8 @@
  *   - 大输出截断
  *   - 依赖自动安装（node_modules 缺失时自动 npm/bun install）
  */
-import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, statSync } from "node:fs"
-import { join } from "node:path"
+import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, statSync, renameSync, unlinkSync, realpathSync } from "node:fs"
+import { join, dirname, resolve, sep } from "node:path"
 import { WorkflowEngine, WorkflowEngineError, formatZodIssues, type WorkflowRun } from "../workflow/engine-core"
 import { SQL2JAVA_WORKFLOW } from "../workflow/workflow-definitions"
 import { UPSTREAM_ARTIFACTS, PHASE_PREREQUISITES } from "../workflow/workflow-definitions"
@@ -1432,6 +1432,81 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
           return _r.output
         }
         return _r
+      },
+    }),
+
+    // ── saveArtifact: 安全写入 artifact 文件（LLM 只需传相对路径） ──
+    saveArtifact: toolFn({
+      description:
+        "将 artifact 内容写入当前工作流的 artifacts 目录。只需提供相对于 artifactsDir 的路径，引擎自动拼接 runId 前缀并落盘。",
+      args: {
+        path: zFn
+          .string()
+          .min(1, "路径不能为空")
+          .describe(
+            "相对于 artifactsDir 的文件路径，如 inventory-packages/PKG.json、translations/pkg/review.json"
+          ),
+        content: zFn
+          .string()
+          .max(2 * 1024 * 1024, "单个 artifact 内容不能超过 2 MB")
+          .describe("要写入的文件内容（JSON 字符串）"),
+      },
+      execute: async (args: any, context: any) => {
+        // 从 currentWorkflowContext 获取当前激活的 runId
+        if (!currentWorkflowContext) {
+          return '❌ 没有活跃的工作流运行。请先调用 workflow({ action: "start" }) 启动工作流。'
+        }
+        const runId = currentWorkflowContext.runId
+        const artifactsDir = join(ARTIFACT_DIR, runId)
+        const fullPath = join(artifactsDir, args.path)
+
+        // 安全校验：路径不能逃逸出 artifactsDir（拒绝目录级写入 + 符号链接穿越）
+        const resolved = resolve(fullPath)
+        const resolvedDir = resolve(artifactsDir)
+        if (!resolved.startsWith(resolvedDir + sep)) {
+          return `❌ 路径越界: ${args.path} 不允许写入 artifacts 目录之外`
+        }
+
+        // 安全校验：确保目标路径不是符号链接（防止穿越到目录外）
+        const parentDir = dirname(resolved)
+        if (existsSync(parentDir)) {
+          const realParent = realpathSync(parentDir)
+          if (!realParent.startsWith(resolve(artifactsDir) + sep) && realParent !== resolve(artifactsDir)) {
+            return `❌ 路径包含指向目录外的符号链接: ${args.path}`
+          }
+        }
+
+        // 校验 content 是否为合法 JSON
+        try {
+          JSON.parse(args.content)
+        } catch {
+          return '❌ content 不是合法的 JSON 字符串。请确保 content 可以被 JSON.parse 正确解析。'
+        }
+
+        // 确保父目录存在
+        mkdirSync(dirname(fullPath), { recursive: true })
+
+        // 原子写入：tmp → rename（与 engine-core persist() 保持一致）
+        const tmpPath = fullPath + ".tmp"
+        try {
+          writeFileSync(tmpPath, args.content, "utf-8")
+          renameSync(tmpPath, fullPath)
+        } catch (e: any) {
+          // 写入失败时清理临时文件
+          try { unlinkSync(tmpPath) } catch {}
+          return `❌ 写入失败: ${e.message}`
+        }
+
+        const sizeKB = (args.content.length / 1024).toFixed(1)
+        if (context?.metadata) {
+          context.metadata({
+            title: `saved ${args.path}`,
+            metadata: { runId, path: args.path, sizeKB },
+          })
+        }
+        getLogger().info("[saveArtifact]", `${runId} | ${args.path} (${sizeKB} KB)`)
+
+        return `✅ saved: ${args.path} (${sizeKB} KB)`
       },
     }),
   },
