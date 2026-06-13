@@ -3,3 +3,6 @@ dist/
 generated/
 .workflow-artifacts/
 bun.lock
+
+# L2 执行点测试的临时 workDir（含真实 agent run 产物）
+tests/llm/.workspace/
