@@ -15,17 +15,14 @@
 
 import { WorkflowEngine } from "../../../.opencode/workflow/engine-core"
 import { SQL2JAVA_WORKFLOW } from "../../../.opencode/workflow/workflow-definitions"
-import { makeReviewSummary, makeVerifySummary } from "../../ts/helpers/artifact-factory"
+import { advanceToPhase } from "../../ts/helpers/phase-helpers"
 import { cpSync, existsSync, mkdirSync } from "node:fs"
-import { safeRm, safeWriteFile } from "../../../.opencode/workflow/cross-platform"
+import { safeRm } from "../../../.opencode/workflow/cross-platform"
 import { join, resolve } from "node:path"
 import type { PhaseName } from "./types"
 
 /** 固定 runId（确定性），artifact 目录 = <workDir>/.workflow-artifacts/<RUN_ID>/ */
 export const RUN_ID = "run-test"
-
-/** 主线阶段顺序（fix 为分支阶段，不在线性推进路径上） */
-const LINEAR_PHASES = SQL2JAVA_WORKFLOW.phases.map(p => p.name).filter(n => n !== "fix")
 
 export interface PrepareOptions {
   workDir: string
@@ -87,40 +84,4 @@ export function prepareExecutionPoint(opts: PrepareOptions): PreparedWorkspace {
   }
 
   return { runId: RUN_ID, artifactsDir, workDir: absWorkDir }
-}
-
-/**
- * 从 inventory 线性推进到目标 phase。
- * 跨出 review/verify 需要对应 summary（引擎从 summary.allPassed 推导 result）。
- */
-function advanceToPhase(engine: WorkflowEngine, runId: string, targetPhase: PhaseName, artifactsDir: string): void {
-  if (targetPhase === "fix") {
-    throw new Error("不支持直接推进到 fix（分支阶段）；请以 review/verify 为执行点触发")
-  }
-  const targetIdx = LINEAR_PHASES.indexOf(targetPhase)
-  if (targetIdx < 0) throw new Error(`未知目标 phase: ${targetPhase}`)
-
-  for (let i = 0; i < targetIdx; i++) {
-    const run = engine.status(runId)!
-    // 跨出 review/verify 前补一份通过的 summary（仅推进用，与被测产出无关）
-    if (run.currentPhase === "review") {
-      writeJson(artifactsDir, "review-summary.json", makeReviewSummary({ allPassed: true }))
-    } else if (run.currentPhase === "verify") {
-      writeJson(artifactsDir, "verify-summary.json", makeVerifySummary({ allPassed: true }))
-    }
-    const r = engine.advance(runId)
-    if (r.rejected) {
-      throw new Error(`advance 被拒绝（离开 ${run.currentPhase}）: ${r.rejectionReason}`)
-    }
-  }
-
-  const run = engine.status(runId)!
-  if (run.currentPhase !== targetPhase) {
-    throw new Error(`推进后 currentPhase=${run.currentPhase}，期望 ${targetPhase}`)
-  }
-}
-
-/** 写 JSON artifact 到 artifact 目录（原子写：tmp→rename，避免半写 JSON 让 oracle 误判） */
-function writeJson(artifactsDir: string, filename: string, data: unknown): void {
-  safeWriteFile(join(artifactsDir, filename), JSON.stringify(data))
 }

@@ -7,22 +7,15 @@
  */
 
 import { describe, it, expect } from "vitest"
+import { join } from "node:path"
 import { createEngineWithTempDir, writeArtifact } from "../helpers/engine-factory"
 import { makeReviewSummary, makeVerifySummary, makeFixArtifact, makeInventory } from "../helpers/artifact-factory"
+import { advanceToPhase } from "../helpers/phase-helpers"
 
-const LINEAR = ["inventory", "analyze", "plan", "scaffold", "translate", "dedup", "review", "verify"]
-
-/** 推进到指定 phase（跨出 review/verify 前补通过的 summary） */
+/** start 并推进到指定 phase（跨出 review/verify 前补通过的 summary —— 核心逻辑由公共 advanceToPhase 处理） */
 function advanceTo(ctx: ReturnType<typeof createEngineWithTempDir>, runId: string, phase: string) {
   ctx.engine.start("sql2java", runId)
-  const target = LINEAR.indexOf(phase)
-  for (let i = 0; i < target; i++) {
-    const run = ctx.engine.status(runId)!
-    if (run.currentPhase === "review") writeArtifact(ctx.dir, runId, "review-summary.json", makeReviewSummary({ allPassed: true }))
-    if (run.currentPhase === "verify") writeArtifact(ctx.dir, runId, "verify-summary.json", makeVerifySummary({ allPassed: true }))
-    const r = ctx.engine.advance(runId)
-    expect(r.rejected, `advance 离开 ${run.currentPhase} 被拒: ${r.rejectionReason}`).toBe(false)
-  }
+  advanceToPhase(ctx.engine, runId, phase, join(ctx.dir, runId))
 }
 
 describe("workflow-transitions 主线 happy path", () => {
