@@ -30,6 +30,16 @@ export const FIX_LIMITS = {
   phaseMax: 5,    // 单阶段 fix 上限
 } as const
 
+/** L3: Quality gate thresholds — 确定性数值门控阈值 */
+export const QUALITY_GATE_THRESHOLDS = {
+  /** G1: 翻译完成率下限（completedSubprograms / totalSubprograms） */
+  COMPLETION_RATIO: 0.8,
+  /** G3: review 通过的最低分数 */
+  REVIEW_PASS_SCORE: 70,
+  /** G6: 测试通过率下限（passedTests / totalTests） */
+  TEST_PASS_RATIO: 0.7,
+} as const
+
 /** 完成哨兵 */
 export const DONE_SENTINEL = "__done__" as const
 
@@ -105,6 +115,12 @@ export interface PhaseHistoryEntry {
   }
 }
 
+/** 跨 Schema 校验发现项（D9 扩展：支持 blocking / warning 两级严重度） */
+export interface CrossSchemaFinding {
+  message: string
+  severity: "blocking" | "warning"
+}
+
 /** advance 返回结构 */
 export interface AdvanceResult {
   run: WorkflowRun
@@ -114,6 +130,8 @@ export interface AdvanceResult {
   rejected: boolean                             // 校验被拒绝时为 true（Zod/D8/D12），LLM 应修正后重新 advance
   fixFailed?: boolean                           // fix 失败但未 exhausted，LLM 应调用 retry()（仅 fix 阶段设置）
   rejectionReason?: string                      // 拒绝/失败原因
+  warningPending?: boolean                      // 有未确认的 warning，需显式 acceptWarnings 才放行
+  crossSchemaWarnings?: string[]                // 跨 schema warning 消息列表
 }
 
 /** retry 返回结构 */
@@ -200,11 +218,12 @@ export class WorkflowEngine {
     return run
   }
 
-  advance(runId: string, input: { result?: "passed" | "failed" } = {}): AdvanceResult {
+  advance(runId: string, input: { result?: "passed" | "failed"; acceptWarnings?: boolean } = {}): AdvanceResult {
     this.artifactCache.clear()  // 每次 advance 开始时清除缓存
     const run = this.getRun(runId)
     const def = this.getDefinition(run.definitionId)
     const now = new Date().toISOString()
+    let crossSchemaWarnings: string[] | undefined
 
     // ── Step 1: 验证 status === "running" ──
     if (run.status !== "running") {
@@ -233,18 +252,63 @@ export class WorkflowEngine {
     // ── Step 2: 查找当前阶段配置 ──
     const currentPhaseConfig = def.phases.find(p => p.name === run.currentPhase)
 
-    // ── Step 3: 跨 Schema 校验 (D9) ──
+    // ── Step 3a: 确定性数值质量门控 (L3) — 所有阶段 ──
+    const qualityFindings = this.validateQualityGates(run, run.currentPhase!)
+    for (const f of qualityFindings) {
+      this.appendEvent(runId, "ADVANCE", run.currentPhase ?? "", `[quality-gate-${f.severity}] ${f.message}`)
+    }
+
+    // ── Step 3b: 跨 Schema 校验 (D9) — 仅 needsCrossSchemaValidation 阶段 ──
     // inventory-index ↔ inventory 包名一致性校验由 plugin 层 validateInventoryPackages 完成，此处不重复
+    let crossSchemaFindings: CrossSchemaFinding[] = []
     if (currentPhaseConfig?.needsCrossSchemaValidation) {
-      const crossSchemaWarnings = this.validateCrossSchema(run, run.currentPhase!)
-      for (const w of crossSchemaWarnings) {
-        this.appendEvent(runId, "ADVANCE", run.currentPhase ?? "", `[cross-schema-warning] ${w}`)
+      crossSchemaFindings = this.validateCrossSchema(run, run.currentPhase!)
+      for (const f of crossSchemaFindings) {
+        this.appendEvent(runId, "ADVANCE", run.currentPhase ?? "", `[cross-schema-${f.severity}] ${f.message}`)
       }
+    }
+
+    // ── Step 3c: 合并 findings → 三路分支 ──
+    const allFindings = [...qualityFindings, ...crossSchemaFindings]
+    const blockingFindings = allFindings.filter(f => f.severity === "blocking")
+    const warningFindings = allFindings.filter(f => f.severity === "warning")
+
+    // 路径 A：阻断级 → 拒绝 advance
+    if (blockingFindings.length > 0) {
+      return {
+        run,
+        nextPhase: null,
+        finished: false,
+        waitingForConfirmation: false,
+        rejected: true,
+        rejectionReason: `校验失败（阻塞级）：\n${blockingFindings.map(f => `  - ${f.message}`).join("\n")}`,
+        crossSchemaWarnings: warningFindings.length > 0 ? warningFindings.map(f => f.message) : undefined,
+      }
+    }
+
+    // 路径 B：仅 warning 且未显式接受 → 拒绝 advance，要求确认
+    if (warningFindings.length > 0 && !input.acceptWarnings) {
+      return {
+        run,
+        nextPhase: null,
+        finished: false,
+        waitingForConfirmation: false,
+        rejected: true,
+        warningPending: true,
+        crossSchemaWarnings: warningFindings.map(f => f.message),
+      }
+    }
+
+    // 路径 C：无问题 或 warning 已接受 → 放行
+    crossSchemaWarnings = warningFindings.length > 0 ? warningFindings.map(f => f.message) : undefined
+    if (input.acceptWarnings && warningFindings.length > 0) {
+      this.appendEvent(runId, "ADVANCE", run.currentPhase ?? "",
+        `[warnings-accepted] LLM 接受了 ${warningFindings.length} 个校验警告（含 quality-gate 和 cross-schema）`)
     }
 
     // ── Step 4: fix 阶段特殊处理 ──
     if (currentPhaseConfig?.isFixPhase) {
-      return this.handleFixAdvance(run, def, currentEntry, input, now)
+      return this.handleFixAdvance(run, def, currentEntry, input, now, crossSchemaWarnings)
     }
 
     // ── Step 5: review / verify 阶段 → 从 summary.allPassed 推导 result (D8) ──
@@ -258,6 +322,7 @@ export class WorkflowEngine {
           waitingForConfirmation: false,
           rejected: true,
           rejectionReason: derivedResult.rejectionReason,
+          crossSchemaWarnings,
         }
       }
       input.result = derivedResult.effectiveResult
@@ -282,6 +347,7 @@ export class WorkflowEngine {
         waitingForConfirmation: false,
         rejected: true,
         rejectionReason: `No transition rule found for phase "${run.currentPhase}" with result "${resultForMatching}"`,
+        crossSchemaWarnings,
       }
     }
 
@@ -304,6 +370,7 @@ export class WorkflowEngine {
         finished: true,
         waitingForConfirmation: false,
         rejected: false,
+        crossSchemaWarnings,
       }
     }
 
@@ -322,6 +389,7 @@ export class WorkflowEngine {
           finished: true,
           waitingForConfirmation: false,
           rejected: false,
+          crossSchemaWarnings,
         }
       }
     }
@@ -346,6 +414,7 @@ export class WorkflowEngine {
         finished: false,
         waitingForConfirmation: true,
         rejected: false,
+        crossSchemaWarnings,
       }
     }
 
@@ -370,6 +439,7 @@ export class WorkflowEngine {
       finished: false,
       waitingForConfirmation: false,
       rejected: false,
+      crossSchemaWarnings,
     }
   }
 
@@ -560,12 +630,13 @@ export class WorkflowEngine {
   }
 
   // ── 跨 Schema 校验 (D9) ──
-  // 返回 warnings 数组（不阻塞流程）
+  // 返回 CrossSchemaFinding 数组（blocking 级由 advance() 决定是否阻断）
 
-  validateCrossSchema(run: WorkflowRun, completedPhase: string): string[] {
-    const warnings: string[] = []
+  validateCrossSchema(run: WorkflowRun, completedPhase: string): CrossSchemaFinding[] {
+    const findings: CrossSchemaFinding[] = []
     // 整体 try/catch：校验对象是 LLM 产出的 raw JSON（未经 schema），结构异常时降级为 warning，
-    // 绝不抛出——保住"validateCrossSchema 只发 warning、不阻塞 advance"的设计契约。
+    // 绝不抛出——保住"validateCrossSchema 内部异常降级为 warning"的安全网。
+    // blocking/warning 的阻断决策由 advance() 根据严重度决定，而非此函数本身。
     try {
     const artifactsDir = join(this.artifactsRoot, run.runId)
 
@@ -573,10 +644,11 @@ export class WorkflowEngine {
     const analysis = this.loadArtifactJson(artifactsDir, "analysis")
 
     if (!inventory || !analysis) {
-      warnings.push(
-        `跨 Schema 校验跳过：缺少必要的 artifact（inventory: ${!!inventory}, analysis: ${!!analysis}）`
-      )
-      return warnings
+      findings.push({
+        message: `跨 Schema 校验跳过：缺少必要的 artifact（inventory: ${!!inventory}, analysis: ${!!analysis}）`,
+        severity: "warning",
+      })
+      return findings
     }
 
     // inventory-index ↔ inventory 一致性已在 inventory 阶段完成时独立校验，此处不重复
@@ -587,10 +659,10 @@ export class WorkflowEngine {
     const invUpper = new Set([...invNames].map((n) => n.toUpperCase()))
     const anaUpper = new Set([...anaNames].map((n) => n.toUpperCase()))
     for (const name of invNames) {
-      if (!anaUpper.has(name.toUpperCase())) warnings.push(`analysis 缺少包: ${name}`)
+      if (!anaUpper.has(name.toUpperCase())) findings.push({ message: `analysis 缺少包: ${name}`, severity: "blocking" })
     }
     for (const name of anaNames) {
-      if (!invUpper.has(name.toUpperCase())) warnings.push(`inventory 缺少包: ${name}（analysis 中存在但 inventory 中不存在）`)
+      if (!invUpper.has(name.toUpperCase())) findings.push({ message: `inventory 缺少包: ${name}（analysis 中存在但 inventory 中不存在）`, severity: "warning" })
     }
 
     // translationOrder 覆盖校验（大小写不敏感）
@@ -598,7 +670,7 @@ export class WorkflowEngine {
       ((analysis.translationOrder as string[][]) ?? []).flat().map((n: string) => n.toUpperCase())
     )
     for (const name of anaNames) {
-      if (!orderedUpper.has(name.toUpperCase())) warnings.push(`translationOrder 缺少包: ${name}`)
+      if (!orderedUpper.has(name.toUpperCase())) findings.push({ message: `translationOrder 缺少包: ${name}`, severity: "blocking" })
     }
 
     // callGraph refName 一致性校验（仅 analyze 完成后；防"裸名撞重载"缺陷）
@@ -613,21 +685,22 @@ export class WorkflowEngine {
         if (Array.isArray(vs)) {
           for (const v of vs) refs.push([v, "value"])
         } else {
-          warnings.push(`callGraph["${k}"] 的值应为字符串数组，实际为 ${vs === null ? "null" : typeof vs}，已跳过该调用边`)
+          findings.push({ message: `callGraph["${k}"] 的值应为字符串数组，实际为 ${vs === null ? "null" : typeof vs}，已跳过该调用边`, severity: "warning" })
         }
       }
       for (const [qualified, kind] of refs) {
         const parsed = parseQualified(qualified)
         if (!parsed) {
-          warnings.push(`callGraph ${kind} 非法的限定名格式（应为 PKG.refName）: ${qualified}`)
+          findings.push({ message: `callGraph ${kind} 非法的限定名格式（应为 PKG.refName）: ${qualified}`, severity: "warning" })
           continue
         }
         const [pkg, ref] = parsed
         const valid = refNameByPkg.get(pkg.toUpperCase())
         if (valid && !valid.has(ref.toUpperCase())) {
-          warnings.push(
-            `callGraph ${kind} 的 refName "${ref}" 不在 ${pkg} 的合法 refName 集合内（重载子程序应为 {name}__序号，禁用裸名）: ${qualified}`,
-          )
+          findings.push({
+            message: `callGraph ${kind} 的 refName "${ref}" 不在 ${pkg} 的合法 refName 集合内（重载子程序应为 {name}__序号，禁用裸名）: ${qualified}`,
+            severity: "warning",
+          })
         }
       }
     }
@@ -636,14 +709,14 @@ export class WorkflowEngine {
     if (completedPhase === "plan") {
       const plan = this.loadArtifactJson(artifactsDir, "plan")
       if (!plan) {
-        warnings.push("plan 映射校验跳过：plan artifact 不存在")
-        return warnings
+        findings.push({ message: "plan 映射校验跳过：plan artifact 不存在", severity: "warning" })
+        return findings
       }
       const mappedNames = new Set(
         (plan.packageMappings as Array<{ oraclePackage: string }>).map((m) => m.oraclePackage)
       )
       for (const name of invNames) {
-        if (!mappedNames.has(name)) warnings.push(`plan 未映射包: ${name}`)
+        if (!mappedNames.has(name)) findings.push({ message: `plan 未映射包: ${name}`, severity: "blocking" })
       }
     }
 
@@ -655,7 +728,7 @@ export class WorkflowEngine {
       for (const pkg of anaNames) {
         const trans = this.loadArtifactJson(artifactsDir, pkg) // → translations/{pkg}/translation.json
         if (!trans) {
-          warnings.push(`${pkg}: translation.json 未找到（translations/${pkg}/translation.json 路径或大小写不匹配），跳过 subprogramMethods 校验`)
+          findings.push({ message: `${pkg}: translation.json 未找到（translations/${pkg}/translation.json 路径或大小写不匹配），跳过 subprogramMethods 校验`, severity: "warning" })
           continue
         }
         const valid = refNameByPkg.get(pkg.toUpperCase())
@@ -664,15 +737,16 @@ export class WorkflowEngine {
         for (const m of methods) {
           const key = (m.oracleName ?? "").toUpperCase()
           if (!key) {
-            warnings.push(`${pkg}: subprogramMethods 存在空 oracleName`)
+            findings.push({ message: `${pkg}: subprogramMethods 存在空 oracleName`, severity: "warning" })
             continue
           }
-          if (seen.has(key)) warnings.push(`${pkg}: subprogramMethods 重复 oracleName: ${m.oracleName}`)
+          if (seen.has(key)) findings.push({ message: `${pkg}: subprogramMethods 重复 oracleName: ${m.oracleName}`, severity: "warning" })
           seen.add(key)
           if (valid && !valid.has(key)) {
-            warnings.push(
-              `${pkg}: subprogramMethods.oracleName "${m.oracleName}" 不在合法 refName 集合内（重载子程序应为 {name}__序号）`,
-            )
+            findings.push({
+              message: `${pkg}: subprogramMethods.oracleName "${m.oracleName}" 不在合法 refName 集合内（重载子程序应为 {name}__序号）`,
+              severity: "warning",
+            })
           }
         }
       }
@@ -682,26 +756,142 @@ export class WorkflowEngine {
     if (completedPhase === "dedup") {
       const dedup = this.loadArtifactJson(artifactsDir, "dedup")
       if (!dedup) {
-        warnings.push("dedup 校验跳过：dedup artifact 不存在")
-        return warnings
+        findings.push({ message: "dedup 校验跳过：dedup artifact 不存在", severity: "warning" })
+        return findings
       }
 
       // 校验 affectedPackages 引用有效包名
       const moduleRefs = (
         (dedup.extractedModules as Array<{ affectedPackages?: string[] }>) ?? []
       ).flatMap((m) => (m.affectedPackages ?? []))
-      this.validatePackageRefs(moduleRefs, invNames, "dedup: affectedPackages", warnings)
+      this.validatePackageRefs(moduleRefs, invNames, "dedup: affectedPackages", findings)
 
       // 校验 packageChanges 引用有效包名
       const changePkgs = (
         (dedup.packageChanges as Array<{ packageName: string }>) ?? []
       ).map((c) => c.packageName)
-      this.validatePackageRefs(changePkgs, invNames, "dedup: packageChanges", warnings)
+      this.validatePackageRefs(changePkgs, invNames, "dedup: packageChanges", findings)
     }
     } catch (e) {
-      warnings.push(`跨 Schema 校验内部异常（已降级为 warning，不阻塞流程）: ${e instanceof Error ? e.message : String(e)}`)
+      findings.push({
+        message: `跨 Schema 校验内部异常（已降级为 warning，不阻塞流程）: ${e instanceof Error ? e.message : String(e)}`,
+        severity: "warning",
+      })
     }
-    return warnings
+    return findings
+  }
+
+  // ── L3: 确定性数值质量门控 ──
+  // 返回 CrossSchemaFinding 数组（与 validateCrossSchema 同类型，复用三路分支管道）
+
+  validateQualityGates(run: WorkflowRun, completedPhase: string): CrossSchemaFinding[] {
+    const findings: CrossSchemaFinding[] = []
+    // 整体 try/catch 安全网：校验对象是 LLM 产出的 raw JSON，结构异常时降级为 warning
+    try {
+    const artifactsDir = join(this.artifactsRoot, run.runId)
+
+    switch (completedPhase) {
+      case "translate": {
+        // G1 + G2: per-package translation quality checks
+        const inventory = this.loadArtifactJson(artifactsDir, "inventory")
+        if (!inventory) break
+        const pkgNames = this.extractPackageNames(inventory)
+        // 增量模式：只检查目标包
+        const currentEntry = this.findCurrentEntry(run)
+        const targetPkgs = currentEntry?.incrementalContext?.targetPackages
+        const pkgsToCheck = targetPkgs?.length ? new Set(targetPkgs) : pkgNames
+
+        for (const pkg of pkgsToCheck) {
+          const trans = this.loadArtifactJson(artifactsDir, pkg) // → translations/{pkg}/translation.json
+          if (!trans) continue // 缺失由 Zod 校验覆盖
+          const completed = (trans.completedSubprograms as string[]) ?? []
+          const total = (trans.totalSubprograms as number) ?? 0
+          // G1: 翻译完成率
+          if (total > 0 && completed.length / total < QUALITY_GATE_THRESHOLDS.COMPLETION_RATIO) {
+            const ratio = completed.length / total
+            findings.push({
+              message: `${pkg}: 翻译完成率 ${(ratio * 100).toFixed(1)}% (${completed.length}/${total}) 低于阈值 ${QUALITY_GATE_THRESHOLDS.COMPLETION_RATIO * 100}%。请重新审视翻译过程，确保更多子程序被完整翻译`,
+              severity: "blocking",
+            })
+          }
+          // G2: subprogramMethods 覆盖
+          const methods = (trans.subprogramMethods as unknown[]) ?? []
+          if (methods.length < completed.length) {
+            findings.push({
+              message: `${pkg}: subprogramMethods 数量 (${methods.length}) 少于 completedSubprograms 数量 (${completed.length})。可能缺少跨包调用映射，建议补充`,
+              severity: "warning",
+            })
+          }
+        }
+        break
+      }
+
+      case "review": {
+        // G3 + G4: review quality checks（基于 review-summary.json，无需 per-package review.json）
+        const summary = this.loadArtifactJson(artifactsDir, "review-summary")
+        if (!summary) break
+
+        // G3: per-package score check
+        const packageResults = (summary.packageResults as Array<{ packageName: string; passed: boolean; score: number }>) ?? []
+        for (const pr of packageResults) {
+          if (pr.passed && pr.score < QUALITY_GATE_THRESHOLDS.REVIEW_PASS_SCORE) {
+            findings.push({
+              message: `${pr.packageName}: review passed=true 但 score=${pr.score} 低于阈值 ${QUALITY_GATE_THRESHOLDS.REVIEW_PASS_SCORE}。低分不应通过审查，请补充审查或修正评分`,
+              severity: "blocking",
+            })
+          }
+        }
+
+        // G4: allPassed + totalMustFix 逻辑矛盾
+        const allPassed = (summary as { allPassed?: boolean }).allPassed ?? false
+        const totalMustFix = (summary as { totalMustFix?: number }).totalMustFix ?? 0
+        if (allPassed && totalMustFix > 0) {
+          findings.push({
+            message: `review-summary: allPassed=true 但 totalMustFix=${totalMustFix} > 0，逻辑矛盾。存在 mustFix 项时 allPassed 应为 false`,
+            severity: "blocking",
+          })
+        }
+        break
+      }
+
+      case "verify": {
+        // G5 + G6: verify quality checks（基于 verify-summary.json）
+        const summary = this.loadArtifactJson(artifactsDir, "verify-summary")
+        if (!summary) break
+
+        // G5: compilation.success vs allPassed
+        const comp = (summary as { compilation?: { success?: boolean } }).compilation
+        const allPassed = (summary as { allPassed?: boolean }).allPassed ?? false
+        if (comp && comp.success === false && allPassed) {
+          findings.push({
+            message: `verify-summary: compilation.success=false 但 allPassed=true。编译失败的代码不应通过验证`,
+            severity: "blocking",
+          })
+        }
+
+        // G6: test pass ratio
+        const te = (summary as { testExecution?: { executed?: boolean; totalTests?: number; passedTests?: number } }).testExecution
+        if (te && te.executed && te.totalTests && te.totalTests > 0) {
+          const passedTests = te.passedTests ?? 0
+          const ratio = passedTests / te.totalTests
+          if (ratio < QUALITY_GATE_THRESHOLDS.TEST_PASS_RATIO) {
+            findings.push({
+              message: `verify-summary: 测试通过率 ${(ratio * 100).toFixed(1)}% (${passedTests}/${te.totalTests}) 低于阈值 ${QUALITY_GATE_THRESHOLDS.TEST_PASS_RATIO * 100}%。大量测试失败可疑，请确认测试结果`,
+              severity: "warning",
+            })
+          }
+        }
+        break
+      }
+    }
+
+    } catch (e) {
+      findings.push({
+        message: `质量门禁内部异常（已降级为 warning，不阻塞流程）: ${e instanceof Error ? e.message : String(e)}`,
+        severity: "warning" as const,
+      })
+    }
+    return findings
   }
 
   // ── D2: isFixExhausted 双层判定 ──
@@ -813,17 +1003,18 @@ export class WorkflowEngine {
     return new Set(names)
   }
 
-  /** 校验包名引用列表是否全部在有效包名集合中（大小写不敏感），无效引用追加到 warnings */
+  /** 校验包名引用列表是否全部在有效包名集合中（大小写不敏感），无效引用追加到 findings */
   private validatePackageRefs(
     refs: string[],
     validNames: Set<string>,
     label: string,
-    warnings: string[],
+    findings: CrossSchemaFinding[],
+    severity: "blocking" | "warning" = "warning",
   ): void {
     const upperValid = new Set([...validNames].map((n) => n.toUpperCase()))
     const invalid = refs.filter((p) => !upperValid.has(p.toUpperCase()))
     if (invalid.length > 0) {
-      warnings.push(`${label} 引用了不存在的包: ${[...new Set(invalid)].join(", ")}`)
+      findings.push({ message: `${label} 引用了不存在的包: ${[...new Set(invalid)].join(", ")}`, severity })
     }
   }
 
@@ -915,6 +1106,7 @@ export class WorkflowEngine {
     currentEntry: PhaseHistoryEntry,
     input: { result?: "passed" | "failed" },
     now: string,
+    crossSchemaWarnings: string[] | undefined,
   ): AdvanceResult {
     // fix 阶段 result 必填 (D1/D3)
     if (input.result === undefined) {
@@ -925,6 +1117,7 @@ export class WorkflowEngine {
         waitingForConfirmation: false,
         rejected: true,
         rejectionReason: "fix 阶段 result 必填（D1/D3）。请传入 result: 'passed' 或 'failed'。",
+        crossSchemaWarnings,
       }
     }
 
@@ -946,6 +1139,7 @@ export class WorkflowEngine {
           finished: true,
           waitingForConfirmation: false,
           rejected: false,
+          crossSchemaWarnings,
         }
       }
 
@@ -960,6 +1154,7 @@ export class WorkflowEngine {
         rejected: false,
         fixFailed: true,
         rejectionReason: "fix failed but not exhausted. Please call retry() to try again.",
+        crossSchemaWarnings,
       }
     }
 
@@ -973,6 +1168,7 @@ export class WorkflowEngine {
         waitingForConfirmation: false,
         rejected: true,
         rejectionReason: "fix entry missing branchedFrom. Cannot determine trigger phase.",
+        crossSchemaWarnings,
       }
     }
 
@@ -987,6 +1183,7 @@ export class WorkflowEngine {
         waitingForConfirmation: false,
         rejected: true,
         rejectionReason: "fix.json not found. Agent must write fix.json before advancing.",
+        crossSchemaWarnings,
       }
     }
 
@@ -999,6 +1196,7 @@ export class WorkflowEngine {
         waitingForConfirmation: false,
         rejected: true,
         rejectionReason: "fix.json: fixedPackages is empty. Must fix at least one package.",
+        crossSchemaWarnings,
       }
     }
 
@@ -1017,6 +1215,7 @@ export class WorkflowEngine {
           waitingForConfirmation: false,
           rejected: true,
           rejectionReason: `fix.json: invalid package names not in inventory: ${invalidPackages.join(", ")}`,
+          crossSchemaWarnings,
         }
       }
     }
@@ -1034,6 +1233,7 @@ export class WorkflowEngine {
         waitingForConfirmation: false,
         rejected: true,
         rejectionReason: `${summaryFileName} not found. Cannot validate D12 fixedPackages coverage. Ensure the trigger phase (${triggerPhase}) produced its summary artifact.`,
+        crossSchemaWarnings,
       }
     }
     const pkgResults = (summary as { packageResults?: Array<{ packageName: string; passed: boolean }> }).packageResults ?? []
@@ -1050,6 +1250,7 @@ export class WorkflowEngine {
         waitingForConfirmation: false,
         rejected: true,
         rejectionReason: `fix.json: missing failed packages: ${missingPackages.join(", ")}. fixedPackages must cover all failed packages.`,
+        crossSchemaWarnings,
       }
     }
 
@@ -1072,6 +1273,7 @@ export class WorkflowEngine {
         waitingForConfirmation: false,
         rejected: true,
         rejectionReason: "fix 完成后无可用 transition（缺少 { from: 'fix', condition: 'always' } 规则）",
+        crossSchemaWarnings,
       }
     }
     const newEntry: PhaseHistoryEntry = {
@@ -1101,6 +1303,7 @@ export class WorkflowEngine {
       finished: false,
       waitingForConfirmation: false,
       rejected: false,
+      crossSchemaWarnings,
     }
   }
 
