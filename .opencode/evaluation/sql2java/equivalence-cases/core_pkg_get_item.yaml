@@ -1,0 +1,53 @@
+# L4 行为等价测试用例: core_pkg.get_item
+# %ROWTYPE 返回 + NO_DATA_FOUND 异常
+# 难度: P1（中等）
+# 翻译映射: SELECT INTO %ROWTYPE → Mapper.selectById → Entity; NO_DATA_FOUND → BizException
+
+test_suite: core_pkg_get_item
+description: 按 ID 查询物料行为等价验证
+db_level: h2_compatible
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+java_class: com.erp.service.CoreService
+java_method: getItem
+
+setup:
+  sql: |
+    INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom, std_cost)
+    VALUES(10001, 'TEST-001', '测试物料', 'RAW', 'EA', 10.50)
+    ON CONFLICT (item_id) DO UPDATE SET item_code = EXCLUDED.item_code;
+
+    INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom, std_cost)
+    VALUES(10002, 'TEST-002', '测试物料2', 'FG', 'EA', 25.00)
+    ON CONFLICT (item_id) DO UPDATE SET item_code = EXCLUDED.item_code;
+
+cases:
+  - name: 正常查询_返回全部字段
+    pg_call: "SELECT * FROM t_item WHERE item_id = 10001"
+    java_call: "coreService.getItem(10001L)"
+    expected:
+      return_fields:
+        item_id: 10001
+        item_code: "TEST-001"
+        item_name: "测试物料"
+        item_type: "RAW"
+        base_uom: "EA"
+        std_cost: 10.50
+
+  - name: 不存在时抛异常
+    description: |
+      PL/SQL: EXCEPTION WHEN NO_DATA_FOUND → RAISE_APPLICATION_ERROR(-20101, ...)
+      Java: EmptyResultDataAccessException → throw BizException
+    pg_call: "SELECT * FROM t_item WHERE item_id = 99999"
+    java_call: "coreService.getItem(99999L)"
+    expected:
+      exception: "BizException"
+      error_code_contains: "20101"
+
+  - name: 查询另一条记录
+    pg_call: "SELECT * FROM t_item WHERE item_id = 10002"
+    java_call: "coreService.getItem(10002L)"
+    expected:
+      return_fields:
+        item_id: 10002
+        item_code: "TEST-002"
+        item_type: "FG"

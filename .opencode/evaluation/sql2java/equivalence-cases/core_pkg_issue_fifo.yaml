@@ -1,0 +1,79 @@
+# L4 行为等价测试用例: core_pkg.issue_fifo
+# 窗口函数 SUM() OVER + FOR UPDATE 游标 + WHERE CURRENT OF + EXIT WHEN
+# 难度: P2（高难）
+# 翻译映射: WHERE CURRENT OF → 查可用批次 List + 逐批更新; FIFO 按 receipt_date 排序
+
+test_suite: core_pkg_issue_fifo
+description: FIFO 发料行为等价验证
+db_level: h2_compatible
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+java_class: com.erp.service.CoreService
+java_method: issueFifo
+
+setup:
+  sql: |
+    -- 清理旧数据
+    DELETE FROM t_inventory_lot WHERE item_id = 40002;
+
+    -- 按 FIFO 顺序插入 3 个批次（receipt_date 递增）
+    INSERT INTO t_inventory_lot(lot_id, item_id, qty_on_hand, qty_allocated, unit_cost, receipt_date, status)
+    VALUES(80001, 40002, 50, 0, 5.00, '2026-01-01', 'AVAILABLE');
+
+    INSERT INTO t_inventory_lot(lot_id, item_id, qty_on_hand, qty_allocated, unit_cost, receipt_date, status)
+    VALUES(80002, 40002, 80, 0, 5.50, '2026-02-01', 'AVAILABLE');
+
+    INSERT INTO t_inventory_lot(lot_id, item_id, qty_on_hand, qty_allocated, unit_cost, receipt_date, status)
+    VALUES(80003, 40002, 30, 0, 6.00, '2026-03-01', 'AVAILABLE');
+
+cases:
+  - name: 单批次扣减
+    description: 需求量 30 < 第一批 50，只扣第一批
+    java_call: "coreService.issueFifo(40002L, new BigDecimal(\"30\"))"
+    expected:
+      t_inventory_lot:
+        - lot_id: 80001
+          qty_on_hand: 20  -- 50 - 30
+        - lot_id: 80002
+          qty_on_hand: 80  -- 不变
+        - lot_id: 80003
+          qty_on_hand: 30  -- 不变
+
+  - name: 跨批次FIFO扣减
+    description: |
+      需求量 100:
+      第一批 50 → 扣完 (剩 0)
+      第二批 80 → 扣 50 (剩 30)
+      第三批不扣
+    java_call: "coreService.issueFifo(40002L, new BigDecimal(\"100\"))"
+    expected:
+      t_inventory_lot:
+        - lot_id: 80001
+          qty_on_hand: 0   -- 50 - 50
+        - lot_id: 80002
+          qty_on_hand: 30  -- 80 - 50
+        - lot_id: 80003
+          qty_on_hand: 30  -- 不变
+
+  - name: 全部扣完
+    description: 需求量 160 = 50+80+30，三个批次全部扣完
+    java_call: "coreService.issueFifo(40002L, new BigDecimal(\"160\"))"
+    expected:
+      t_inventory_lot:
+        - lot_id: 80001
+          qty_on_hand: 0
+        - lot_id: 80002
+          qty_on_hand: 0
+        - lot_id: 80003
+          qty_on_hand: 0
+
+  - name: FIFO顺序正确_按receipt_date
+    description: 验证先入先出：先扣 receipt_date 最早的批次
+    java_call: "coreService.issueFifo(40002L, new BigDecimal(\"10\"))"
+    expected:
+      t_inventory_lot:
+        - lot_id: 80001  -- 最早的批次先被扣
+          qty_on_hand: 40  -- 50 - 10
+        - lot_id: 80002
+          qty_on_hand: 80  -- 不变
+        - lot_id: 80003
+          qty_on_hand: 30  -- 不变

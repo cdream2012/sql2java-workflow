@@ -1,0 +1,37 @@
+# L3 语义分析测量用例: core_pkg.archive_before
+# EXECUTE IMMEDIATE + USING 动态 SQL + SQL%ROWCOUNT
+# 翻译映射: EXECUTE IMMEDIATE → JdbcTemplate.update 或 // TODO: [translate]
+
+subprogram: archive_before
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+description: 归档库存流水（动态 SQL 删除指定日期前的记录）
+
+expected:
+  sql_statements:
+    select: 0
+    insert: 0
+    update: 0
+    delete: 1   # EXECUTE IMMEDIATE 'DELETE FROM t_inventory_txn WHERE txn_date < :1' USING p_date
+    merge: 0
+  tables:
+    - t_inventory_txn
+  control_flow:
+    if: 0
+    loop: 0
+    return: 0   # 过程，结果通过 OUT 参数返回
+  exceptions: []
+  type_mappings:
+    - param: p_date
+      oracle_type: DATE
+      expected_java_type: LocalDate
+    - param: p_count
+      oracle_type: "NUMBER (OUT)"
+      expected_java_type: "int (返回值)"
+  special_constructs:
+    - construct: "EXECUTE IMMEDIATE 'DELETE ... WHERE txn_date < :1' USING p_date"
+      expected_java: "JdbcTemplate.update(\"DELETE FROM t_inventory_txn WHERE txn_date < ?\", date) 或 Mapper.deleteByDateBefore"
+      severity: critical
+      note: "动态 SQL 使用绑定变量（:1 → ?），不能拼字符串（防 SQL 注入）"
+    - construct: "p_count := SQL%ROWCOUNT"
+      expected_java: "JdbcTemplate.update 返回 int 即为影响行数"
+      severity: critical

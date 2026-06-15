@@ -1,0 +1,38 @@
+# L3 语义分析测量用例: core_pkg.get_bom_components
+# BULK COLLECT INTO 对象集合 + JOIN 查询
+# 翻译映射: BULK COLLECT INTO → Mapper.selectList → List<BomCompObj>
+
+subprogram: get_bom_components
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+description: 获取 BOM 当层组件列表
+
+expected:
+  sql_statements:
+    select: 1   # SELECT t_bom_comp_obj(...) BULK COLLECT INTO v FROM t_bom_line l JOIN t_item i
+    insert: 0
+    update: 0
+    delete: 0
+    merge: 0
+  tables:
+    - t_bom_line
+    - t_item
+  control_flow:
+    if: 0
+    loop: 0
+    return: 1   # RETURN v
+  exceptions: []
+  type_mappings:
+    - param: p_bom_id
+      oracle_type: NUMBER
+      expected_java_type: Long
+    - return: true
+      oracle_type: "t_bom_comp_tab (TABLE OF t_bom_comp_obj)"
+      expected_java_type: "List<BomCompObj>"
+  special_constructs:
+    - construct: "BULK COLLECT INTO"
+      expected_java: "Mapper.selectList → List 返回"
+      severity: critical
+    - construct: "t_bom_comp_obj(l.component_item_id, i.item_code, l.qty_per)"
+      expected_java: "MyBatis resultMap → BomCompObj 字段映射"
+      severity: critical
+      note: "对象构造器调用必须映射为 resultMap 的列-字段对应"

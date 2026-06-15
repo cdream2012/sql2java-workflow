@@ -1,0 +1,46 @@
+# L3 语义分析测量用例: core_pkg.issue_fifo
+# 窗口函数 SUM() OVER + FOR UPDATE 游标 + WHERE CURRENT OF + EXIT WHEN + LEAST
+# 翻译映射: WHERE CURRENT OF → 查可用批次 + 逐批更新（Java 无等价语法）
+
+subprogram: issue_fifo
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+description: FIFO 发料（按入库日期先入先出，跨批次扣减）
+
+expected:
+  sql_statements:
+    select: 1   # CURSOR c_fifo IS SELECT lot_id, qty_on_hand, SUM(qty_on_hand) OVER (ORDER BY receipt_date, lot_id) ... FOR UPDATE OF qty_on_hand
+    insert: 0
+    update: 1   # UPDATE t_inventory_lot SET qty_on_hand = qty_on_hand - LEAST(r.avail, v_rem) WHERE CURRENT OF c_fifo
+    delete: 0
+    merge: 0
+  tables:
+    - t_inventory_lot
+  control_flow:
+    if: 0
+    loop: 1     # FOR r IN c_fifo LOOP
+    return: 0
+  exceptions: []
+  type_mappings:
+    - param: p_item_id
+      oracle_type: NUMBER
+      expected_java_type: Long
+    - param: p_qty
+      oracle_type: NUMBER
+      expected_java_type: BigDecimal
+  special_constructs:
+    - construct: "SUM(qty_on_hand) OVER (ORDER BY receipt_date, lot_id) AS cum_avail"
+      expected_java: "查询时计算累计可用量（窗口函数可保留在 SQL 中）"
+      severity: critical
+    - construct: "FOR UPDATE OF qty_on_hand"
+      expected_java: "SELECT ... FOR UPDATE（行锁语义需保留）"
+      severity: critical
+    - construct: "WHERE CURRENT OF c_fifo"
+      expected_java: "UPDATE ... WHERE lot_id = ? （Java 无 WHERE CURRENT OF，需改为按主键更新）"
+      severity: critical
+      note: "必须保留 FIFO 顺序和逐批扣减语义"
+    - construct: "LEAST(r.avail, v_rem)"
+      expected_java: "Math.min(avail, remaining) 或 BigDecimal.min()"
+      severity: major
+    - construct: "EXIT WHEN v_rem <= 0"
+      expected_java: "if (remaining <= 0) break;"
+      severity: major

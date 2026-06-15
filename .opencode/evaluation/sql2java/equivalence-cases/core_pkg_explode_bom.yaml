@@ -1,0 +1,56 @@
+# L4 行为等价测试用例: core_pkg.explode_bom
+# PIPELINED 函数 + PIPE ROW + FOR...IN cursor LOOP
+# 难度: P2（高难）
+# 翻译映射: PIPELINED → 普通方法返回 List; PIPE ROW → list.add()
+
+test_suite: core_pkg_explode_bom
+description: BOM 展开（PIPELINED）行为等价验证
+db_level: h2_compatible
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+java_class: com.erp.service.CoreService
+java_method: explodeBom
+
+setup:
+  sql: |
+    -- 复用 get_bom_components 的测试数据
+    -- 确保 ACTIVE 状态的 BOM
+    INSERT INTO t_bom_header(bom_id, item_id, status)
+    VALUES(50001, 40001, 'ACTIVE')
+    ON CONFLICT (bom_id) DO UPDATE SET status = 'ACTIVE';
+
+    -- 添加一个 DRAFT 状态的 BOM（不应被展开）
+    INSERT INTO t_bom_header(bom_id, item_id, status)
+    VALUES(50002, 40001, 'DRAFT')
+    ON CONFLICT (bom_id) DO UPDATE SET status = 'DRAFT';
+
+cases:
+  - name: 正常展开_ACTIVE状态BOM
+    description: |
+      PL/SQL: FOR r IN (SELECT ... WHERE h.status = 'ACTIVE') LOOP PIPE ROW(...)
+      Java: 查询 ACTIVE BOM 的组件，收集到 List 返回
+    pg_call: |
+      SELECT l.component_item_id, ci.item_code, l.qty_per
+      FROM t_bom_line l
+      JOIN t_bom_header h ON h.bom_id = l.bom_id
+      JOIN t_item ci ON ci.item_id = l.component_item_id
+      WHERE h.item_id = 40001 AND h.status = 'ACTIVE'
+    java_call: "coreService.explodeBom(40001L)"
+    expected:
+      return_type: "List<BomCompObj>"
+      return_size: 2
+
+  - name: 仅展开ACTIVE_BOM_忽略DRAFT
+    description: |
+      验证: status = 'ACTIVE' 条件过滤
+      item_id=40001 有一个 ACTIVE BOM(50001) 和一个 DRAFT BOM(50002)
+      只应返回 ACTIVE BOM 的组件
+    pg_call: |
+      SELECT COUNT(*) FROM t_bom_header WHERE item_id = 40001 AND status = 'ACTIVE'
+    java_call: "coreService.explodeBom(40001L)"
+    expected:
+      return_size: 2  -- 只有 ACTIVE BOM 的 2 个组件
+
+  - name: 不存在物料返回空列表
+    java_call: "coreService.explodeBom(99999L)"
+    expected:
+      return_size: 0

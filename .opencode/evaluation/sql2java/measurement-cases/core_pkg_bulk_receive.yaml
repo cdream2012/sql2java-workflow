@@ -1,0 +1,52 @@
+# L3 语义分析测量用例: core_pkg.bulk_receive
+# FORALL SAVE EXCEPTIONS + SQL%BULK_EXCEPTIONS + MERGE INTO
+# 翻译映射: FORALL → batch executor; SAVE EXCEPTIONS → 单行异常收集;
+#          MERGE INTO → insertOrUpdate
+
+subprogram: bulk_receive
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+description: 批量收货（FORALL 批量插入 + 部分失败收集 + MERGE 回写成本）
+
+expected:
+  sql_statements:
+    select: 0
+    insert: 1   # FORALL INSERT INTO t_inventory_txn
+    update: 0
+    delete: 0
+    merge: 1    # MERGE INTO t_item ... WHEN MATCHED THEN UPDATE SET std_cost = AVG(unit_cost)
+  tables:
+    - t_inventory_txn
+    - t_item
+  control_flow:
+    if: 1       # IF SQLCODE = -24381
+    loop: 2     # FOR i IN FIRST..LAST (预生成 ID) + FOR j IN 1..COUNT (遍历失败行)
+    return: 0
+  exceptions:
+    - plsql: "WHEN OTHERS (SQLCODE = -24381)"
+      expected_java: "catch (Exception e) 并检查是否为批量失败"
+      severity: critical
+      note: "FORALL 部分失败时必须收集失败行索引，不能简单忽略"
+  type_mappings:
+    - param: p_lines
+      oracle_type: "t_recv_tab (TABLE OF t_recv_line INDEX BY PLS_INTEGER)"
+      expected_java_type: "List<RecvLineDTO>"
+    - param: p_ok
+      oracle_type: "NUMBER (OUT)"
+      expected_java_type: "int (返回值)"
+  special_constructs:
+    - construct: "FORALL SAVE EXCEPTIONS"
+      expected_java: "MyBatis batch executor (ExecutorType.BATCH) + 单行异常收集"
+      severity: critical
+      note: "不能翻译成逐条循环 + 吞异常，必须保留批量语义"
+    - construct: "SQL%BULK_EXCEPTIONS(j).error_index"
+      expected_java: "BatchUpdateException 的失败索引遍历"
+      severity: major
+    - construct: "MERGE INTO t_item ... USING (SELECT AVG(unit_cost) ...)"
+      expected_java: "insertOrUpdate 或 先查后更新"
+      severity: critical
+    - construct: "p_lines.FIRST..p_lines.LAST"
+      expected_java: "for (int i = 0; i < lines.size(); i++)"
+      severity: major
+    - construct: "p_lines.COUNT"
+      expected_java: "lines.size()"
+      severity: major

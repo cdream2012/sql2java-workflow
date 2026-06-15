@@ -1,0 +1,42 @@
+# L3 语义分析测量用例: trg_item_audit
+# AFTER UPDATE OF 指定列 + FOR EACH ROW + WHEN 条件 + :old/:new 引用
+# 翻译映射: 触发器 → AOP 拦截 或 MyBatis Interceptor
+
+subprogram: trg_item_audit
+source_file: resources/mfg_erp_sql_tiny/trigger/trg_item_audit.sql
+description: 物料审计触发器（仅 std_cost/status 变化时记录审计日志）
+
+expected:
+  sql_statements:
+    select: 0
+    insert: 1   # INSERT INTO t_error_log(log_id, error_code, error_msg, ...) VALUES(seq.NEXTVAL, 'AUDIT', '{"old":...,"new":...}', ...)
+    update: 0
+    delete: 0
+    merge: 0
+  tables:
+    - t_error_log
+    - t_item    # 触发器绑定的表（隐式引用）
+  control_flow:
+    if: 0
+    loop: 0
+    return: 0
+  exceptions: []
+  type_mappings: []  # 触发器无参数
+  special_constructs:
+    - construct: "AFTER UPDATE OF std_cost, status ON t_item"
+      expected_java: "AOP 拦截 CoreService 的 updateItemCost/updateItemStatus 方法"
+      severity: critical
+      note: "必须仅拦截指定列的更新操作"
+    - construct: "FOR EACH ROW"
+      expected_java: "AOP @Around 通知（逐行拦截）"
+      severity: major
+    - construct: "WHEN (old.std_cost <> new.std_cost)"
+      expected_java: "拦截后比较新旧值，仅变化时写审计"
+      severity: critical
+      note: "值未变化时不应写审计日志"
+    - construct: ":old.std_cost / :new.std_cost"
+      expected_java: "方法入参(新值) + 查库获取旧值 → JSON 格式记录"
+      severity: critical
+    - construct: "'{\"old\":'||:old.std_cost||',\"new\":'||:new.std_cost||'}'"
+      expected_java: "String.format 或 JSON 库构造 JSON 字符串"
+      severity: major

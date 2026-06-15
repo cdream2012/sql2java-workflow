@@ -1,0 +1,37 @@
+# L3 语义分析测量用例: core_pkg.get_item_obj
+# 多态对象构造: CASE 分派子型
+# 翻译映射: CASE item_type → 工厂方法，按类型实例化不同子类
+
+subprogram: get_item_obj
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+description: 多态对象构造，CASE 分派返回不同子类型
+
+expected:
+  sql_statements:
+    select: 0   # 无直接 SQL（内部调用 get_item）
+    insert: 0
+    update: 0
+    delete: 0
+    merge: 0
+  tables: []    # 无直接表引用
+  control_flow:
+    if: 0
+    loop: 0
+    return: 2   # RETURN t_raw_material_obj(...) / RETURN NULL
+    case: 1     # CASE v.item_type
+  exceptions: []  # 异常由内部 get_item 抛出
+  type_mappings:
+    - param: p_id
+      oracle_type: NUMBER
+      expected_java_type: Long
+    - return: true
+      oracle_type: t_item_obj
+      expected_java_type: ItemObj  # 抽象基类引用
+  special_constructs:
+    - construct: "CASE v.item_type WHEN 'RAW' THEN ..."
+      expected_java: "switch/if 分派 → new RawMaterialObj(...)"
+      severity: critical
+    - construct: "t_raw_material_obj(v.item_id, v.item_code, ...)"
+      expected_java: "new RawMaterialObj(itemId, itemCode, ...)"
+      severity: critical
+      note: "构造器参数顺序和类型必须与对象类型定义匹配"

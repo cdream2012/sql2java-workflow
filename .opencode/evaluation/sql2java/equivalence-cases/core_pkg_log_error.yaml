@@ -1,0 +1,64 @@
+# L4 行为等价测试用例: core_pkg.log_error
+# PRAGMA AUTONOMOUS_TRANSACTION + INSERT + COMMIT
+# 难度: P1（中等）
+# 翻译映射: 自治事务 → @Transactional(propagation=REQUIRES_NEW) + Mapper.insert
+
+test_suite: core_pkg_log_error
+description: 错误日志记录（自治事务）行为等价验证
+db_level: h2_compatible
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+java_class: com.erp.service.CoreService
+java_method: logError
+
+setup:
+  sql: |
+    -- 确保序列存在
+    CREATE SEQUENCE IF NOT EXISTS seq_error_log_id START WITH 1;
+
+cases:
+  - name: 正常记录错误日志
+    pg_call: |
+      SELECT COUNT(*) FROM (
+        INSERT INTO t_error_log(log_id, error_code, error_msg, operator, occurred_at)
+        VALUES(nextval('seq_error_log_id'), 'M1001', '物料编码已存在', 'TEST_USER', CURRENT_TIMESTAMP)
+        RETURNING *
+      ) t
+    java_call: "coreService.logError(\"M1001\", \"物料编码已存在\")"
+    expected:
+      t_error_log:
+        count_delta: +1
+        new_row_match:
+          error_code: "M1001"
+          error_msg: "物料编码已存在"
+
+  - name: 超长错误消息截断到2000
+    pg_call: |
+      INSERT INTO t_error_log(log_id, error_code, error_msg, operator, occurred_at)
+      VALUES(nextval('seq_error_log_id'), 'M9999', RPAD('X', 3000, 'X'), 'TEST_USER', CURRENT_TIMESTAMP)
+    java_call: "coreService.logError(\"M9999\", \"X\".repeat(3000))"
+    expected:
+      t_error_log:
+        count_delta: +1
+        new_row_match:
+          error_code: "M9999"
+          error_msg_length_max: 2000
+
+  - name: 独立事务提交_外层回滚日志仍在
+    description: |
+      PL/SQL: PRAGMA AUTONOMOUS_TRANSACTION 使日志独立提交
+      Java: @Transactional(propagation=REQUIRES_NEW) 等效
+      验证: 外层事务回滚后，日志行仍然存在
+    pg_call: |
+      -- 模拟: 先插入日志(COMMIT)，然后外层回滚
+      BEGIN;
+        INSERT INTO t_error_log(log_id, error_code, error_msg, operator, occurred_at)
+        VALUES(nextval('seq_error_log_id'), 'AUTONOMOUS', '测试独立事务', 'TEST', CURRENT_TIMESTAMP);
+      COMMIT;  -- 日志已提交
+      -- 外层事务即使回滚，日志仍在
+    java_call: |
+      // @Transactional(propagation=REQUIRES_NEW)
+      coreService.logError("AUTONOMOUS", "测试独立事务");
+      // 外层抛异常时，日志已独立提交
+    expected:
+      t_error_log:
+        count_delta: +1

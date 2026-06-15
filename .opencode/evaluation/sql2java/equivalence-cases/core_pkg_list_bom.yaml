@@ -1,0 +1,61 @@
+# L4 行为等价测试用例: core_pkg.list_bom
+# CONNECT BY + SYS_REFCURSOR + SYS_CONNECT_BY_PATH + ORDER SIBLINGS BY
+# 难度: P2（高难）
+# 翻译映射: CONNECT BY → 递归 SQL 或 Java 递归; SYS_REFCURSOR OUT → List 返回
+
+test_suite: core_pkg_list_bom
+description: BOM 层次查询行为等价验证
+db_level: h2_compatible
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+java_class: com.erp.service.CoreService
+java_method: listBom
+
+setup:
+  sql: |
+    -- 构建两层 BOM 结构:
+    --   FG-001 (40001)
+    --   ├── RAW-A (40002) qty=2
+    --   └── RAW-B (40003) qty=1
+    -- 确保 ACTIVE 状态
+    INSERT INTO t_bom_header(bom_id, item_id, status)
+    VALUES(50001, 40001, 'ACTIVE')
+    ON CONFLICT (bom_id) DO UPDATE SET status = 'ACTIVE';
+
+    DELETE FROM t_bom_line WHERE bom_id = 50001;
+    INSERT INTO t_bom_line(line_id, bom_id, component_item_id, qty_per)
+    VALUES(60001, 50001, 40002, 2.0);
+    INSERT INTO t_bom_line(line_id, bom_id, component_item_id, qty_per)
+    VALUES(60002, 50001, 40003, 1.0);
+
+cases:
+  - name: 两层BOM层次查询
+    description: |
+      PL/SQL: OPEN p_cur FOR SELECT LEVEL, ..., SYS_CONNECT_BY_PATH, CONNECT_BY_ISLEAF
+              START WITH h.item_id = p_item_id
+              CONNECT BY NOCYCLE PRIOR l.component_item_id = h.item_id
+              ORDER SIBLINGS BY l.line_no
+      Java: 递归查询或 Java 递归遍历，返回带层级信息的 List
+    java_call: "coreService.listBom(40001L)"
+    expected:
+      return_type: "List<BomTreeNode>"
+      return_size: 2
+      return_elements:
+        - level: 1
+          component_item_id: 40002
+          is_leaf: true
+        - level: 1
+          component_item_id: 40003
+          is_leaf: true
+
+  - name: 不存在物料返回空
+    java_call: "coreService.listBom(99999L)"
+    expected:
+      return_size: 0
+
+  - name: 叶节点标记正确
+    description: |
+      40002 和 40003 都没有子 BOM → is_leaf = true
+      如果某个组件本身也是父件 → is_leaf = false
+    java_call: "coreService.listBom(40001L)"
+    expected:
+      all_leaf: true  -- 本测试数据中所有组件都是叶节点

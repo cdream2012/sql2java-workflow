@@ -1,0 +1,51 @@
+# L4 行为等价测试用例: core_pkg.get_item_obj
+# 多态对象构造: CASE 分派子型
+# 难度: P2（高难）
+# 翻译映射: CASE item_type → 工厂方法，返回不同子类实例
+
+test_suite: core_pkg_get_item_obj
+description: 多态对象构造行为等价验证
+db_level: h2_compatible
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+java_class: com.erp.service.CoreService
+java_method: getItemObj
+
+setup:
+  sql: |
+    INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom, std_cost)
+    VALUES(20001, 'RAW-001', '原材料', 'RAW', 'KG', 5.00)
+    ON CONFLICT (item_id) DO UPDATE SET item_type = EXCLUDED.item_type;
+
+    INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom, std_cost)
+    VALUES(20002, 'FG-001', '成品', 'FG', 'EA', 100.00)
+    ON CONFLICT (item_id) DO UPDATE SET item_type = EXCLUDED.item_type;
+
+cases:
+  - name: RAW类型返回RawMaterialObj
+    description: |
+      PL/SQL: CASE 'RAW' THEN t_raw_material_obj(...)
+      Java: return new RawMaterialObj(...)
+    pg_call: |
+      SELECT item_id, item_code, item_name, base_uom, std_cost
+      FROM t_item WHERE item_id = 20001
+    java_call: "coreService.getItemObj(20001L)"
+    expected:
+      return_type: "RawMaterialObj"
+      return_fields:
+        item_id: 20001
+        item_code: "RAW-001"
+
+  - name: FG类型返回null
+    description: |
+      PL/SQL: CASE ELSE RETURN NULL（只处理 RAW 类型）
+      Java: 未匹配的类型返回 null
+    pg_call: "SELECT NULL"
+    java_call: "coreService.getItemObj(20002L)"
+    expected_return: null
+
+  - name: 不存在时抛异常
+    description: get_item_obj 内部调用 get_item，不存在时抛 BizException
+    pg_call: "SELECT NULL"
+    java_call: "coreService.getItemObj(99999L)"
+    expected:
+      exception: "BizException"

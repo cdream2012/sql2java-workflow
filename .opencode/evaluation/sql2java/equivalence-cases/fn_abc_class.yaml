@@ -1,0 +1,56 @@
+# L4 行为等价测试用例: fn_abc_class
+# 独立函数: DETERMINISTIC 纯计算, ABC 分类
+# 难度: P0（基础）
+# 翻译映射: DETERMINISTIC 独立函数 → 静态工具方法
+
+test_suite: fn_abc_class
+description: ABC 分类函数行为等价验证（DETERMINISTIC 纯计算，无 SQL）
+db_level: pure_java
+source_file: resources/mfg_erp_sql_tiny/func/fn_abc_class.sql
+java_class: com.erp.util.AbcClassUtil
+java_method: classify
+
+setup:
+  sql: |
+    -- 纯计算函数，无需数据初始化
+
+cases:
+  - name: A类_cumPct低于80%
+    pg_call: "SELECT fn_abc_class(0.50)"
+    java_call: "AbcClassUtil.classify(new BigDecimal(\"0.50\"))"
+    expected_return: "A"
+
+  - name: B类_cumPct在80%-95%之间
+    pg_call: "SELECT fn_abc_class(0.88)"
+    java_call: "AbcClassUtil.classify(new BigDecimal(\"0.88\"))"
+    expected_return: "B"
+
+  - name: C类_cumPct高于95%
+    pg_call: "SELECT fn_abc_class(0.98)"
+    java_call: "AbcClassUtil.classify(new BigDecimal(\"0.98\"))"
+    expected_return: "C"
+
+  - name: NULL输入返回NULL
+    pg_call: "SELECT fn_abc_class(NULL)"
+    java_call: "AbcClassUtil.classify(null)"
+    expected_return: null
+
+  - name: 边界值_刚好80%归A
+    pg_call: "SELECT fn_abc_class(0.80)"
+    java_call: "AbcClassUtil.classify(new BigDecimal(\"0.80\"))"
+    expected_return: "A"
+
+  - name: 边界值_刚好95%归B
+    pg_call: "SELECT fn_abc_class(0.95)"
+    java_call: "AbcClassUtil.classify(new BigDecimal(\"0.95\"))"
+    expected_return: "B"
+
+  - name: 零值归A
+    pg_call: "SELECT fn_abc_class(0)"
+    java_call: "AbcClassUtil.classify(BigDecimal.ZERO)"
+    expected_return: "A"
+
+  - name: 自定义阈值_aPct=70%_bPct=90%
+    pg_call: "SELECT fn_abc_class(0.70, 0.70, 0.90)"
+    java_call: "AbcClassUtil.classify(new BigDecimal(\"0.70\"), new BigDecimal(\"0.70\"), new BigDecimal(\"0.90\"))"
+    expected_return: "A"

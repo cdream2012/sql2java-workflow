@@ -1,0 +1,54 @@
+# L3 语义分析测量用例: core_pkg.create_item
+# 重载过程 ×2 + RETURNING INTO + NVL + OUT 参数
+# 翻译映射: 两个 Java 重载方法; RETURNING INTO → useGeneratedKeys; OUT → 返回值或 DTO 字段
+
+subprogram: create_item
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+description: 创建物料（两个重载版本，参数个数不同）
+
+expected:
+  sql_statements:
+    select: 0
+    insert: 2   # 重载版1: INSERT INTO t_item (无 std_cost)
+                # 重载版2: INSERT INTO t_item (含 std_cost + RETURNING INTO)
+    update: 0
+    delete: 0
+    merge: 0
+  tables:
+    - t_item
+  control_flow:
+    if: 0
+    loop: 0
+    return: 0   # 过程无 RETURN（OUT 参数传递结果）
+  exceptions: []
+  type_mappings:
+    # 重载版1 参数
+    - param: p_code
+      oracle_type: VARCHAR2
+      expected_java_type: String
+    - param: p_name
+      oracle_type: VARCHAR2
+      expected_java_type: String
+    - param: p_type
+      oracle_type: VARCHAR2
+      expected_java_type: String
+    - param: p_id
+      oracle_type: "NUMBER (OUT)"
+      expected_java_type: "Long (返回值或 DTO 字段)"
+    # 重载版2 额外参数
+    - param: p_cost
+      oracle_type: NUMBER
+      expected_java_type: BigDecimal
+  special_constructs:
+    - construct: "过程重载（参数个数不同）"
+      expected_java: "Java 方法重载（同名不同参数列表）"
+      severity: critical
+    - construct: "p_id := seq_item_id.NEXTVAL"
+      expected_java: "MyBatis useGeneratedKeys 或雪花 ID"
+      severity: major
+    - construct: "RETURNING item_id INTO p_id"
+      expected_java: "Mapper.insert → 返回生成的主键"
+      severity: critical
+    - construct: "NVL(p_cost, 0)"
+      expected_java: "cost != null ? cost : BigDecimal.ZERO"
+      severity: major

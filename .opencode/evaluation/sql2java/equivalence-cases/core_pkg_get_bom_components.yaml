@@ -1,0 +1,64 @@
+# L4 行为等价测试用例: core_pkg.get_bom_components
+# BULK COLLECT INTO 对象集合 + JOIN 查询
+# 难度: P1（中等）
+# 翻译映射: BULK COLLECT INTO → Mapper.selectList → List<BomCompObj>
+
+test_suite: core_pkg_get_bom_components
+description: 获取 BOM 组件列表行为等价验证
+db_level: h2_compatible
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+java_class: com.erp.service.CoreService
+java_method: getBomComponents
+
+setup:
+  sql: |
+    -- 创建测试 BOM 结构
+    INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom)
+    VALUES(40001, 'BOM-PARENT', 'BOM父件', 'FG', 'EA')
+    ON CONFLICT (item_id) DO NOTHING;
+
+    INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom)
+    VALUES(40002, 'BOM-COMP-A', 'BOM组件A', 'RAW', 'KG')
+    ON CONFLICT (item_id) DO NOTHING;
+
+    INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom)
+    VALUES(40003, 'BOM-COMP-B', 'BOM组件B', 'RAW', 'EA')
+    ON CONFLICT (item_id) DO NOTHING;
+
+    INSERT INTO t_bom_header(bom_id, item_id, status)
+    VALUES(50001, 40001, 'ACTIVE')
+    ON CONFLICT (bom_id) DO NOTHING;
+
+    DELETE FROM t_bom_line WHERE bom_id = 50001;
+    INSERT INTO t_bom_line(line_id, bom_id, component_item_id, qty_per, scrap_rate)
+    VALUES(60001, 50001, 40002, 2.5, 0.05);
+    INSERT INTO t_bom_line(line_id, bom_id, component_item_id, qty_per, scrap_rate)
+    VALUES(60002, 50001, 40003, 1.0, 0);
+
+cases:
+  - name: 正常返回组件列表
+    pg_call: |
+      SELECT t_bom_comp(l.component_item_id, i.item_code, l.qty_per)
+      FROM t_bom_line l JOIN t_item i ON i.item_id = l.component_item_id
+      WHERE l.bom_id = 50001
+    java_call: "coreService.getBomComponents(50001L)"
+    expected:
+      return_type: "List<BomCompObj>"
+      return_size: 2
+      return_elements:
+        - component_item_id: 40002
+          component_code: "BOM-COMP-A"
+          qty_per: 2.5
+        - component_item_id: 40003
+          component_code: "BOM-COMP-B"
+          qty_per: 1.0
+
+  - name: 空BOM返回空列表
+    pg_call: |
+      SELECT t_bom_comp(l.component_item_id, i.item_code, l.qty_per)
+      FROM t_bom_line l JOIN t_item i ON i.item_id = l.component_item_id
+      WHERE l.bom_id = 99999
+    java_call: "coreService.getBomComponents(99999L)"
+    expected:
+      return_type: "List<BomCompObj>"
+      return_size: 0

@@ -1,0 +1,50 @@
+# L3 语义分析测量用例: core_pkg.bom_cost
+# 递归 PL/SQL 函数（BOM 成本卷算）
+# 翻译映射: 递归 PL/SQL → 递归 Java 方法
+
+subprogram: bom_cost
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+description: BOM 标准成本卷算（递归遍历子件累加成本）
+
+expected:
+  sql_statements:
+    select: 2   # 1: SELECT std_cost INTO v_cost FROM t_item WHERE item_id = p_item_id
+                # 2: FOR r IN (SELECT ... FROM t_bom_line l JOIN t_bom_header h WHERE h.item_id = p_item_id AND h.status = 'ACTIVE')
+    insert: 0
+    update: 0
+    delete: 0
+    merge: 0
+  tables:
+    - t_item
+    - t_bom_line
+    - t_bom_header
+  control_flow:
+    if: 0
+    loop: 1     # FOR r IN (cursor) LOOP — 遍历子件
+    return: 2   # RETURN CASE WHEN v_total > 0 THEN ROUND(v_total,6) ELSE v_cost END
+                # RETURN 0 (EXCEPTION 分支)
+  exceptions:
+    - plsql: "WHEN NO_DATA_FOUND"
+      expected_java: "catch (EmptyResultDataAccessException e)"
+      severity: critical
+      note: "物料不存在时返回 0，不是抛异常"
+  type_mappings:
+    - param: p_item_id
+      oracle_type: NUMBER
+      expected_java_type: Long
+    - return: true
+      oracle_type: NUMBER
+      expected_java_type: BigDecimal
+  special_constructs:
+    - construct: "递归 PL/SQL 函数（bom_cost 调用 bom_cost）"
+      expected_java: "递归 Java 方法（bomCost 调用 bomCost）"
+      severity: critical
+    - construct: "ROUND(v_total, 6)"
+      expected_java: "BigDecimal.setScale(6, RoundingMode.HALF_UP)"
+      severity: major
+    - construct: "NVL(r.scrap_rate, 0)"
+      expected_java: "scrapRate != null ? scrapRate : BigDecimal.ZERO"
+      severity: major
+    - construct: "qty_per / (1 - NVL(scrap_rate, 0))"
+      expected_java: "损耗率计算公式必须保持一致"
+      severity: critical

@@ -1,0 +1,60 @@
+# L4 行为等价测试用例: core_pkg.archive_before
+# EXECUTE IMMEDIATE + USING 动态 SQL + SQL%ROWCOUNT
+# 难度: P2（高难）
+# 翻译映射: EXECUTE IMMEDIATE → JdbcTemplate.execute 或 // TODO: [translate]
+#          SQL%ROWCOUNT → 返回删除行数
+
+test_suite: core_pkg_archive_before
+description: 归档库存流水（动态SQL）行为等价验证
+db_level: h2_compatible
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+java_class: com.erp.service.CoreService
+java_method: archiveBefore
+
+setup:
+  sql: |
+    -- 插入不同日期的测试流水
+    DELETE FROM t_inventory_txn WHERE item_id = 40002;
+
+    INSERT INTO t_inventory_txn(txn_id, item_id, direction, quantity, unit_cost, txn_date)
+    VALUES(90001, 40002, 'I', 100, 5.00, '2025-12-01');
+
+    INSERT INTO t_inventory_txn(txn_id, item_id, direction, quantity, unit_cost, txn_date)
+    VALUES(90002, 40002, 'I', 200, 5.50, '2026-01-15');
+
+    INSERT INTO t_inventory_txn(txn_id, item_id, direction, quantity, unit_cost, txn_date)
+    VALUES(90003, 40002, 'O', 50, 5.00, '2026-03-01');
+
+    INSERT INTO t_inventory_txn(txn_id, item_id, direction, quantity, unit_cost, txn_date)
+    VALUES(90004, 40002, 'I', 300, 6.00, '2026-06-01');
+
+cases:
+  - name: 删除指定日期前的流水
+    description: |
+      PL/SQL: EXECUTE IMMEDIATE 'DELETE FROM t_inventory_txn WHERE txn_date < :1' USING p_date;
+              p_count := SQL%ROWCOUNT;
+      Java: JdbcTemplate.update("DELETE FROM t_inventory_txn WHERE txn_date < ?", date)
+            返回 int (删除行数)
+    pg_call: "DELETE FROM t_inventory_txn WHERE txn_date < '2026-01-01'::date"
+    java_call: "coreService.archiveBefore(LocalDate.of(2026, 1, 1))"
+    expected:
+      return_value: 1  -- 只有 2025-12-01 的一条被删除
+      t_inventory_txn:
+        count_delta: -1
+
+  - name: 边界日期_不含当天
+    description: txn_date < p_date（严格小于），当天数据不删
+    pg_call: "SELECT COUNT(*) FROM t_inventory_txn WHERE txn_date < '2026-03-01'::date AND item_id = 40002"
+    java_call: "coreService.archiveBefore(LocalDate.of(2026, 3, 1))"
+    expected:
+      return_value: 2  -- 2025-12-01 和 2026-01-15 的两条
+      t_inventory_txn:
+        count_delta: -2
+
+  - name: 无匹配数据返回0
+    pg_call: "SELECT 0"
+    java_call: "coreService.archiveBefore(LocalDate.of(2020, 1, 1))"
+    expected:
+      return_value: 0  -- 无匹配行
+      t_inventory_txn:
+        count_delta: 0

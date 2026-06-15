@@ -1,0 +1,67 @@
+# L4 行为等价测试用例: core_pkg.bom_cost
+# 递归 PL/SQL 函数（BOM 成本卷算）
+# 难度: P2（高难）
+# 翻译映射: 递归 PL/SQL 函数 → 递归 Java 方法
+
+test_suite: core_pkg_bom_cost
+description: BOM 成本卷算（递归函数）行为等价验证
+db_level: h2_compatible
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+java_class: com.erp.service.CoreService
+java_method: bomCost
+
+setup:
+  sql: |
+    -- 构建成本卷算测试数据:
+    --   FG-001 (40001, std_cost=0, 有 BOM)
+    --   ├── RAW-A (40002, std_cost=10, 无 BOM) qty=2, scrap=0.05
+    --   └── RAW-B (40003, std_cost=5, 无 BOM) qty=3, scrap=0
+    --
+    -- 预期卷算:
+    --   RAW-A: 10 * 2 / (1 - 0.05) = 21.052632
+    --   RAW-B: 5 * 3 / (1 - 0) = 15
+    --   FG-001: 21.052632 + 15 = 36.052632
+
+    INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom, std_cost)
+    VALUES(40001, 'FG-001', '成品1', 'FG', 'EA', 0)
+    ON CONFLICT (item_id) DO UPDATE SET std_cost = 0;
+
+    INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom, std_cost)
+    VALUES(40002, 'RAW-A', '原材料A', 'RAW', 'KG', 10)
+    ON CONFLICT (item_id) DO UPDATE SET std_cost = 10;
+
+    INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom, std_cost)
+    VALUES(40003, 'RAW-B', '原材料B', 'RAW', 'EA', 5)
+    ON CONFLICT (item_id) DO UPDATE SET std_cost = 5;
+
+    INSERT INTO t_bom_header(bom_id, item_id, status)
+    VALUES(50001, 40001, 'ACTIVE')
+    ON CONFLICT (bom_id) DO UPDATE SET status = 'ACTIVE';
+
+    DELETE FROM t_bom_line WHERE bom_id = 50001;
+    INSERT INTO t_bom_line(line_id, bom_id, component_item_id, qty_per, scrap_rate)
+    VALUES(60001, 50001, 40002, 2, 0.05);
+    INSERT INTO t_bom_line(line_id, bom_id, component_item_id, qty_per, scrap_rate)
+    VALUES(60002, 50001, 40003, 3, 0);
+
+cases:
+  - name: 叶节点返回std_cost
+    description: 无 BOM 的物料直接返回 std_cost
+    pg_call: "SELECT std_cost FROM t_item WHERE item_id = 40002"
+    java_call: "coreService.bomCost(40002L)"
+    expected_return: 10
+
+  - name: 父件卷算成本
+    description: |
+      递归遍历子件:
+      RAW-A: 10 * 2 / (1 - 0.05) = 21.052632
+      RAW-B: 5 * 3 / 1 = 15
+      总计: 36.052632
+    java_call: "coreService.bomCost(40001L)"
+    expected_return: 36.052632
+    tolerance: 0.000001
+
+  - name: 不存在物料返回0
+    description: EXCEPTION WHEN NO_DATA_FOUND → RETURN 0
+    java_call: "coreService.bomCost(99999L)"
+    expected_return: 0

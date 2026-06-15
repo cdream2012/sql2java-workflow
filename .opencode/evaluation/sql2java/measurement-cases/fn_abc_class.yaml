@@ -1,0 +1,35 @@
+# L3 语义分析测量用例: fn_abc_class
+# 独立函数: DETERMINISTIC 纯计算, 无 SQL
+# 翻译映射: DETERMINISTIC 独立函数 → 静态工具方法
+
+subprogram: fn_abc_class
+source_file: resources/mfg_erp_sql_tiny/func/fn_abc_class.sql
+description: ABC 分类函数，纯计算无 SQL
+
+expected:
+  sql_statements:
+    select: 0
+    insert: 0
+    update: 0
+    delete: 0
+    merge: 0
+  tables: []
+  control_flow:
+    if: 3       # IF p_cum_pct IS NULL / IF <= p_a_pct / ELSIF <= p_b_pct
+    loop: 0
+    return: 4   # RETURN NULL / RETURN 'A' / RETURN 'B' / RETURN 'C'
+  exceptions: []
+  type_mappings:
+    - param: p_cum_pct
+      oracle_type: NUMBER
+      expected_java_type: BigDecimal
+    - param: p_a_pct
+      oracle_type: NUMBER
+      expected_java_type: BigDecimal
+    - param: p_b_pct
+      oracle_type: NUMBER
+      expected_java_type: BigDecimal
+    - return: true
+      oracle_type: VARCHAR2
+      expected_java_type: String
+  special_constructs: []

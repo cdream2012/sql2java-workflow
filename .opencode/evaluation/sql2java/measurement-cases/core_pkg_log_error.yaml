@@ -1,0 +1,43 @@
+# L3 语义分析测量用例: core_pkg.log_error
+# PRAGMA AUTONOMOUS_TRANSACTION + INSERT + COMMIT
+# 翻译映射: 自治事务 → @Transactional(propagation=REQUIRES_NEW) + Mapper.insert
+
+subprogram: log_error
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+description: 错误日志记录（自治事务独立提交）
+
+expected:
+  sql_statements:
+    select: 0
+    insert: 1   # INSERT INTO t_error_log
+    update: 0
+    delete: 0
+    merge: 0
+  tables:
+    - t_error_log
+  control_flow:
+    if: 1       # IF g_debug_on
+    loop: 0
+    return: 0
+  exceptions:
+    - plsql: "WHEN OTHERS"
+      expected_java: "catch (Exception e)"
+      severity: warning   # 日志过程的 WHEN OTHERS 是容错，非关键
+      note: "PL/SQL 中 WHEN OTHERS → ROLLBACK + dbms_output，Java 中应对应 catch + log"
+  type_mappings:
+    - param: p_code
+      oracle_type: VARCHAR2
+      expected_java_type: String
+    - param: p_msg
+      oracle_type: VARCHAR2
+      expected_java_type: String
+  special_constructs:
+    - construct: "PRAGMA AUTONOMOUS_TRANSACTION"
+      expected_java: "@Transactional(propagation = Propagation.REQUIRES_NEW)"
+      severity: critical
+    - construct: "COMMIT"
+      expected_java: "由 Spring 事务管理自动提交"
+      severity: major
+    - construct: "seq_error_log_id.NEXTVAL"
+      expected_java: "MyBatis useGeneratedKeys 或 雪花ID"
+      severity: major

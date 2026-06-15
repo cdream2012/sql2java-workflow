@@ -1,0 +1,41 @@
+# L3 语义分析测量用例: core_pkg.explode_bom
+# PIPELINED 函数 + PIPE ROW + FOR...IN cursor LOOP
+# 翻译映射: PIPELINED → 普通方法返回 List; PIPE ROW → list.add()
+
+subprogram: explode_bom
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+description: BOM 展开（PIPELINED 流式返回组件列表）
+
+expected:
+  sql_statements:
+    select: 1   # FOR r IN (SELECT ... FROM t_bom_line l JOIN t_bom_header h JOIN t_item ci WHERE h.status = 'ACTIVE')
+    insert: 0
+    update: 0
+    delete: 0
+    merge: 0
+  tables:
+    - t_bom_line
+    - t_bom_header
+    - t_item
+  control_flow:
+    if: 0
+    loop: 1     # FOR r IN (cursor) LOOP
+    return: 1   # RETURN (PIPELINED 的终止)
+  exceptions: []
+  type_mappings:
+    - param: p_item_id
+      oracle_type: NUMBER
+      expected_java_type: Long
+    - return: true
+      oracle_type: "t_bom_comp_tab PIPELINED"
+      expected_java_type: "List<BomCompObj>"
+  special_constructs:
+    - construct: "PIPELINED 函数"
+      expected_java: "普通方法返回 List（PIPELINED 语义在 Java 中无对应，直接收集返回）"
+      severity: critical
+    - construct: "PIPE ROW(t_bom_comp_obj(...))"
+      expected_java: "list.add(new BomCompObj(...))"
+      severity: critical
+    - construct: "h.status = 'ACTIVE' 条件"
+      expected_java: "WHERE 条件必须保留在 MyBatis SQL 中"
+      severity: major

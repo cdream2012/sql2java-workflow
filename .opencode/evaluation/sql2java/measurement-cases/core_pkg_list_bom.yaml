@@ -1,0 +1,47 @@
+# L3 语义分析测量用例: core_pkg.list_bom
+# CONNECT BY + SYS_REFCURSOR + SYS_CONNECT_BY_PATH + ORDER SIBLINGS BY
+# 翻译映射: CONNECT BY → 递归 SQL 或 Java 递归; SYS_REFCURSOR OUT → List 返回
+
+subprogram: list_bom
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+description: BOM 层次查询（CONNECT BY 递归展开）
+
+expected:
+  sql_statements:
+    select: 1   # OPEN p_cur FOR SELECT LEVEL, ..., SYS_CONNECT_BY_PATH, CONNECT_BY_ISLEAF ... CONNECT BY NOCYCLE PRIOR ...
+    insert: 0
+    update: 0
+    delete: 0
+    merge: 0
+  tables:
+    - t_bom_line
+    - t_bom_header
+    - t_item
+  control_flow:
+    if: 0
+    loop: 0
+    return: 0   # 过程，结果通过 OUT SYS_REFCURSOR 返回
+  exceptions: []
+  type_mappings:
+    - param: p_item_id
+      oracle_type: NUMBER
+      expected_java_type: Long
+    - param: p_cur
+      oracle_type: "SYS_REFCURSOR (OUT)"
+      expected_java_type: "List<BomTreeNode> (返回值)"
+  special_constructs:
+    - construct: "CONNECT BY NOCYCLE PRIOR l.component_item_id = h.item_id"
+      expected_java: "递归 SQL (WITH RECURSIVE) 或 Java 递归方法"
+      severity: critical
+    - construct: "SYS_CONNECT_BY_PATH(ci.item_code, '/')"
+      expected_java: "递归拼接路径字符串"
+      severity: major
+    - construct: "CONNECT_BY_ISLEAF"
+      expected_java: "叶节点标记字段 (isLeaf)"
+      severity: major
+    - construct: "ORDER SIBLINGS BY l.line_no"
+      expected_java: "ORDER BY 保持同级排序"
+      severity: major
+    - construct: "SYS_REFCURSOR OUT 参数"
+      expected_java: "方法返回 List（而非 OUT 参数）"
+      severity: critical

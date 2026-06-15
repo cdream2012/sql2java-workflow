@@ -1,0 +1,163 @@
+#!/bin/bash
+# =============================================================================
+# sql2java-mvn — 跨平台 Maven 启动脚本
+# 支持: Win64 / 麒麟ARM64(aarch64) / 麒麟x86_64
+#
+# 自动检测操作系统 + CPU架构，推导 JAVA_HOME，
+# 使用隔离的本地仓库（避免污染系统 ~/.m2）。
+#
+# 用法:
+#   ./sql2java-mvn [maven 参数...]    — 执行 mvn
+#   ./sql2java-mvn --show-env         — 显示环境检测信息（不执行 mvn）
+# =============================================================================
+set -euo pipefail
+
+# ─── 定位脚本所在目录 ────────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MAVEN_DIR="${SCRIPT_DIR}/apache-maven-3.9.16"
+
+# ─── 校验 Maven 目录是否存在 ──────────────────────────────────────────────────
+if [ ! -d "${MAVEN_DIR}/bin" ]; then
+  echo "❌ 未找到 Maven 发行版: ${MAVEN_DIR}" >&2
+  echo "   请确保 apache-maven-3.9.16 目录位于 tools/ 下" >&2
+  exit 1
+fi
+
+# ─── 检测操作系统 + CPU架构 ────────────────────────────────────────────────────
+detect_platform() {
+  local os arch
+  # 操作系统检测
+  case "$(uname -s)" in
+    Linux*)   os="linux";;
+    MINGW*|MSYS*|CYGWIN*) os="windows";;
+    Darwin*)  os="macos";;
+    *)        os="$(uname -s | tr '[:upper:]' '[:lower:]')";;
+  esac
+  # CPU架构检测
+  case "$(uname -m)" in
+    x86_64|amd64|X86_64)  arch="x86_64";;
+    aarch64|arm64|ARM64)   arch="aarch64";;
+    i386|i686|x86)         arch="x86";;
+    *)                     arch="$(uname -m)";;
+  esac
+  echo "${os}/${arch}"
+}
+
+PLATFORM="$(detect_platform)"
+OS="${PLATFORM%%/*}"
+ARCH="${PLATFORM##*/}"
+
+# ─── 推导 JAVA_HOME ───────────────────────────────────────────────────────────
+resolve_java_home() {
+  # 已设置且有效 → 直接使用
+  if [ -n "${JAVA_HOME:-}" ] && [ -x "${JAVA_HOME}/bin/java" ]; then
+    return 0
+  fi
+
+  # 已设置但无效 → 提示警告
+  if [ -n "${JAVA_HOME:-}" ]; then
+    echo "⚠️ JAVA_HOME 已设置但 java 不可执行: ${JAVA_HOME}/bin/java" >&2
+  fi
+
+  # 从 PATH 推导
+  local java_path
+  java_path="$(command -v java 2>/dev/null || true)"
+  if [ -n "${java_path}" ]; then
+    # java 通常在 .../bin/java → JAVA_HOME = 上两级目录
+    JAVA_HOME="$(dirname "$(dirname "${java_path}")")"
+    export JAVA_HOME
+    echo "ℹ️ 自动推导 JAVA_HOME=${JAVA_HOME} (从 PATH)" >&2
+    return 0
+  fi
+
+  # 平台默认路径搜索
+  case "${OS}/${ARCH}" in
+    linux/aarch64)
+      # 麒麟 ARM64 常见 JDK 安装路径
+      for d in /usr/lib/jvm/java-8-openjdk-aarch64 \
+               /usr/lib/jvm/java-11-openjdk-aarch64 \
+               /usr/lib/jvm/java-17-openjdk-aarch64 \
+               /usr/local/java; do
+        [ -x "${d}/bin/java" ] && JAVA_HOME="${d}" && export JAVA_HOME && \
+          echo "ℹ️ 自动推导 JAVA_HOME=${JAVA_HOME} (麒麟 ARM64 默认路径)" >&2 && return 0
+      done
+      ;;
+    linux/x86_64)
+      # 麒麟 x86_64 常见 JDK 安装路径
+      for d in /usr/lib/jvm/java-8-openjdk-amd64 \
+               /usr/lib/jvm/java-11-openjdk-amd64 \
+               /usr/lib/jvm/java-17-openjdk-amd64 \
+               /usr/local/java; do
+        [ -x "${d}/bin/java" ] && JAVA_HOME="${d}" && export JAVA_HOME && \
+          echo "ℹ️ 自动推导 JAVA_HOME=${JAVA_HOME} (麒麟 x86_64 默认路径)" >&2 && return 0
+      done
+      ;;
+  esac
+
+  # 全部失败 → 报错退出
+  echo "❌ 未找到 JDK，请设置 JAVA_HOME 或将 java 加入 PATH" >&2
+  echo "   当前平台: ${PLATFORM}" >&2
+  exit 1
+}
+
+resolve_java_home
+
+# ─── 校验 Java 版本 ≥ 8 ──────────────────────────────────────────────────────
+verify_java_version() {
+  local ver major
+  ver="$("${JAVA_HOME}/bin/java" -version 2>&1 | head -1)"
+  # 提取主版本号: 1.8.x → 8, 11.x → 11, 17.x → 17
+  major="$(echo "${ver}" | sed -n 's/.*version "\([0-9]*\).*/\1/p')"
+  [ "${major}" = "1" ] && major="$(echo "${ver}" | sed -n 's/.*version "1\.\([0-9]*\).*/\1/p')"
+  if [ -z "${major}" ] || [ "${major}" -lt 8 ]; then
+    echo "❌ Java 版本过低: ${ver} (需要 ≥ 8)" >&2
+    exit 1
+  fi
+  echo "✅ Java ${major} (${ver})"
+}
+
+# ─── 设置隔离的 Maven 本地仓库 ────────────────────────────────────────────────
+# 评估专用仓库，放在 tools/ 下，避免污染系统 ~/.m2
+EVAL_REPO="${SCRIPT_DIR}/.m2-repository-${OS}-${ARCH}"
+mkdir -p "${EVAL_REPO}"
+
+# ─── 显示环境信息 (--show-env) ────────────────────────────────────────────────
+if [ "${1:-}" = "--show-env" ]; then
+  verify_java_version
+  local_ver="$("${JAVA_HOME}/bin/java" -version 2>&1 | head -1)"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "🔍 sql2java-mvn 环境检测"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  平台:        ${PLATFORM}"
+  echo "  Maven 目录:  ${MAVEN_DIR}"
+  echo "  JAVA_HOME:   ${JAVA_HOME}"
+  echo "  Java 版本:   ${local_ver}"
+  echo "  本地仓库:    ${EVAL_REPO}"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  exit 0
+fi
+
+# ─── 执行 Maven ────────────────────────────────────────────────────────────────
+verify_java_version >/dev/null 2>&1  # 验证但不重复输出
+
+# 根据操作系统选择启动器
+case "${OS}" in
+  windows) MVN_CMD="${MAVEN_DIR}/bin/mvn.cmd";;  # Windows: .cmd 启动器
+  *)       MVN_CMD="${MAVEN_DIR}/bin/mvn";;       # Linux/Mac: shell 启动器
+esac
+
+if [ ! -x "${MVN_CMD}" ]; then
+  echo "❌ Maven 启动脚本不可执行: ${MVN_CMD}" >&2
+  echo "   平台: ${PLATFORM}" >&2
+  ls -la "${MAVEN_DIR}/bin/" >&2
+  exit 1
+fi
+
+# 设置 MAVEN_HOME（部分脚本内部依赖此变量）
+export MAVEN_HOME="${MAVEN_DIR}"
+
+# 执行，传入隔离本地仓库参数
+echo "🚀 mvn @ ${PLATFORM} | JAVA_HOME=${JAVA_HOME} | repo=${EVAL_REPO}"
+exec "${MVN_CMD}" \
+  -Dmaven.repo.local="${EVAL_REPO}" \
+  "$@"

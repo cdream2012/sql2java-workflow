@@ -1,0 +1,76 @@
+# L4 行为等价测试用例: core_pkg.bulk_receive
+# FORALL SAVE EXCEPTIONS + SQL%BULK_EXCEPTIONS + MERGE INTO
+# 难度: P2（高难）
+# 翻译映射: FORALL → MyBatis batch executor; SAVE EXCEPTIONS → 单行异常收集;
+#          MERGE INTO → insertOrUpdate 或 先查后插/更新
+
+test_suite: core_pkg_bulk_receive
+description: 批量收货行为等价验证
+db_level: h2_compatible
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+java_class: com.erp.service.CoreService
+java_method: bulkReceive
+
+setup:
+  sql: |
+    CREATE SEQUENCE IF NOT EXISTS seq_inv_txn_id START WITH 70000;
+
+    INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom)
+    VALUES(40002, 'RAW-A', '原材料A', 'RAW', 'KG')
+    ON CONFLICT (item_id) DO NOTHING;
+
+    INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom)
+    VALUES(40003, 'RAW-B', '原材料B', 'RAW', 'EA')
+    ON CONFLICT (item_id) DO NOTHING;
+
+    -- 清理之前的测试流水
+    DELETE FROM t_inventory_txn WHERE item_id IN (40002, 40003) AND txn_date = CURRENT_DATE;
+
+cases:
+  - name: 正常批量收货_全部成功
+    description: |
+      PL/SQL: FORALL INSERT ... SAVE EXCEPTIONS → p_ok = p_lines.COUNT
+      Java: batch executor → 返回成功数
+    java_call: |
+      List<RecvLineDTO> lines = Arrays.asList(
+        new RecvLineDTO(40002, new BigDecimal("100"), new BigDecimal("5.00")),
+        new RecvLineDTO(40003, new BigDecimal("200"), new BigDecimal("3.50"))
+      );
+      coreService.bulkReceive(lines)
+    expected:
+      t_inventory_txn:
+        count_delta: +2
+      return_value: 2  -- p_ok = 2 (全部成功)
+
+  - name: 部分失败_收集异常行
+    description: |
+      PL/SQL: SQLCODE = -24381 时收集 SQL%BULK_EXCEPTIONS
+              p_ok = p_lines.COUNT - SQL%BULK_EXCEPTIONS.COUNT
+      Java: BatchUpdateException 收集失败行索引
+      注意: 需要构造一条会失败的记录（如违反约束）
+    java_call: |
+      List<RecvLineDTO> lines = Arrays.asList(
+        new RecvLineDTO(40002, new BigDecimal("50"), new BigDecimal("5.00")),
+        new RecvLineDTO(99999, new BigDecimal("10"), new BigDecimal("1.00"))  // 不存在的 item_id
+      );
+      coreService.bulkReceive(lines)
+    expected:
+      t_inventory_txn:
+        count_delta: +1  -- 只有第一条成功
+      return_value: 1  -- p_ok = 1
+
+  - name: MERGE回写物料成本
+    description: |
+      收货后 MERGE INTO t_item 按流水均值回写 std_cost
+      验证: 收货后 t_item.std_cost 被更新为 AVG(unit_cost)
+    java_call: |
+      List<RecvLineDTO> lines = Arrays.asList(
+        new RecvLineDTO(40002, new BigDecimal("100"), new BigDecimal("8.00")),
+        new RecvLineDTO(40002, new BigDecimal("100"), new BigDecimal("12.00"))
+      );
+      coreService.bulkReceive(lines)
+    expected:
+      t_item:
+        row_match:
+          item_id: 40002
+          std_cost: 10.00  -- AVG(8.00, 12.00) = 10.00

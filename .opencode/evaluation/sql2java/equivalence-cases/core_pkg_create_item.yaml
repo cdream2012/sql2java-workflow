@@ -1,0 +1,66 @@
+# L4 行为等价测试用例: core_pkg.create_item
+# 重载过程 + RETURNING INTO + NVL + OUT 参数
+# 难度: P1（中等）
+# 翻译映射: 两个重载方法; RETURNING INTO → useGeneratedKeys; OUT → 返回值或DTO字段
+
+test_suite: core_pkg_create_item
+description: 创建物料（两个重载版本）行为等价验证
+db_level: h2_compatible
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+java_class: com.erp.service.CoreService
+java_method: createItem
+
+setup:
+  sql: |
+    CREATE SEQUENCE IF NOT EXISTS seq_item_id START WITH 30000;
+    -- 清理之前的测试数据
+    DELETE FROM t_item WHERE item_code LIKE 'CREATE-TEST-%';
+
+cases:
+  - name: 重载版1_无成本
+    description: |
+      PL/SQL: p_id := seq.NEXTVAL; INSERT ... VALUES(p_id, ...);
+      Java: Mapper.insert + useGeneratedKeys → 返回 item_id
+    pg_call: |
+      INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom)
+      VALUES(nextval('seq_item_id'), 'CREATE-TEST-001', '创建测试1', 'RAW', 'EA')
+      RETURNING item_id
+    java_call: "coreService.createItem(\"CREATE-TEST-001\", \"创建测试1\", \"RAW\")"
+    expected:
+      t_item:
+        count_delta: +1
+        new_row_match:
+          item_code: "CREATE-TEST-001"
+          item_name: "创建测试1"
+          item_type: "RAW"
+          base_uom: "EA"
+          std_cost: 0
+
+  - name: 重载版2_带成本_NVL处理null
+    description: |
+      PL/SQL: INSERT ... NVL(p_cost,0) RETURNING item_id INTO p_id
+      Java: Mapper.insert → 返回 item_id; null cost → 0
+    pg_call: |
+      INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom, std_cost)
+      VALUES(nextval('seq_item_id'), 'CREATE-TEST-002', '创建测试2', 'FG', 'EA', COALESCE(50.00, 0))
+      RETURNING item_id
+    java_call: "coreService.createItem(\"CREATE-TEST-002\", \"创建测试2\", \"FG\", new BigDecimal(\"50.00\"))"
+    expected:
+      t_item:
+        count_delta: +1
+        new_row_match:
+          item_code: "CREATE-TEST-002"
+          std_cost: 50.00
+
+  - name: 重载版2_成本为null时NVL为0
+    pg_call: |
+      INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom, std_cost)
+      VALUES(nextval('seq_item_id'), 'CREATE-TEST-003', '创建测试3', 'RAW', 'EA', COALESCE(NULL, 0))
+      RETURNING item_id
+    java_call: "coreService.createItem(\"CREATE-TEST-003\", \"创建测试3\", \"RAW\", null)"
+    expected:
+      t_item:
+        count_delta: +1
+        new_row_match:
+          item_code: "CREATE-TEST-003"
+          std_cost: 0

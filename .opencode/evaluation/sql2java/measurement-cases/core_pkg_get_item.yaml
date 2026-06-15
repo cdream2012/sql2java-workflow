@@ -1,0 +1,44 @@
+# L3 语义分析测量用例: core_pkg.get_item
+# SELECT INTO %ROWTYPE + NO_DATA_FOUND 异常
+# 翻译映射: SELECT INTO → Mapper.selectById; %ROWTYPE → Entity; NO_DATA_FOUND → BizException
+
+subprogram: get_item
+source_file: resources/mfg_erp_sql_tiny/pkg/core_pkg_body.sql
+description: 按 ID 查询物料行，不存在时抛业务异常
+
+expected:
+  sql_statements:
+    select: 1   # SELECT * INTO v FROM t_item WHERE item_id = p_id
+    insert: 0
+    update: 0
+    delete: 0
+    merge: 0
+  tables:
+    - t_item
+  control_flow:
+    if: 0
+    loop: 0
+    return: 1   # RETURN v
+  exceptions:
+    - plsql: "WHEN NO_DATA_FOUND"
+      expected_java: "catch (EmptyResultDataAccessException e)"
+      severity: critical
+      note: "必须映射为具体异常类型，不能吞掉"
+    - plsql: "RAISE_APPLICATION_ERROR(-20101, 'Item not found: '||p_id)"
+      expected_java: "throw new BizException(...)"
+      severity: critical
+      note: "错误码 -20101 应在 Java 异常中保留"
+  type_mappings:
+    - param: p_id
+      oracle_type: NUMBER
+      expected_java_type: Long
+    - return: true
+      oracle_type: "t_item%ROWTYPE"
+      expected_java_type: ItemDO
+  special_constructs:
+    - construct: "%ROWTYPE"
+      expected_java: "Entity 类（ItemDO），包含表所有列"
+      severity: critical
+    - construct: "SELECT * INTO"
+      expected_java: "Mapper.selectById → 单对象返回"
+      severity: critical

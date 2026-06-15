@@ -1,0 +1,83 @@
+# L4 行为等价测试用例: trg_item_audit
+# 行级触发器 + AFTER UPDATE OF 指定列 + WHEN 条件 + :old/:new 引用
+# 难度: P1（中等）
+# 翻译映射: 触发器 → AOP 拦截 或 MyBatis Interceptor
+
+test_suite: trg_item_audit
+description: 物料审计触发器行为等价验证
+db_level: pg_only
+source_file: resources/mfg_erp_sql_tiny/trigger/trg_item_audit.sql
+java_class: com.erp.service.CoreService
+java_method: updateItemCost（被审计的操作）
+
+setup:
+  sql: |
+    -- 创建测试物料
+    INSERT INTO t_item(item_id, item_code, item_name, item_type, base_uom, std_cost, status)
+    VALUES(50001, 'AUDIT-001', '审计测试物料', 'RAW', 'EA', 10.00, 'ACTIVE')
+    ON CONFLICT (item_id) DO UPDATE SET std_cost = 10.00, status = 'ACTIVE';
+
+    -- 创建审计日志序列
+    CREATE SEQUENCE IF NOT EXISTS seq_error_log_id START WITH 100;
+
+    -- 清理之前的审计记录
+    DELETE FROM t_error_log WHERE error_code = 'AUDIT' AND error_msg LIKE '%50001%';
+
+cases:
+  - name: std_cost变化触发审计
+    description: |
+      PL/SQL: AFTER UPDATE OF std_cost, status ON t_item
+              WHEN (old.std_cost <> new.std_cost)
+              → INSERT INTO t_error_log (JSON格式 old/new 值)
+      Java: AOP 拦截 updateItemCost → 比较新旧值 → 写审计日志
+    pg_call: |
+      UPDATE t_item SET std_cost = 15.00 WHERE item_id = 50001;
+      SELECT * FROM t_error_log WHERE error_code = 'AUDIT'
+      ORDER BY log_id DESC LIMIT 1
+    java_call: "coreService.updateItemCost(50001L, new BigDecimal(\"15.00\"))"
+    expected:
+      t_error_log:
+        count_delta: +1
+        new_row_match:
+          error_code: "AUDIT"
+          error_msg_contains: '"old":10'
+
+  - name: status变化触发审计
+    description: status 也在 AFTER UPDATE OF 列表中
+    pg_call: |
+      UPDATE t_item SET status = 'OBSOLETE' WHERE item_id = 50001;
+      SELECT * FROM t_error_log WHERE error_code = 'AUDIT'
+      ORDER BY log_id DESC LIMIT 1
+    java_call: "coreService.updateItemStatus(50001L, \"OBSOLETE\")"
+    expected:
+      t_error_log:
+        count_delta: +1
+
+  - name: 其他列变化不触发
+    description: |
+      WHEN 子句: old.std_cost <> new.std_cost
+      更新 item_name 不应触发审计（不在 UPDATE OF 列表中）
+    pg_call: |
+      UPDATE t_item SET item_name = '改名测试' WHERE item_id = 50001;
+      SELECT COUNT(*) FROM t_error_log WHERE error_code = 'AUDIT'
+      AND occurred_at > CURRENT_TIMESTAMP - INTERVAL '1 second'
+    java_call: "coreService.updateItemName(50001L, \"改名测试\")"
+    expected:
+      t_error_log:
+        count_delta: 0  -- 不应新增审计记录
+
+  - name: 值未变化不触发
+    description: |
+      WHEN (old.std_cost <> new.std_cost) 条件过滤
+      设置相同的 std_cost 值不应触发
+    pg_call: |
+      UPDATE t_item SET std_cost = 15.00 WHERE item_id = 50001;
+      -- 再次设置相同值
+      UPDATE t_item SET std_cost = 15.00 WHERE item_id = 50001;
+      SELECT COUNT(*) FROM t_error_log WHERE error_code = 'AUDIT'
+      AND occurred_at > CURRENT_TIMESTAMP - INTERVAL '1 second'
+    java_call: |
+      coreService.updateItemCost(50001L, new BigDecimal("15.00"));  // 当前已是 15.00
+    expected:
+      t_error_log:
+        count_delta: 0  -- 值未变化，不触发
