@@ -141,7 +141,7 @@ return {
 
 ### 改动 4：`workflow-engine.ts` — resume/confirm 等场景也输出 todo
 
-在 `confirm`、`fixContinue` action 成功时，也追加 todo snapshot，确保 resume 场景下 primary agent 也能更新 todo。
+在 `confirm`、`fixContinue`、`resume` action 成功时，也追加 todo snapshot，确保 resume 场景下 primary agent 也能更新 todo。
 
 ## 涉及文件
 

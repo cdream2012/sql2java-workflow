@@ -2,7 +2,7 @@
 
 ## Context
 
-当前 sql2java 工作流：`inventory → analyze → plan → scaffold → translate → review → verify`
+当前 sql2java 工作流：`inventory → analyze → plan → scaffold → translate → dedup → review → verify`
 
 `analyze` 阶段产出的 `analysis.json` 侧重于**结构化解析**（调用图、拓扑排序、语句块分类），但 `translator` 在翻译前还需要更**面向业务语义**的信息——表结构映射、校验规则、业务逻辑流程、特殊语法转化规约。这些信息目前散落在 `analysis.json` 的 `translationNotes`、`inventory.json` 的表定义和源码本身中，缺乏一份集中的"翻译说明书"。
 

@@ -266,16 +266,31 @@ LLM **以 java-architect 身份执行 plan 阶段**的工作：
 
 完成后调用 `workflow({ action: "advance", runId, result: "passed" })`
 
-**advance**：`translate → condition: "always" → review`
+**advance**：`translate → condition: "always" → dedup`
 
 ---
 
-## 十、阶段 6：review（质量审查）
+## 九·五、阶段 5.5：dedup（跨包去重 + 公共模块抽取）
+
+**Agent：java-architect.md → Phase: dedup**
+
+1. 扫描所有翻译产物，检测跨包重复代码（相似异常处理、工具方法、常量定义等）
+2. 将重复代码抽取为公共模块（exception/config/type-mapper/dto/constants/util/mybatis/mybatis-fragment/mapper-interface/test-base）
+3. 更新受影响包的 import 和类引用
+4. 写入 `dedup.json`（含 scanStats、extractedModules、packageChanges、metrics）
+
+完成后调用 `workflow({ action: "advance", runId, result: "passed" })`
+
+**advance**：`dedup → condition: "always" → review`
+
+---
+
+## 十、阶段 7：review（质量审查）
 
 **Agent：reviewer.md → Phase: review**
 
 1. 确定审查范围（全量 or 增量）
-2. **逐包审查**：对每个包按 **15 类审查清单**逐项检查（逻辑等价、SQL 完整性、空值处理、类型映射、异常映射、事务边界、游标映射、参数方向、命名一致性、TODO 残留、命名规约、代码格式、OOP 规约、注释规约、集合与异常）
+2. **逐包审查**：对每个包按 **18 类审查清单**逐项检查（逻辑等价、SQL 完整性、空值处理、类型映射、异常映射、事务边界、游标映射、参数方向、命名一致性、TODO 残留、命名规约、代码格式、OOP 规约、注释规约、集合与异常、版本合规、测试完整性、测试正确性）
 3. 写入 per-package `review.json`
 4. 写入 `review-summary.json`（含 `allPassed` 字段）
 
@@ -289,13 +304,13 @@ LLM **以 java-architect 身份执行 plan 阶段**的工作：
 
 ---
 
-## 十一、阶段 7：verify（编译验证）
+## 十一、阶段 8：verify（编译验证 + 测试执行）
 
 **Agent：reviewer.md → Phase: verify**
 
 1. 执行 `mvn compile`，收集编译错误
 2. 逐包校验：MyBatis XML namespace / statement id 匹配、编译错误归因、TODO 残留统计
-3. **生成完整单元测试**：每个测试方法包含 arrange（Mock 设置）→ act（调用）→ assert（断言），禁止空方法体；测试类使用中文 Javadoc 注释
+3. **执行单元测试**：`mvn test`，收集测试结果（testExecution：executed/totalTests/passedTests/failedTests/testErrors）
 4. 写入 per-package `verify.json` + `verify-summary.json`
 
 完成后调用 `workflow({ action: "advance", runId })`
@@ -315,8 +330,8 @@ LLM **以 java-architect 身份执行 plan 阶段**的工作：
 
 **advance 时**（`workflow/engine-core.ts`）：在创建 fix entry 前，检查 **D2 双层 exhausted**：
 
-- 全局 fix 次数 ≤ 3（`FIX_LIMITS.globalMax`）
-- 单触发阶段 fix 次数 ≤ 2（`FIX_LIMITS.phaseMax`）
+- 全局 fix 次数 ≤ 5（`FIX_LIMITS.globalMax`）
+- 单触发阶段 fix 次数 ≤ 5（`FIX_LIMITS.phaseMax`）
 - 超限 → 直接标记 `completed_with_issues`，工作流结束
 - fix 入口还检查前置 artifact（D15: `checkPrerequisites`）：fix 需要触发阶段的 summary 文件（`review-summary.json` 或 `verify-summary.json`，二选一即可）
 
@@ -341,7 +356,8 @@ LLM **以 java-architect 身份执行 plan 阶段**的工作：
   { phase: "review", status: "in_progress",
     incrementalContext: { targetPackages: ["PKG_ORDER", "PKG_PAYMENT"] } }
   ```
-  → 回到 review，**只重新处理修复过的包**（增量模式）
+  → 固定回到 review（D7: fix → review always），**只重新处理修复过的包**（增量模式）
+  → review passed 后自动走到 verify，verify 再次检查
 - **D14 文件名映射**：`getArtifactFilename` 确保 fix → `fix.json` 的正确映射
 
 ### fix 失败处理
@@ -413,28 +429,34 @@ workflow({ action: "start", runId, sourcePath, dbConf })
 ⑤ translate (translator, temp=0.1)
   │  按拓扑序逐包翻译 → 写入 translations/{pkg}/translation.json + Java 文件
   │  [Java 代码规约自动注入 D19 + 中文注释要求]
-  │  advance → translate→review (always)
+  │  advance → L3 质量门控 G1（D21）+ translate→dedup (always)
   │
   ▼
-⑥ review (reviewer, temp=0.1)
-  │  15 类审查清单逐包审查 → review.json + review-summary.json
+⑥ dedup (java-architect, temp=0.2)
+  │  跨包重复代码检测 + 公共模块抽取 → 写入 dedup.json + 公共模块 Java 文件
   │  [Java 代码规约自动注入 D19]
-  │  advance → D8 推导 allPassed
+  │  advance → dedup→review (always)
+  │
+  ▼
+⑦ review (reviewer, temp=0.1)
+  │  18 类审查清单逐包审查 → review.json + review-summary.json
+  │  [Java 代码规约自动注入 D19]
+  │  advance → L3 质量门控 G3（D21）+ D8 推导 allPassed
   │     ├─ passed → review→verify
   │     └─ failed → review→fix ←──┐
   │                                │
   ▼                               │
-⑦ verify (reviewer, temp=0.1)     │
-  │  mvn compile + MyBatis 校验 + 完整单元测试生成
-  │  advance → D8 推导 allPassed   │
+⑧ verify (reviewer, temp=0.1)     │
+  │  mvn compile + MyBatis 校验 + 测试执行
+  │  advance → L3 质量门控 G6（D21）+ D8 推导 allPassed
   │     ├─ passed → __done__ ✅    │
   │     └─ failed → fix ←─────────┤
   │                                │
   ▼                                │
-⑧ fix (translator, temp=0.1) ─────┘
-  │  D2 检查: 全局≤3次, 单阶段≤2次
+⑨ fix (translator, temp=0.1) ─────┘
+  │  D2 检查: 全局≤5次, 单阶段≤5次
   │  修复 mustFix → 写入 fix.json
-  │  D12 校验 → 增量回到触发阶段（只处理修复包）
+  │  D12 校验 → 增量回到 review（D7: fix 固定回 review，只处理修复包）
   │  循环直到 verify passed 或 exhausted → completed_with_issues
 ```
 
@@ -445,14 +467,14 @@ workflow({ action: "start", runId, sourcePath, dbConf })
 | 编号 | 设计点 | 说明 |
 |------|--------|------|
 | D1 | advance condition | 先匹配精确 condition（passed/failed），再匹配 always |
-| D2 | fix 双层 exhausted | 全局最多 3 次 fix，单触发阶段最多 2 次 |
+| D2 | fix 双层 exhausted | 全局最多 5 次 fix，单触发阶段最多 5 次 |
 | D3 | fix 增量重做 | fix 后只重新处理修复过的包（targetPackages）；fix 失败返回 fixFailed=true |
 | D4 | confirm 时序 | waitingForConfirmation=true 时不激活 agent，用户确认后才构建 prompt |
 | D5 | Zod 校验 | advance 时从磁盘读 artifact 做 Zod 结构校验；fix-failed 时跳过 |
 | D6 | 持久化 | 每次状态变更都写 run.json + _events.log，支持崩溃恢复 |
-| D7 | fix 动态路由 | fix 不写死 transitions，由 handleFixAdvance 根据 branchedFrom 动态回环 |
+| D7 | fix 路由 | fix 完成后固定回到 review（TransitionRule: fix→review always），不再根据 branchedFrom 动态路由 |
 | D8 | result 推导 | review/verify 阶段从 summary 的 allPassed 自动推导 result（deriveReviewResult） |
-| D9 | 跨 Schema 校验 | inventory ↔ analysis ↔ plan 的包名一致性（extractPackageNames 双格式兼容） |
+| D9 | 跨 Schema 校验 | inventory ↔ analysis ↔ plan 的包名一致性；分级 blocking/warning（warning 需 acceptWarnings 确认） |
 | D11 | system prompt 构建 | 通用部分 + Java 代码规约（D19）+ Phase Section + Runtime Context 拼接注入 |
 | D12 | fix 包名校验 | fixedPackages 必须存在于 inventory 且覆盖所有失败包 |
 | D14 | phase→filename | getArtifactFilename 处理 phase 名与磁盘文件名不一致 |
@@ -461,3 +483,7 @@ workflow({ action: "start", runId, sourcePath, dbConf })
 | D17 | artifact 缓存 | loadArtifactJson 单次 advance 内缓存，advance 结束后清除 |
 | D18 | Schema 预获取 | 有 db.xml 时自动连接 Oracle 拉取 DDL，纯 JS thin mode，不侵入 phase 链 |
 | D19 | Java 代码规约注入 | docs/java-code-spec.md 自动注入 java-architect / translator / reviewer |
+| D20 | refName 重载规范 | 重载子程序用 `{name}__{序号}` 唯一标识，统一 callGraph/FSD/subprogramMethods |
+| D21 | L3 质量门控 | 确定性数值门控：G1 翻译完成率≥0.8 / G3 review 分数≥70 / G6 测试通过率≥0.7 |
+| D22 | rejection guidance | 每阶段的拒绝引导，鼓励重做而非修补 JSON |
+| D23 | 跨平台文件操作 | atomicRename/safeRm/safeWriteFile 处理 Windows 文件锁定 |

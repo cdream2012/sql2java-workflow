@@ -10,6 +10,8 @@
 
 `.opencode` 是一套 TS 代码驱动的多阶段工作流（`inventory → analyze → plan → scaffold → translate → dedup → review → verify`，含 `fix` 回环），每个阶段由对应 agent（sql-analyst / java-architect / translator / reviewer）按注入的 Java 代码规约执行。它本质是一个**长程任务**。
 
+> 注：审查清单已从 15 类扩展为 18 类（新增 version-compliance / test-completeness / test-correctness），verify 阶段从"单元测试生成"改为"测试执行"（testExecution 替代 testGeneration）。
+
 本方案的目标：为这套长程工作流建立一套测试框架，使其具备两类测试能力——
 
 | # | 测试类型 | 测什么 | 手段 |

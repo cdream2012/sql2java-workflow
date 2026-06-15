@@ -37,7 +37,7 @@
                                                 └───────┘             └→ fix → review（增量回到触发阶段）
 ```
 
-**单流水线**：8 个阶段 + 1 个条件分支阶段（fix），一个 runId，无条件前进 + review/verify 失败时进入 fix 循环（增量重做）。fix 完成后直接回到 review 审查，dedup 只在主线 translate 后执行一次。启动前可选执行 Schema 预获取（发现 `db.xml` 时自动连接数据库拉取 DDL）。
+**单流水线**：9 个阶段（含 dedup）+ 1 个条件分支阶段（fix），一个 runId，无条件前进 + review/verify 失败时进入 fix 循环（增量重做）。fix 完成后直接回到 review 审查，dedup 只在主线 translate 后执行一次。启动前可选执行 Schema 预获取（发现 `db.xml` 时自动连接数据库拉取 DDL）。
 
 ## 项目结构
 
@@ -59,6 +59,10 @@ sql2java-workflow/
 │   │   ├── artifact-schemas.ts       # Artifact Zod Schemas + getArtifactFilename + getPerPackageSchema
 │   │   ├── plsql-scanner.ts          # PL/SQL AST/regex 预扫描器
 │   │   ├── schema-fetcher.ts         # 数据库 Schema 自动获取（db.xml → ddl-output/）
+│   │   ├── refname.ts                # refName 重载规范（生成/解析/校验限定名）
+│   │   ├── rejection-guidance.ts     # PHASE_REJECTION_GUIDANCE + enhanceRejection
+│   │   ├── cross-platform.ts         # 跨平台文件操作（atomicRename/safeRm/safeWriteFile）
+│   │   ├── phase-metrics-collector.ts # 阶段指标采集与报告
 │   │   ├── constants.ts              # 共享常量（GENERATED_OUTPUT_DIR 等）
 │   │   └── type-mappings.ts          # Oracle → Java/JDBC 类型映射表
 │   ├── plugins/
@@ -84,8 +88,8 @@ sql2java-workflow/
 | java-architect | dedup | 0.2 | 跨包重复代码检测 + 公共模块抽取 |
 | translator | translate | 0.1 | 按拓扑序逐包翻译，逐包持久化，遵守 Java 代码规约 + 中文注释 |
 | translator | fix | 0.1 | 修复 mustFix 项，产出 FixArtifact |
-| reviewer | review | 0.1 | 15 类审查清单（含命名规约/代码格式/OOP/注释语言），逐包持久化 |
-| reviewer | verify | 0.1 | mvn compile + MyBatis 校验 + 完整单元测试生成（arrange→act→assert） |
+| reviewer | review | 0.1 | 18 类审查清单（含命名规约/代码格式/OOP/注释语言/版本合规/测试），逐包持久化 |
+| reviewer | verify | 0.1 | mvn compile + MyBatis 校验 + 测试执行（arrange→act→assert） |
 
 ## 工作流定义
 
@@ -107,21 +111,21 @@ sql2java-workflow/
 
 - **无条件前进**：inventory → analyze → plan → scaffold → translate → dedup → review → verify → 完成
 - **fix 循环**：review/verify failed → fix → review → verify（fix 修改翻译后直接回到 review 审查）
-- **exhausted 策略**：globalMax=3, phaseMax=2, 任一达限 → `completed_with_issues`
+- **exhausted 策略**：globalMax=5, phaseMax=5, 任一达限 → `completed_with_issues`
 
 ## 设计决策
 
 | ID | 决策 | 说明 |
 |----|------|------|
 | D1 | advance condition | LLM 传入 result，引擎匹配 TransitionRule |
-| D2 | fix exhausted | 双层策略：globalMax=3（宽松），phaseMax=2（严格） |
+| D2 | fix exhausted | 双层策略：globalMax=5, phaseMax=5 |
 | D3 | fix 增量重做 | fix 后只重审修改过的包；fix 失败未 exhausted 返回 fixFailed=true（区别于 rejected），LLM 调 retry 重试 |
 | D4 | confirm 时序 | waitingForConfirmation=true 时不激活 agent |
 | D5 | artifact 写入 | agent 自己写 artifact，advance 时从磁盘做 Zod 校验；fix-failed 时跳过 Zod 校验 |
 | D6 | 持久化 | run.json 全量单文件存储 |
-| D7 | fix 动态路由 | 从 branchedFrom 动态取目标阶段 |
+| D7 | fix 路由 | fix 完成后固定回到 review（fix→review always） |
 | D8 | result 自动推导 | review/verify 阶段引擎从 allPassed 自动推导 result |
-| D9 | 跨 Schema 校验 | inventory 阶段 plugin 层校验 index↔inventory 一致；analyze/plan 完成后校验包名/映射一致性（双格式兼容） |
+| D9 | 跨 Schema 校验 | inventory 阶段 plugin 层校验 index↔inventory 一致；analyze/plan/translate/dedup 完成后校验包名/映射一致性（双格式兼容）；分级 blocking/warning |
 | D10 | SCC 处理 | 循环依赖组归为同层数组，各包保持独立 |
 | D11 | prompt 注入 | 只注入当前 Phase section + 通用规则 |
 | D12 | FixArtifact 校验 | 包名必须在 inventory 中存在（packageNames 优先，旧格式回退 packages[].name），且覆盖所有失败包 |
@@ -133,6 +137,9 @@ sql2java-workflow/
 | D18 | Schema 预获取 | 发现 db.xml 时自动连接 Oracle 拉取 DDL 到 ddl-output/，纯 JS thin mode，不侵入 phase 链 |
 | D19 | Java 代码规约注入 | docs/java-code-spec.md 统一规约自动注入 java-architect / translator / reviewer 三个 agent |
 | D20 | dedup 公共模块抽取 | translate 完成后扫描所有包，检测跨包重复代码（DTO/工具方法/常量/异常类/MyBatis 片段），抽取为共享模块并更新引用；不修改 Service 接口和 SQL 内容 |
+| D21 | L3 质量门控 | 确定性数值门控：G1 翻译完成率≥0.8 / G3 review 分数≥70 / G6 测试通过率≥0.7 |
+| D22 | rejection guidance | 每阶段的拒绝引导，鼓励重做而非修补 JSON |
+| D23 | 跨平台文件操作 | atomicRename/safeRm/safeWriteFile 处理 Windows 文件锁定 |
 
 ## 命令用法
 
@@ -299,17 +306,19 @@ opencode models zai-coding-plan  # 只看 z.ai 模型
 | 方法 | 说明 |
 |------|------|
 | `start(defId, runId, metadata)` | 创建 WorkflowRun，进入第一个 phase |
-| `advance(runId, { result })` | 完成当前 phase → 匹配 TransitionRule → 推进 |
+| `advance(runId, { result, acceptWarnings })` | 完成当前 phase → 匹配 TransitionRule → 推进 |
 | `confirm(runId)` | paused → running，激活 agent |
 | `retry(runId)` | 重置当前 entry，递增 retryCount |
 | `abort(runId)` | 终止工作流 |
 | `status(runId)` | 查询当前状态 |
 | `listRuns()` | 列出所有 run |
 | `loadFromDisk(runId)` | 从 run.json 恢复 |
-| `validateCrossSchema()` | 跨 Schema 语义校验（D9） |
+| `fixContinue(runId)` | fix 循环继续（exhausted 后新 epoch） |
+| `validateCrossSchema()` | 跨 Schema 语义校验（D9，blocking/warning 分级） |
 | `isFixExhausted()` | 双层 exhausted 判定（D2） |
 | `handleFixAdvance()` | fix 阶段特殊处理（D3/D7/D12） |
 | `deriveReviewResult()` | review/verify result 自动推导（D8） |
+| `checkQualityGates()` | L3 确定性数值门控检查（D21） |
 | `extractPackageNames()` | 双格式包名提取（packageNames 优先，旧格式回退） |
 
 ## Artifact Schema 工具函数
@@ -317,9 +326,11 @@ opencode models zai-coding-plan  # 只看 z.ai 模型
 | 函数 | 说明 |
 |------|------|
 | `getArtifactFilename(phase)` | phase 名 → 磁盘文件名映射（D14） |
+| `getSchemaForPhase(phase)` | 根据阶段名查找对应 Zod Schema |
 | `getPerPackageSchema(phase)` | 获取 translation/review/verify 的 per-package schema |
 | `getAnalysisPackageSchema()` | 获取 analysis per-package schema |
-| `getSummarySchema(filename)` | 根据文件名获取 summary schema |
+| `getInventoryPackageSchema()` | 获取 inventory per-package schema |
+| `getSummarySchema(phase)` | 根据阶段名获取 summary schema |
 
 ## 技术栈
 

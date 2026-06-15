@@ -2,7 +2,7 @@
 
 ## Context
 
-当前工作流 8 个阶段的报告只有两个维度：Agent 输出的纯文本 📋 阶段小结（格式松散、LLM 自由发挥）、以及 review/verify 两个阶段的结构化 `*-summary.json`。缺少：
+当前工作流 9 个阶段的报告只有两个维度：Agent 输出的纯文本 📋 阶段小结（格式松散、LLM 自由发挥）、以及 review/verify 两个阶段的结构化 `*-summary.json`。缺少：
 - **Agent/LLM 运行数据**：工具调用次数、LLM API 调用次数、token 消耗（input/output/cache）、费用、耗时
 - **结构化的业务报告**：每阶段完成时自动从 artifact JSON 提取业务数据，不依赖 LLM 输出
 
@@ -134,6 +134,13 @@ interface PhaseBusinessData {
   generatedJavaFileCount?: number    // ← sum(TranslationSchema.files.length)
   todoCount?: number
 
+  // dedup（字段名对齐 DedupSchema）
+  duplicateGroupsFound?: number       // ← from DedupSchema.scanStats.duplicateGroupsFound
+  extractedModuleCount?: number        // ← from DedupSchema.extractedModules.length
+  affectedPackageCount?: number        // ← count(unique DedupSchema.packageChanges[].packageName)
+  filesExtracted?: number              // ← from DedupSchema.metrics.filesExtracted
+  filesModified?: number               // ← from DedupSchema.metrics.filesModified
+
   // review（averageScore 为计算值：sum(packageResults[].score) / packageResults.length）
   allPassed?: boolean
   totalMustFix?: number
@@ -141,11 +148,15 @@ interface PhaseBusinessData {
   averageScore?: number          // ← 计算值，非直接字段
   reviewedPackageCount?: number
 
-  // verify（compilation.errors 为 optional；testGeneration.testFiles 依赖 generated===true）
+  // verify（compilation.errors 为 optional；testExecution 为必填）
   compilationSuccess?: boolean
   compilationErrorCount?: number   // ← compilation.success?0:compilation.errors?.length??0
   mybatisValidCount?: number       // ← count(packageResults[].mybatisValid===true)
-  testFileCount?: number           // ← testGeneration.generated?testGeneration.testFiles.length:0
+  testFileCount?: number           // ← testExecution.testFiles.length
+  testExecuted?: boolean           // ← testExecution.executed
+  totalTests?: number              // ← testExecution.totalTests
+  passedTests?: number             // ← testExecution.passedTests
+  failedTests?: number             // ← testExecution.failedTests
 
   // fix
   fixedPackageCount?: number
@@ -204,6 +215,7 @@ interface RunBusinessData {
     plan.json
     scaffold.json
     translate.json
+    dedup.json
     review.json
     verify.json
     fix-1.json               # fix 可能多次，用序号区分
@@ -213,6 +225,7 @@ interface RunBusinessData {
     inventory-report.txt     # 每阶段文本报告
     analyze-report.txt
     ...
+    dedup-report.txt
     fix-1-report.txt         # fix 多次时对应序号
     fix-2-report.txt
     final-report.txt         # 最终文本报告
@@ -269,9 +282,12 @@ persist(): void
 | plan | `plan.json` | javaPackageCount, packageMappingsCount |
 | scaffold | `scaffold.json` | generatedFiles=generated.entities.length+generated.mapperInterfaces.length+generated.serviceShells.length+generated.commonClasses.length |
 | translate | `translations/*/translation.json`（逐包聚合） | translatedPackageCount=目录数, completedSubprogramCount=sum(completedSubprograms.length), totalSubprogramCount=sum(totalSubprograms), generatedJavaFileCount=sum(files.length), todoCount=sum(todos.length) |
+| dedup | `dedup.json` | duplicateGroupsFound=scanStats.duplicateGroupsFound, extractedModuleCount=extractedModules.length, affectedPackageCount=count(unique packageChanges[].packageName), filesExtracted=metrics.filesExtracted, filesModified=metrics.filesModified |
 | review | `review-summary.json` | allPassed, totalMustFix, totalTodosRemaining, averageScore **(计算值: sum(packageResults[].score) / length)**, reviewedPackageCount=packageResults.length |
-| verify | `verify-summary.json` | compilationSuccess=compilation.success, compilationErrorCount=compilation.success?0:compilation.errors?.length??0, mybatisValidCount=count(packageResults[].mybatisValid===true), testFileCount=testGeneration.generated?testGeneration.testFiles.length:0 |
+| verify | `verify-summary.json` | compilationSuccess=compilation.success, compilationErrorCount=compilation.success?0:compilation.errors?.length??0, mybatisValidCount=count(packageResults[].mybatisValid===true), testFileCount=testExecution.testFiles.length, testExecuted=testExecution.executed, totalTests=testExecution.totalTests, passedTests=testExecution.passedTests, failedTests=testExecution.failedTests |
 | fix | `fix.json` | fixedPackageCount=fixedPackages.length, fixedPackageNames=fixedPackages |
+
+**dedup 阶段容错**：`dedup.json` 可能不存在（项目无重复代码时 dedup 跳过抽取），extractedModules/packageChanges 为空数组时不报错。
 
 **容错设计**：`extractBusinessData` 对每个阶段的提取逻辑独立 try-catch，单个字段提取失败返回 `undefined`（`PhaseBusinessData` 所有字段均为 optional），不影响其他阶段。对旧版 artifact（字段名与 Zod schema 不一致时）做 fallback 映射：
 - translate：先读 `completedSubprograms`（Zod schema），fallback 到 `subprograms`（旧版 JSON）
