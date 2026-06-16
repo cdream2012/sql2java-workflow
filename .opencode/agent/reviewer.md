@@ -9,6 +9,8 @@ tools:
   edit: false
 permission:
   bash: allow
+  external_directory:
+    "/tmp/**": allow
 ---
 
 # Agent: reviewer
@@ -45,7 +47,7 @@ permission:
 - **只处理指定包**，未修改包的 per-package artifact 保持不变
 - **summary 合并**：读取未修改包的已有 per-package artifact 结果，与本次新审查的包结果合并后生成 summary，确保 `allPassed` 反映全部包的真实状态
 
-## 15 类审查清单
+## 20 类审查清单
 
 | # | 类别 | 审查要点 |
 |---|------|---------|
@@ -67,6 +69,8 @@ permission:
 | 16 | version-compliance | **版本合规性**：代码、pom.xml、依赖必须完全符合注入的 Java 代码规约中"Java 版本与框架配置"段落。对照"禁止的 Java 9+ 语法和 API"逐项检查代码，对照"pom.xml 构建配置"检查构建配置，对照"依赖命名空间"检查命名空间和依赖版本。**违反此项标记为 critical** |
 | 17 | test-completeness | 测试完整性：测试方法是否有真实逻辑（无空方法体、无 `// TODO: [test]` 残留）、arrange→act→assert 结构完整、断言有意义 |
 | 18 | test-correctness | 测试正确性：Mock 设置与生产代码逻辑匹配、@InjectMocks 目标正确、测试覆盖 happy path 和异常路径 |
+| 19 | mapper-test-completeness | Mapper 集成测试完整性：每个 Mapper XML 的 `<select>/<insert>/<update>/<delete>` 是否都有对应集成测试方法、无空方法体（除 `@Disabled` 外）、无 `// TODO: [mapper-test]` 残留、arrange→act→assert 结构完整 |
+| 20 | mapper-test-correctness | Mapper 集成测试正确性：测试数据 INSERT 与 `schema-h2.sql` 表结构一致、`@MybatisTest` + `@AutoConfigureTestDatabase` 配置正确、H2 不兼容 SQL 已标 `@Disabled`、测试数据使用硬编码 ID 值（不使用 NEXTVAL） |
 
 ### 严重级别定义
 
@@ -113,11 +117,17 @@ permission:
 对每个待审查的包：
 
 1. **读取数据**：读取该包的 translation.json、`analysis-packages/{package}.json` 中对应的子程序结构、原始 PL/SQL 源码
-2. **逐子程序审查**：对每个子程序，按 18 类审查清单逐项检查
-3. **审查测试代码**：读取测试类 Java 文件（`src/test/java/` 下对应的 `{ServiceImplClass}Test.java`）
+2. **逐子程序审查**：对每个子程序，按 20 类审查清单逐项检查
+3. **审查 ServiceImpl 测试代码**：读取测试类 Java 文件（`src/test/java/` 下对应的 `{ServiceImplClass}Test.java`）
    - 按 test-completeness（#17）检查：无空方法体、无 `// TODO: [test]` 残留、arrange→act→assert 结构完整
    - 按 test-correctness（#18）检查：Mock 设置与 ServiceImpl 依赖一致、断言覆盖关键逻辑
    - 空 TODO 测试方法标记为 mustFix（severity: major）
+4. **审查 Mapper 集成测试代码**：读取 Mapper 集成测试文件（`src/test/java/` 下对应的 `{MapperName}IntegrationTest.java`）
+   - 按 mapper-test-completeness（#19）检查：每个 Mapper XML statement 都有对应测试方法、无空方法体（`@Disabled` 除外）、无 `// TODO: [mapper-test]` 残留、arrange→act→assert 结构完整
+   - 按 mapper-test-correctness（#20）检查：测试数据 INSERT 与 `schema-h2.sql` 表结构一致、`@MybatisTest` + `@AutoConfigureTestDatabase` 配置正确、H2 不兼容 SQL 已标 `@Disabled`、测试数据使用硬编码 ID
+   - 空 TODO 测试方法标记为 mustFix（severity: major）
+   - 缺少 Mapper XML statement 对应测试方法标记为 mustFix（severity: minor）
+5. **产出 per-package review.json**：每审完一个包立即写入，包含：
 4. **产出 per-package review.json**：每审完一个包立即写入，包含：
    - `packageName`：Oracle 包名
    - `passed`：是否通过
@@ -157,6 +167,8 @@ permission:
 - [ ] 版本合规性（version-compliance）已审查：代码 API、pom.xml 配置、依赖命名空间均符合注入的 Java 代码规约中的"Java 版本与框架配置"
 - [ ] 测试代码已按 test-completeness（#17）和 test-correctness（#18）审查
 - [ ] 空 TODO 测试方法已标记为 mustFix（major severity）
+- [ ] Mapper 集成测试已按 mapper-test-completeness（#19）和 mapper-test-correctness（#20）审查
+- [ ] 空 TODO Mapper 测试方法已标记为 mustFix（major severity）
 
 ---
 
@@ -201,6 +213,8 @@ cd ${projectRoot} && mvn compile 2>&1
 1. **MyBatis XML 校验**：
    - `mapperXmlValid`：namespace 是否与 Mapper 接口全限定名匹配
    - `statementIdsMatch`：XML 中的 statement id 是否与 Mapper 接口方法名一一对应
+   - `h2SchemaValid`：`schema-h2.sql` 是否存在且 SQL 语法可被 H2 解析
+   - `mapperTestConfigValid`：`application-test.yml` 是否正确配置 H2 数据源
 
 2. **编译错误归因**：将 mvn compile 的错误归因到具体包和文件，填入 per-package 的 `mustFix`
 
@@ -209,11 +223,11 @@ cd ${projectRoot} && mvn compile 2>&1
 4. **产出 per-package verify.json**：每校完一个包立即写入，包含：
    - `packageName`：Oracle 包名
    - `passed`：是否通过
-   - `mybatisValidation`：{ mapperXmlValid, statementIdsMatch }
+   - `mybatisValidation`：{ mapperXmlValid, statementIdsMatch, h2SchemaValid, mapperTestConfigValid }
    - `todoRemainingCount`：TODO 残留数
-   - `mustFix`：必须修复的问题（编译错误 + MyBatis 校验失败）
+   - `mustFix`：必须修复的问题（编译错误 + MyBatis 校验失败 + H2 schema 校验失败）
 
-#### Step 4: 执行单元测试
+#### Step 4: 执行测试
 
 运行 Maven 测试并收集结果：
 
@@ -229,6 +243,10 @@ cd ${projectRoot} && mvn test 2>&1
 - 根据测试类名匹配 `plan.json` 的 `packageMappings`（如 `CoreServiceImplTest` → `CORE_PKG`）
 - 将测试失败归入对应包的 verify.json 的 `mustFix`
 - 未匹配到包的测试失败归入 "GLOBAL"
+
+**测试类型区分**：
+- `*IntegrationTest` 类的失败 → `testType: "integration"`（Mapper 集成测试）
+- `*Test` 类（非 IntegrationTest）的失败 → `testType: "unit"`（ServiceImpl 单元测试）
 
 **增量模式**：
 - `mvn test` 全局执行（无法按包过滤）
@@ -259,7 +277,10 @@ cd ${projectRoot} && mvn test 2>&1
 - [ ] 编译错误正确归因到具体包和文件
 - [ ] passed=true 时 mustFix 为空，passed=false 时 mustFix 非空
 - [ ] MyBatis XML 的 namespace 和 statement id 校验完成
+- [ ] H2 schema-h2.sql 存在且可被 H2 解析（h2SchemaValid）
+- [ ] application-test.yml 配置正确指向 H2（mapperTestConfigValid）
 - [ ] 测试失败已正确归因到具体包和文件
+- [ ] 测试类型已区分（unit / integration）
 - [ ] verify-summary.json 包含 testExecution 完整结果（executed, totalTests, passedTests, failedTests, testErrors, testFiles）
 - [ ] 集合与异常（collection-exception）已审查：集合初始化大小、try-with-resources、禁止空 catch
 - [ ] verify-summary.json 的 compilation.success=false 时 errors 非空

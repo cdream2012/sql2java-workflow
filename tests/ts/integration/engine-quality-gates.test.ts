@@ -438,7 +438,7 @@ describe("advance() — quality gate integration", () => {
     expect(result.rejectionReason).toContain("阻塞级")
   })
 
-  it("translate: G2 warning only → warningPending=true", () => {
+  it("translate: G2 warning only → 自动放行，附带 crossSchemaWarnings", () => {
     ctx = createEngineWithTempDir()
     const engine = ctx.engine
     engine.start("sql2java", RUN_ID)
@@ -463,8 +463,7 @@ describe("advance() — quality gate integration", () => {
     })
 
     const result = engine.advance(RUN_ID)
-    expect(result.rejected).toBe(true)
-    expect(result.warningPending).toBe(true)
+    expect(result.rejected).toBe(false)
     expect(result.crossSchemaWarnings).toBeDefined()
     expect(result.crossSchemaWarnings!.some(w => w.includes("subprogramMethods"))).toBe(true)
   })
@@ -526,7 +525,7 @@ describe("advance() — quality gate integration", () => {
     expect(result.rejectionReason).toContain("compilation.success=false 但 allPassed=true")
   })
 
-  it("verify: G6 warning → warningPending → acceptWarnings 放行", () => {
+  it("verify: G6 warning → 自动放行，附带 crossSchemaWarnings", () => {
     ctx = createEngineWithTempDir()
     const engine = ctx.engine
     engine.start("sql2java", RUN_ID)
@@ -541,16 +540,12 @@ describe("advance() — quality gate integration", () => {
       totalTodosRemaining: 0,
     })
 
-    // 首次 advance → warningPending
+    // warning 自动放行
     const r1 = engine.advance(RUN_ID)
-    expect(r1.rejected).toBe(true)
-    expect(r1.warningPending).toBe(true)
+    expect(r1.rejected).toBe(false)
     expect(r1.crossSchemaWarnings!.some(w => w.includes("测试通过率"))).toBe(true)
-
-    // acceptWarnings → 放行
-    const r2 = engine.advance(RUN_ID, { acceptWarnings: true, result: "failed" })
-    expect(r2.rejected).toBe(false)
-    expect(r2.run.currentPhase).toBe("fix")
+    // verify allPassed=false → result=failed → fix
+    expect(r1.run.currentPhase).toBe("fix")
   })
 
   it("quality gate + cross-schema findings 合并", () => {

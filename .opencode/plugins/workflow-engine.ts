@@ -553,18 +553,10 @@ function validateInventoryPackages(
     }
   }
 
-  // 4. 校验 inventory.json 的 packageNames 与 index 一致
+  // 4. inventory.json 必须存在（包名一致性校验已移至 engine-core 的 warning 逻辑，不再 blocking）
   const inventory = engine.loadArtifactJson(artifactsDir, "inventory")
   if (!inventory) {
     return "inventory.json not found or malformed. Agent must write inventory.json before advancing."
-  }
-  const invNames = engine.extractPackageNames(inventory)
-  const idxNames = new Set(expectedPackages)
-  for (const n of idxNames) {
-    if (!invNames.has(n)) return `inventory.json packageNames missing: ${n}`
-  }
-  for (const n of invNames) {
-    if (!idxNames.has(n)) return `inventory.json packageNames has extra: ${n}`
   }
 
   return null // 校验通过
@@ -619,13 +611,18 @@ function validateAnalysisPackages(
   }
 
   // 校验 meta 文件 packageNames 与 inventory 一致
+  // 包名不一致降为 warning：engine-core validateCrossSchema 会检测并自动放行
   const metaNames = engine.extractPackageNames(metaParsed)
   const invSet = new Set(expectedPackages)
+  const pkgWarnings: string[] = []
   for (const n of invSet) {
-    if (!metaNames.has(n)) return `analysis.json packageNames missing: ${n}`
+    if (!metaNames.has(n)) pkgWarnings.push(`analysis.json packageNames missing: ${n}`)
   }
   for (const n of metaNames) {
-    if (!invSet.has(n)) return `analysis.json packageNames has extra: ${n}`
+    if (!invSet.has(n)) pkgWarnings.push(`analysis.json packageNames has extra: ${n}`)
+  }
+  if (pkgWarnings.length > 0) {
+    getLogger().warn("[validateAnalysisPackages]", `包名一致性警告（已降级为 warning，不阻断）：${pkgWarnings.join("; ")}`)
   }
 
   return null // 校验通过
@@ -1197,7 +1194,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             const banner = formatPhaseStartBanner(run.currentPhase)
             return {
               title: "Started",
-              output: `${runId} | ${run.currentPhase} | scan: ${scanStatus}${banner}\n📌 调用 todowrite 创建主线阶段进度（${run.currentPhase}=in_progress，其余=pending）\n\n✔ 工作流已启动，${run.currentPhase} 阶段就绪。\n⏹ 请输出 WORKER_SUMMARY 并结束——编排者会调度执行。`,
+              output: `${runId} | ${run.currentPhase} | scan: ${scanStatus}${banner}\n📌 调用 todowrite 创建主线阶段进度（${run.currentPhase}=in_progress，其余=pending，所有 priority="medium"）\n\n✔ 工作流已启动，${run.currentPhase} 阶段就绪。\n⏹ 请输出 WORKER_SUMMARY 并结束——编排者会调度执行。`,
               metadata: { runId, phase: run.currentPhase, scanStatus, nextAction: "dispatch" },
             }
           }
@@ -1336,17 +1333,6 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             }
 
             if (adv.rejected) {
-              // 路径 B：warning pending → LLM 需显式确认（修好 / acceptWarnings）
-              if (adv.warningPending) {
-                const warnings = adv.crossSchemaWarnings ?? []
-                return {
-                  title: "Warnings Pending",
-                  output: `⚠️ 跨 Schema 校验发现以下警告：\n\n` +
-                    warnings.map(w => `  - ${w}`).join("\n") +
-                    `\n\n⏹ 请输出 WORKER_SUMMARY 并结束——编排者会决定是否接受警告并继续。`,
-                  metadata: { rejected: true, warningPending: true, crossSchemaWarnings: warnings, nextAction: "user_decision" },
-                }
-              }
               // 路径 A：blocking 拒绝 → 需要重新 dispatch Worker 让其修正
               // 不清理 workflowContext：LLM 应修正 artifact 后重新 advance，当前 phase context 仍有效
               // activeCollector 保持活跃，继续累计
@@ -1354,7 +1340,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               const enhancedError = enhanceRejection(completedPhase, adv.rejectionReason!)
               return {
                 title: "Rejected",
-                output: `${enhancedError}\n\n⏹ 请根据以上错误修正 artifact，然后输出 WORKER_SUMMARY。编排者会重新调度。`,
+                output: `${enhancedError}\n\n⛔ 不要更新 todowrite（阶段尚未通过，保持 ${completedPhase}=in_progress）。\n⏹ 请根据以上错误修正 artifact，然后输出 WORKER_SUMMARY。编排者会重新调度。`,
                 metadata: { rejected: true, nextAction: "dispatch" },
               }
             }
@@ -1381,10 +1367,10 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             const endBanner = formatPhaseEndBanner(completedPhase, duration)
             const startBanner = formatPhaseStartBanner(adv.run.currentPhase)
             const nextAgentName = adv.nextPhase?.agentFile ? agentFileToName(adv.nextPhase.agentFile) : ""
-            let advanceOutput = `${endBanner}${startBanner}Agent: ${adv.nextPhase?.agentFile}\n\n📌 调用 todowrite 更新进度：${completedPhase}→completed，${adv.run.currentPhase}→in_progress\n\n✔ 阶段 ${completedPhase} 已完成，${adv.run.currentPhase} 阶段就绪。\n⏹ 请输出 WORKER_SUMMARY 并结束当前工作——编排者会调度下一阶段。`
-            // 路径 C：已确认的 warning 追加提醒
+            let advanceOutput = `${endBanner}${startBanner}Agent: ${adv.nextPhase?.agentFile}\n\n📌 调用 todowrite 更新进度：${completedPhase}→completed，${adv.run.currentPhase}→in_progress（priority 保持原值）\n\n✔ 阶段 ${completedPhase} 已完成，${adv.run.currentPhase} 阶段就绪。\n⏹ 请输出 WORKER_SUMMARY 并结束当前工作——编排者会调度下一阶段。`
+            // warning 提醒（醒目但不阻断）
             if (adv.crossSchemaWarnings && adv.crossSchemaWarnings.length > 0) {
-              advanceOutput += `\n\nℹ️ 已确认的跨 Schema 警告：\n${adv.crossSchemaWarnings.map(w => `  - ${w}`).join("\n")}`
+              advanceOutput += `\n\n⚠️⚠️⚠️ 校验警告（已自动放行，但建议关注）：\n${adv.crossSchemaWarnings.map(w => `  - ⚠️ ${w}`).join("\n")}`
             }
             return {
               title: `→ ${adv.run.currentPhase}`,
@@ -1846,13 +1832,26 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               `- runId: ${run.runId}`,
               `- phase: ${run.currentPhase}`,
               `- artifactsDir: ${artifactsDir}`,
+              `- sourcePath: ${(run.metadata as Record<string, unknown>).sourcePath ?? "unknown"}`,
+            ]
+
+            // 上游 artifact 路径列表：明确告诉 Worker 要读取哪些文件及完整路径
+            const upstream = UPSTREAM_ARTIFACTS[run.currentPhase ?? ""]
+            if (upstream && upstream.length > 0) {
+              workOrderParts.push(`- upstreamArtifacts:`)
+              for (const a of upstream) {
+                workOrderParts.push(`  - ${artifactsDir}/${a}`)
+              }
+            }
+
+            workOrderParts.push(
               ``,
               `## 指令`,
-              `1. 按 Phase 指令读取上游 artifact 并执行工作`,
+              `1. 按 Phase 指令读取上游 artifact（使用上方完整路径）并执行工作`,
               `2. 将产出物写入 artifactsDir 目录`,
               `3. 写入 Worker Status: ${artifactsDir}/status/${run.currentPhase}.json`,
               `4. 输出阶段小结（WORKER_SUMMARY 格式）`,
-            ]
+            )
 
             if (artifactValidationError) {
               // 修正模式：注入校验错误，Worker 必须先修正再继续
@@ -1882,7 +1881,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
 
             return {
               title: `Dispatch: ${run.currentPhase}`,
-              output: `${banner}📋 调度 ${agentName} 执行 ${run.currentPhase} 阶段\n📌 调用 todowrite 更新进度（${run.currentPhase}=in_progress）`,
+              output: `${banner}📋 调度 ${agentName} 执行 ${run.currentPhase} 阶段\n📌 调用 todowrite 更新进度（${run.currentPhase}=in_progress，priority 保持原值）`,
               metadata: {
                 runId: run.runId,
                 phase: run.currentPhase,

@@ -9,6 +9,8 @@ tools:
   edit: false
 permission:
   bash: allow
+  external_directory:
+    "/tmp/**": allow
 ---
 
 # Agent: sql-analyst
@@ -148,6 +150,8 @@ permission:
 
 **注意**：`direction` 使用 PL/SQL 实际写法 `"IN"`, `"OUT"`, `"IN OUT"`（两个词用空格分隔）。
 
+**⚠️ spec-only 包必须写入**：只有 constants/exceptions/variables 而没有 procedures 的包（spec-only 包）也必须完整写入 `inventory-packages/{PKG}.json` 和 `inventory.json` 的 packageNames。不可因为"没有 procedure"而跳过。这类包的 `procedures` 数组为空 `[]`，`bodyFile` 为 `null`。
+
 **1c. 用 write 工具写入逐包文件**
 
 每完成一个包的补充，用 `write` 工具写入 `${artifactsDir}/inventory-packages/{PKG_NAME}.json`：
@@ -241,6 +245,7 @@ bun .opencode/workflow/wf-util.js count-json ${artifactsDir}/inventory-packages
 - [ ] 表的 columns 都标注了 isPrimaryKey 和 nullable
 - [ ] direction 只使用 "IN", "OUT", "IN OUT" 三种值
 - [ ] `inventory.json` 的 packageNames 覆盖 inventory-index 中所有包
+- [ ] spec-only 包（无 procedures）也写入了 inventory-packages 和 inventory.json 的 packageNames
 
 ---
 

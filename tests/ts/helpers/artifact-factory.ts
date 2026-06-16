@@ -44,7 +44,7 @@ export function makeInventoryIndex(overrides: Record<string, unknown> = {}) {
 export function makeInventory(overrides: Record<string, unknown> = {}) {
   return {
     sourcePath: "/test/source",
-    packageNames: ["CORE_PKG"],
+    packageNames: ["CORE_PKG", "BASE_PKG"],
     tables: [{ name: "ITEMS", ddlFile: "schema/tables.sql", columns: [{ name: "ITEM_ID", oracleType: "NUMBER", nullable: false, isPrimaryKey: true }] }],
     standaloneProcedures: [],
     triggers: [],
@@ -60,11 +60,11 @@ export function makeInventory(overrides: Record<string, unknown> = {}) {
 export function makeAnalysisMeta(overrides: Record<string, unknown> = {}) {
   return {
     callGraph: { "CORE_PKG.GET_ITEM": [], "CORE_PKG.SET_ITEM": [] },
-    packageDependency: { CORE_PKG: [] },
-    translationOrder: [["CORE_PKG"]],
-    complexity: { CORE_PKG: { score: 3, patterns: [], riskLevel: "low" as const } },
+    packageDependency: { CORE_PKG: [], BASE_PKG: [] },
+    translationOrder: [["BASE_PKG", "CORE_PKG"]],
+    complexity: { CORE_PKG: { score: 3, patterns: [], riskLevel: "low" as const }, BASE_PKG: { score: 1, patterns: [], riskLevel: "low" as const } },
     sccGroups: [],
-    packageNames: ["CORE_PKG"],
+    packageNames: ["CORE_PKG", "BASE_PKG"],
     ...overrides,
   }
 }

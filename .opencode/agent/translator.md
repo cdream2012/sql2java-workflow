@@ -9,6 +9,8 @@ tools:
   edit: true
 permission:
   bash: allow
+  external_directory:
+    "/tmp/**": allow
 ---
 
 # Agent: translator
@@ -155,6 +157,63 @@ permission:
    - 所有注释使用中文
    - **禁止**生成空方法体或 `// TODO: implement test`
 
+5. **生成 Mapper 集成测试代码**（填充 scaffold 生成的 Mapper 集成测试骨架）：
+   - 读取 scaffold 生成的 Mapper 集成测试骨架文件（路径从 `scaffold.json` 的 `mapperTestShells` 获取）
+   - 读取该 Mapper 的 XML 文件，提取所有 `<select>/<insert>/<update>/<delete>` 语句
+   - 读取 `inventory.json` 的 tables 数据，确定测试数据构造方式
+   - 为每个 SQL statement 生成对应的集成测试方法
+
+   **测试生成策略**：
+
+   | 语句类型 | 测试模式 | 验证重点 |
+   |---------|---------|---------|
+   | `<select>` | 插入数据 → 执行查询 → 验证返回 | resultMap 映射、参数绑定 |
+   | `<insert>` | 构造参数 → 执行插入 → 查询验证 | 自增主键回填、数据写入 |
+   | `<update>` | 预插数据 → 执行更新 → 查询验证 | 受影响行数、字段更新 |
+   | `<delete>` | 预插数据 → 执行删除 → 查询验证 | 数据删除 |
+
+   **H2 不兼容 SQL 的处理策略**：
+
+   **生产 Mapper XML 保持不变**（Oracle 原生语法），集成测试依赖 H2 Oracle 兼容模式（`MODE=Oracle`）执行 SQL。具体策略：
+
+   1. **H2 Oracle 模式能兼容的**（大部分情况）：直接执行，无需适配
+      - `SYSDATE`、`VARCHAR2`、`NUMBER(n,m)`、`MERGE INTO`、`WITH RECURSIVE`、`||` 拼接、`NVL`/`COALESCE` 等
+   2. **H2 确实不兼容的**：生成带 `@Disabled` 注解的测试方法，注释原因
+      - `CYCLE ... SET is_cycle TO 1 DEFAULT 0`：H2 不支持此语法
+      - 其他实测后确认不兼容的构造
+   3. **测试数据 INSERT 使用硬编码 ID 值**：直接使用 `VALUES (10001, ...)` 而非 `SEQ.NEXTVAL`，避免序列语法差异
+   4. **schema-h2.sql 中序列定义**：`CREATE SEQUENCE` 语句确保 `NEXTVAL` 引用能正常工作
+
+   **示例**（基于 CoreMapper）：
+   ```java
+   @Test
+   @DisplayName("selectItemById 应返回正确映射的物料")
+   void selectItemById_shouldReturnCorrectlyMappedItem() {
+       // arrange — 插入测试数据
+       jdbcTemplate.update(
+           "INSERT INTO t_item (item_id, item_code, item_name, item_type, base_uom) "
+           + "VALUES (10001, 'ITEM001', '测试物料', 'RAW', 'EA')");
+       // act
+       ItemDO result = coreMapper.selectItemById(10001L);
+       // assert
+       assertNotNull(result);
+       assertEquals(10001L, result.getItemId());
+       assertEquals("ITEM001", result.getItemCode());
+   }
+
+   @Test
+   @Disabled("H2 不支持 Oracle CYCLE 子句，此测试需在 Oracle 环境下运行")
+   @DisplayName("selectBomTree 应返回 BOM 层次结构")
+   void selectBomTree_shouldReturnBomHierarchy() {
+       // TODO: [mapper-test] 需要 Oracle 环境验证
+   }
+   ```
+
+   **测试方法命名**：`{mapperMethodName}_should{ExpectedBehavior}`
+   - 所有注释使用中文
+   - **禁止**生成空方法体（除 `@Disabled` 测试可保留 TODO 注释）
+   - Mapper 集成测试文件在 `translation.json` 的 `files` 数组中标记为 `role: "mapper-integration-test"`
+
 #### Step 3: 逐包持久化
 
 **每翻译完一个包**，立即写入：
@@ -192,6 +251,11 @@ translation.json 包含：
 - [ ] 每个 ServiceImpl 方法都有对应的测试方法（含完整 arrange→act→assert 逻辑）
 - [ ] 测试文件在 translation.json 的 files 数组中标记为 role `"test"`
 - [ ] 测试方法注释使用中文
+- [ ] 每个 Mapper XML 的 SQL statement 都有对应的集成测试方法
+- [ ] Mapper 集成测试文件在 translation.json 的 files 数组中标记为 role `"mapper-integration-test"`
+- [ ] H2 不兼容的 SQL 已标 `@Disabled`（生产 Mapper XML 保持不变）
+- [ ] 测试数据 INSERT 使用硬编码 ID 值（不使用 SEQ.NEXTVAL）
+- [ ] Mapper 集成测试方法注释使用中文
 
 ---
 
@@ -234,6 +298,13 @@ translation.json 包含：
 2. 对照 `analysis-packages/{pkg}.json` 的子程序结构和源码理解问题
 3. 按五原则修复（如果 mustFix 项涉及测试文件，同样修复测试代码）
 4. 更新对应的 translation.json
+
+**Mapper 集成测试修复场景**：
+- H2 不兼容的 SQL → 修复测试中的数据准备 SQL 或标 `@Disabled`
+- `schema-h2.sql` 缺少表/列 → 从 `inventory.json` 补全（追加到文件末尾，不修改已有的表定义）
+- Mapper 集成测试断言错误 → 修复断言逻辑
+- 缺少 Mapper XML statement 对应的测试方法 → 补充生成
+- `schema-h2.sql` 修复时采用"追加"策略，只追加缺失的表定义，不修改已有的表定义
 
 #### Step 3: 写入 fix.json
 

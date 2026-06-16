@@ -65,7 +65,7 @@ export const NON_ZOD_VALIDATION_RULES: { phases: string[]; message: string }[] =
   },
   {
     phases: ["inventory"],
-    message: "inventory.json 的 packageNames 必须覆盖 inventory-index 中所有包",
+    message: "inventory.json 的 packageNames 必须覆盖 inventory-index 中所有包（含 spec-only 包：只有 constants/exceptions/variables 而没有 procedures 的包，procedures 数组为 []，bodyFile 为 null）",
   },
   {
     phases: ["analyze"],
@@ -90,6 +90,14 @@ export const NON_ZOD_VALIDATION_RULES: { phases: string[]; message: string }[] =
   {
     phases: ["verify"],
     message: "verify-summary.json 的 testFiles[] 中的路径必须实际存在于磁盘",
+  },
+  {
+    phases: ["scaffold"],
+    message: "scaffold.json 的 mapperTestShells 中的 oraclePackage 必须与 plan.json 的 packageMappings 一致",
+  },
+  {
+    phases: ["scaffold"],
+    message: "scaffold.json 的 h2SchemaFile 指向的文件必须存在于磁盘",
   },
 ]
 
@@ -180,13 +188,23 @@ export const COMMON_PITFALLS: Record<string, string[]> = {
   scaffold: [
     'commonModules.classes.category 推荐全小写，如 "type-mapper" / "mybatis-fragment" / "mapper-interface" / "test-base"（不限死）',
     'projectRoot 为绝对路径，必须使用 Runtime Context 注入的 projectRoot 值（指向项目根目录下 generated/{artifactId}）',
+    'mapperTestShells 中的 testClass 命名必须为 {MapperInterface}IntegrationTest',
+    'mapperTestShells 中的 oraclePackage 必须与 plan.json 的 packageMappings 一致',
+    'h2SchemaFile 指向的文件必须存在于磁盘（src/test/resources/schema-h2.sql）',
+    'schema-h2.sql 必须覆盖 inventory.json 中所有 tables 和 sequences',
+    'schema-h2.sql 中 UDT 列必须跳过并加注释（-- H2 不支持 Oracle UDT），不能生成 H2 不支持的类型',
   ],
   translate: [
     'status 推荐值："completed" / "partial"（不限死，允许其他状态值）',
-    'files.role 推荐值："mapper-interface" / "mapper-xml" / "service" / "service-impl" / "dto" / "exception" / "test"（不限死）',
+    'files.role 推荐值："mapper-interface" / "mapper-xml" / "service" / "service-impl" / "dto" / "exception" / "test" / "mapper-integration-test"（不限死）',
     'confidence 推荐小写："high" / "medium" / "low"',
     'subprogramMethods.oracleName：重载子程序必须用 {name}__序号，禁止裸名重复',
     'totalSubprograms 等数字字段支持字符串自动转换（写 "5" 等同 5）',
+    'files.role 使用 "mapper-integration-test" 标识 Mapper 集成测试文件',
+    '生产 Mapper XML 保持 Oracle 原生语法不变',
+    'H2 确实不兼容的 SQL 标 @Disabled（不修改 Mapper XML）',
+    '测试数据 INSERT 使用硬编码 ID 值（不使用 SEQ.NEXTVAL）',
+    'JdbcTemplate INSERT 测试数据的列必须与 schema-h2.sql 一致',
   ],
   review: [
     'severity 推荐小写："critical" / "major" / "minor" / "info"（不限死）',

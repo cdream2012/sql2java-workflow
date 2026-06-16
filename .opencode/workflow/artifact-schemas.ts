@@ -347,6 +347,17 @@ export const ScaffoldSchema = z.object({
       oraclePackage: z.string(),
       testClass: z.string(),
     })).optional(),
+    /** Mapper 集成测试骨架（@MybatisTest + H2） */
+    mapperTestShells: z.array(z.object({
+      file: z.string(),
+      oraclePackage: z.string(),
+      testClass: z.string(),
+      mapperInterface: z.string(),
+    })).optional(),
+    /** H2 兼容建表脚本路径（相对于 projectRoot） */
+    h2SchemaFile: z.string().optional(),
+    /** 测试用 application 配置路径（相对于 projectRoot） */
+    testApplicationConfig: z.string().optional(),
     // TODO (F8): commonClasses {file, purpose} 和 commonModules.classes {file, purpose, category}
     // 结构重叠。考虑统一为单一数组（category 可选），避免消费者需检查两个数组。
     commonClasses: z.array(z.object({
@@ -498,6 +509,10 @@ export const VerifySchema = z.object({
   mybatisValidation: z.object({
     mapperXmlValid: z.boolean(),
     statementIdsMatch: z.boolean(),
+    /** schema-h2.sql 是否存在且可被 H2 执行 */
+    h2SchemaValid: z.boolean().optional(),
+    /** application-test.yml 是否正确配置 H2 数据源 */
+    mapperTestConfigValid: z.boolean().optional(),
   }),
   todoRemainingCount: z.coerce.number(),
   mustFix: z.array(z.object({
@@ -540,6 +555,8 @@ export const VerifySummarySchema = z.object({
       testClass: z.string(),
       testMethod: z.string(),
       message: z.string(),
+      /** 测试类型：unit = ServiceImpl 单元测试，integration = Mapper 集成测试 */
+      testType: z.enum(["unit", "integration"]).optional(),
     })).optional(),
     testFiles: z.array(z.string()),
   }),
