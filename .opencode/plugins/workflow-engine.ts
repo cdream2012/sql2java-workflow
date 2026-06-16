@@ -5,6 +5,7 @@
  *   - workflow 工具（7 个 action）
  *   - advance 时 Zod artifact 校验（D5）
  *   - system prompt 构建 + Runtime Context 注入（D11）
+ *   - 阶段开始前注入 Schema 校验要求（D13）
  *   - 温度控制 + 工具过滤
  *   - 大输出截断
  *   - 依赖自动安装（node_modules 缺失时自动 npm/bun install）
@@ -14,6 +15,7 @@ import { join, dirname, resolve, sep } from "node:path"
 import { safeWriteFile } from "../workflow/cross-platform"
 import { WorkflowEngine, WorkflowEngineError, formatZodIssues, type WorkflowRun } from "../workflow/engine-core"
 import { enhanceRejection } from "../workflow/rejection-guidance"
+import { renderSchemaHint } from "../workflow/schema-hint-renderer"
 import { SQL2JAVA_WORKFLOW } from "../workflow/workflow-definitions"
 import { UPSTREAM_ARTIFACTS, PHASE_PREREQUISITES } from "../workflow/workflow-definitions"
 import {
@@ -43,6 +45,19 @@ let currentWorkflowContext: {
 } | null = null
 
 let activeCollector: PhaseMetricsCollector | null = null
+
+/** 编排 session ID 集合 — chat.params hook 中记录，system.transform hook 中用于跳过编排 session 的 prompt 注入 */
+const orchestratorSessionIds = new Set<string>()
+
+/** 从 agentFile 路径提取 agent 短名 (e.g. "agent/sql-analyst.md" → "sql-analyst") */
+function agentFileToName(agentFile: string): string {
+  return agentFile.replace(/^agent\//, "").replace(/\.md$/, "")
+}
+
+/** 已知的 subagent 名称（从 SQL2JAVA_WORKFLOW.phases 动态推导，避免硬编码不同步） */
+function getSubagentNames(): string[] {
+  return [...new Set(SQL2JAVA_WORKFLOW.phases.map(p => agentFileToName(p.agentFile)))]
+}
 
 /** fix 阶段序号追踪（同一 runId 内递增） */
 const fixPhaseIndexMap = new Map<string, number>()
@@ -136,6 +151,8 @@ function clearWorkflowContext(): void {
   if (currentWorkflowContext) {
     fixPhaseIndexMap.delete(currentWorkflowContext.runId)
   }
+  // 工作流结束时清理编排 session 注册表，避免长期运行后 Set 无限增长
+  orchestratorSessionIds.clear()
   currentWorkflowContext = null
   activeCollector = null
   _cachedJavaCodeSpec = null
@@ -340,6 +357,26 @@ function extractPhaseSection(content: string, phase: string): string {
   return start === -1 ? "" : lines.slice(start, end).join("\n").trim()
 }
 
+/**
+ * 确定项目根目录的绝对路径。
+ *
+ * 策略：
+ *   1. .workflow-artifacts/ 已存在 → 其父目录的 realpath 即为项目根目录
+ *   2. 不存在 → 使用 process.cwd() 的 resolve 路径（首次 start 时目录尚未创建）
+ *
+ * 这样即使运行期间 cwd 发生变化，projectRoot 始终指向启动时的项目根目录。
+ */
+function resolveProjectRoot(): string {
+  if (existsSync(ARTIFACT_DIR)) {
+    try {
+      // realpathSync 解析符号链接并返回绝对路径
+      const artifactAbsPath = realpathSync(ARTIFACT_DIR)
+      return dirname(artifactAbsPath)
+    } catch {}
+  }
+  return resolve(process.cwd())
+}
+
 /** 构建 Runtime Context 文本块 */
 function buildRuntimeContext(run: WorkflowRun): string {
   const lines: string[] = []
@@ -349,11 +386,14 @@ function buildRuntimeContext(run: WorkflowRun): string {
   lines.push(`artifactsDir: ${ARTIFACT_DIR}/${run.runId}`)
 
   // projectRoot: scaffold 及后续阶段从 plan.json 的 targetProject.artifactId 推导
+  // 使用绝对路径，避免 LLM 在不同工作目录下解析到错误位置。
+  // 定位基准：.workflow-artifacts 目录的父目录就是项目根目录。
   const planArtifact = engine.loadArtifactJson(`${ARTIFACT_DIR}/${run.runId}`, "plan")
   if (planArtifact) {
     const targetProject = planArtifact.targetProject as { artifactId: string } | undefined
     if (targetProject?.artifactId) {
-      lines.push(`projectRoot: generated/${targetProject.artifactId}`)
+      const projectRoot = resolveProjectRoot()
+      lines.push(`projectRoot: ${join(projectRoot, "generated", targetProject.artifactId)}`)
     }
   }
 
@@ -416,7 +456,7 @@ function buildSharedInstructions(run: WorkflowRun): string {
 | \`upstreamArtifacts\` | 上游 artifact 路径列表 | 当前阶段需要读取的文件 |
 | \`incrementalContext\` | 增量模式上下文（可选） | fix 后增量处理时传入 targetPackages |
 | \`projectStructure\` | 自定义目录结构路径列表（可选） | scaffold 阶段使用自定义目录布局替代默认模板 |
-| \`projectRoot\` | Java 项目输出根目录（scaffold 及之后阶段，可选） | scaffold 写入 Java 文件到此目录，后续阶段从此目录读取 |
+| \`projectRoot\` | Java 项目输出根目录（绝对路径，scaffold 及之后阶段，可选） | scaffold 写入 Java 文件到此目录，后续阶段从此目录读取 |
 
 ### Artifact 写入规则
 
@@ -425,9 +465,24 @@ function buildSharedInstructions(run: WorkflowRun): string {
 - 逐包持久化：每处理完一个包立即写入 per-package artifact，避免中途崩溃丢失
 - 写入后不需要读回验证（引擎 advance 时会做 Zod 校验）
 
+### Worker Status 写入
+
+完成阶段工作后，将 Worker Status 写入 \`\${artifactsDir}/status/\${currentPhase}.json\`：
+
+\`\`\`json
+{
+  "phase": "{currentPhase}",
+  "status": "completed",
+  "startedAt": "...",
+  "completedAt": "...",
+  "artifacts": ["写入的关键文件列表"],
+  "metrics": { "completedSubprograms": N, "totalSubprograms": N }
+}
+\`\`\`
+
 ### 阶段小结
 
-在调用 \`workflow({ action: "advance" })\` **之前**，必须输出本阶段工作小结，格式如下：
+完成阶段工作后，必须输出本阶段工作小结，格式如下：
 
 \`\`\`
 📋 {phaseName} 阶段小结
@@ -435,6 +490,19 @@ function buildSharedInstructions(run: WorkflowRun): string {
 ├─ 处理范围：{处理的包数量、子程序数量等}
 ├─ 关键指标：{通过/失败数、成功率、TODO 数等}
 └─ 耗时/异常：{如有异常或特别耗时的操作，简要说明}
+\`\`\`
+
+### Worker 摘要格式
+
+返回编排者之前，输出以下格式的摘要（编排者仅保留此摘要，丢弃其余输出）：
+
+\`\`\`
+WORKER_SUMMARY
+Phase: {currentPhase}
+Status: completed|failed
+Artifacts: {写入的关键文件列表}
+Metrics: {1-2 个关键数字，如"8 packages, 45 subprograms"}
+END_SUMMARY
 \`\`\``
 }
 
@@ -477,7 +545,7 @@ function validateInventoryPackages(
         const errors = formatZodIssues(result.error)
         return `Zod validation failed for inventory-packages/${actualFileName}:\n${errors}`
       }
-      if (parsed.packageName.toUpperCase() !== pkgName.toUpperCase()) {
+      if (typeof parsed.packageName !== "string" || parsed.packageName.toUpperCase() !== pkgName.toUpperCase()) {
         return `inventory-packages/${actualFileName}: packageName "${parsed.packageName}" does not match expected "${pkgName}"`
       }
     } catch (e: any) {
@@ -542,7 +610,7 @@ function validateAnalysisPackages(
         const errors = formatZodIssues(result.error)
         return `Zod validation failed for analysis-packages/${actualFileName}:\n${errors}`
       }
-      if (parsed.packageName.toUpperCase() !== pkgName.toUpperCase()) {
+      if (typeof parsed.packageName !== "string" || parsed.packageName.toUpperCase() !== pkgName.toUpperCase()) {
         return `analysis-packages/${actualFileName}: packageName "${parsed.packageName}" does not match expected "${pkgName}"`
       }
     } catch (e: any) {
@@ -599,14 +667,14 @@ function validateArtifactOnDisk(run: WorkflowRun): string | null {
         if (pkgError) return pkgError
       }
 
-      // scaffold 阶段：校验 projectRoot 必须为 generated/{artifactId} 格式
+      // scaffold 阶段：校验 projectRoot 必须指向项目根目录下的 generated/{artifactId}
       if (phase === "scaffold") {
         const scaffoldData = parsed as { projectRoot: string }
         const planForRoot = engine.loadArtifactJson(artifactsDir, "plan")
         if (planForRoot) {
           const artifactId = (planForRoot.targetProject as { artifactId: string })?.artifactId
           if (artifactId) {
-            const expectedRoot = `generated/${artifactId}`
+            const expectedRoot = join(resolveProjectRoot(), "generated", artifactId)
             if (scaffoldData.projectRoot !== expectedRoot) {
               return `scaffold.json projectRoot 必须是 "${expectedRoot}"，实际为 "${scaffoldData.projectRoot}"。请使用 Runtime Context 中注入的 projectRoot 值。`
             }
@@ -635,7 +703,9 @@ function validateArtifactOnDisk(run: WorkflowRun): string | null {
             // 内容覆盖检查：验证 extractedModules 未丢失非目标包数据
             // 防止 agent 正确携带 totalPackages 计数但丢失非目标包的抽取数据
             const targetPkgs = new Set(
-              ((currentEntry!.incrementalContext!.targetPackages as string[]) ?? []).map((p) => p.toUpperCase())
+              ((currentEntry!.incrementalContext!.targetPackages as string[]) ?? [])
+                .filter((p): p is string => typeof p === "string" && p.length > 0)
+                .map((p) => p.toUpperCase())
             )
             const modules = (parsed.extractedModules as Array<{ sources?: Array<{ packageName: string }> }>) ?? []
             // 空模块 + 存在非目标包 → 数据丢失
@@ -643,7 +713,10 @@ function validateArtifactOnDisk(run: WorkflowRun): string | null {
               return `dedup.json incremental run has empty extractedModules but inventory has ${invPkgCount} packages (target: ${targetPkgs.size}). Non-target package data must be preserved.`
             }
             const sourcePkgs = new Set(
-              modules.flatMap((m) => (m.sources ?? []).map((s) => s.packageName.toUpperCase()))
+              modules.flatMap((m) => (m.sources ?? [])
+                .map((s) => s.packageName)
+                .filter((n): n is string => typeof n === "string" && n.length > 0)
+              ).map((n) => n.toUpperCase())
             )
             const nonTargetSourcePkgs = [...sourcePkgs].filter((p) => !targetPkgs.has(p))
             if (modules.length > 0 && nonTargetSourcePkgs.length === 0 && invPkgCount > targetPkgs.size) {
@@ -830,6 +903,7 @@ function validateJsonContent(fullPath: string, name: string): boolean {
  * 可传入预读的 entries 列表以避免重复 readdirSync。
  */
 function findFileCaseInsensitive(dir: string, targetName: string, cachedEntries?: import("node:fs").Dirent[]): string | null {
+  if (!targetName || typeof targetName !== "string") return null
   const targetUpper = targetName.toUpperCase()
   // 预编译正则：仅匹配单个 .json 后缀，避免 .json.json 被过度剥离
   const jsonSuffixRe = /\.json$/i
@@ -856,6 +930,7 @@ function findFileCaseInsensitive(dir: string, targetName: string, cachedEntries?
  * 可传入预读的 entries 列表以避免重复 readdirSync。
  */
 function findDirCaseInsensitive(parentDir: string, targetName: string, cachedEntries?: import("node:fs").Dirent[]): string | null {
+  if (!targetName || typeof targetName !== "string") return null
   const targetUpper = targetName.toUpperCase()
   try {
     const entries = cachedEntries ?? readdirSync(parentDir, { withFileTypes: true })
@@ -945,7 +1020,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
       args: {
         action: zFn.enum([
           "start", "advance", "confirm", "retry", "abort", "status", "list",
-          "prerequisites", "resume", "fixContinue",
+          "prerequisites", "resume", "fixContinue", "dispatch",
         ]),
         runId: zFn.string().optional(),
         sourcePath: zFn.string().optional(),
@@ -956,6 +1031,20 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
         structureConf: zFn.string().optional(), // --structure 用
       },
       execute: async (args: any, context: any) => {
+        // ── Worker 编排工具拦截（L1 防线）──
+        // Worker subagent 只能调用 status/list/prerequisites/saveArtifact，
+        // 编排类 action（advance/confirm/retry/abort/dispatch/fixContinue/start）
+        // 由 Orchestrator 在编排循环中调用，Worker 越权调用直接拒绝。
+        const ORCHESTRATOR_ONLY_ACTIONS = new Set([
+          "advance", "confirm", "retry", "abort", "dispatch", "fixContinue", "start",
+        ])
+        const agentName = context?.agent ?? ""
+        const isWorker = getSubagentNames().includes(agentName)
+        if (isWorker && ORCHESTRATOR_ONLY_ACTIONS.has(args.action)) {
+          return `⛔ Worker（${agentName}）不能调用 workflow ${args.action}——这是编排者的职责。\n` +
+            `请完成当前阶段工作，写入 artifact，输出 WORKER_SUMMARY 即可。编排者会推进流程。`
+        }
+
         // opencode 1.4.6: execute 必须返回 string，title/metadata 通过 context.metadata() 设置
         // 用 IIFE 包裹现有逻辑，后处理转换 { title, output, metadata } → string
         const _r = await (async () => {
@@ -1108,8 +1197,8 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             const banner = formatPhaseStartBanner(run.currentPhase)
             return {
               title: "Started",
-              output: `${runId} | ${run.currentPhase} | scan: ${scanStatus}${banner}\n📌 立即调用 todowrite 创建主线阶段进度（${run.currentPhase}=in_progress，其余=pending）`,
-              metadata: { runId, phase: run.currentPhase, scanStatus },
+              output: `${runId} | ${run.currentPhase} | scan: ${scanStatus}${banner}\n📌 调用 todowrite 创建主线阶段进度（${run.currentPhase}=in_progress，其余=pending）\n\n✔ 工作流已启动，${run.currentPhase} 阶段就绪。\n⏹ 请输出 WORKER_SUMMARY 并结束——编排者会调度执行。`,
+              metadata: { runId, phase: run.currentPhase, scanStatus, nextAction: "dispatch" },
             }
           }
 
@@ -1149,6 +1238,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                   metadata: {
                     rejected: true,
                     rejectionReason: enhancedError,
+                    nextAction: "dispatch",
                   },
                 }
               }
@@ -1220,6 +1310,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                     status: adv.run.status,
                     fixExhausted: true,
                     reportPath,
+                    nextAction: "user_decision",
                   },
                 }
               }
@@ -1228,7 +1319,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               return {
                 title: "Completed",
                 output: `${endBanner}${finalMsg}\nrunId: ${runId} | status: ${adv.run.status}`,
-                metadata: { status: adv.run.status, reportPath: join(ARTIFACT_DIR, runId, "reports", "final-report.txt") },
+                metadata: { status: adv.run.status, reportPath: join(ARTIFACT_DIR, runId, "reports", "final-report.txt"), nextAction: "finished" },
               }
             }
 
@@ -1240,7 +1331,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               return {
                 title: "Paused",
                 output: `${endBanner}⏸ ${pausedPhase}（${pausedDesc}）等待确认。请审阅后调用：\nworkflow({action:"confirm",runId:"${runId}"})`,
-                metadata: { waitingForConfirmation: true, reportPath: phaseReportText ? join(ARTIFACT_DIR, runId, "reports", `${completedPhase || "unknown"}-report.txt`) : undefined },
+                metadata: { waitingForConfirmation: true, reportPath: phaseReportText ? join(ARTIFACT_DIR, runId, "reports", `${completedPhase || "unknown"}-report.txt`) : undefined, nextAction: "confirm" },
               }
             }
 
@@ -1250,21 +1341,21 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                 const warnings = adv.crossSchemaWarnings ?? []
                 return {
                   title: "Warnings Pending",
-                  output: `⚠️ 跨 Schema 校验发现以下警告，请选择处理方式：\n\n` +
+                  output: `⚠️ 跨 Schema 校验发现以下警告：\n\n` +
                     warnings.map(w => `  - ${w}`).join("\n") +
-                    `\n\n1. 修正问题后重新 advance\n2. 接受风险并继续：workflow({ action: "advance", runId: "${runId}", acceptWarnings: true })`,
-                  metadata: { rejected: true, warningPending: true, crossSchemaWarnings: warnings },
+                    `\n\n⏹ 请输出 WORKER_SUMMARY 并结束——编排者会决定是否接受警告并继续。`,
+                  metadata: { rejected: true, warningPending: true, crossSchemaWarnings: warnings, nextAction: "user_decision" },
                 }
               }
-              // 路径 A：blocking 拒绝 → LLM 必须修好
+              // 路径 A：blocking 拒绝 → 需要重新 dispatch Worker 让其修正
               // 不清理 workflowContext：LLM 应修正 artifact 后重新 advance，当前 phase context 仍有效
               // activeCollector 保持活跃，继续累计
               getLogger().warn("[advance]", `阶段 ${completedPhase} advance 被拒绝: ${adv.rejectionReason}`)
               const enhancedError = enhanceRejection(completedPhase, adv.rejectionReason!)
               return {
                 title: "Rejected",
-                output: enhancedError,
-                metadata: { rejected: true },
+                output: `${enhancedError}\n\n⏹ 请根据以上错误修正 artifact，然后输出 WORKER_SUMMARY。编排者会重新调度。`,
+                metadata: { rejected: true, nextAction: "dispatch" },
               }
             }
 
@@ -1274,7 +1365,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               return {
                 title: "Fix Failed",
                 output: adv.rejectionReason!,
-                metadata: { fixFailed: true },
+                metadata: { fixFailed: true, nextAction: "retry" },
               }
             }
 
@@ -1289,7 +1380,8 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             const duration = phaseMetrics?.wallDurationMs != null ? formatDuration(phaseMetrics.wallDurationMs) : undefined
             const endBanner = formatPhaseEndBanner(completedPhase, duration)
             const startBanner = formatPhaseStartBanner(adv.run.currentPhase)
-            let advanceOutput = `${endBanner}${startBanner}Agent: ${adv.nextPhase?.agentFile}\n\n📌 调用 todowrite 更新进度：${completedPhase}→completed，${adv.run.currentPhase}→in_progress`
+            const nextAgentName = adv.nextPhase?.agentFile ? agentFileToName(adv.nextPhase.agentFile) : ""
+            let advanceOutput = `${endBanner}${startBanner}Agent: ${adv.nextPhase?.agentFile}\n\n📌 调用 todowrite 更新进度：${completedPhase}→completed，${adv.run.currentPhase}→in_progress\n\n✔ 阶段 ${completedPhase} 已完成，${adv.run.currentPhase} 阶段就绪。\n⏹ 请输出 WORKER_SUMMARY 并结束当前工作——编排者会调度下一阶段。`
             // 路径 C：已确认的 warning 追加提醒
             if (adv.crossSchemaWarnings && adv.crossSchemaWarnings.length > 0) {
               advanceOutput += `\n\nℹ️ 已确认的跨 Schema 警告：\n${adv.crossSchemaWarnings.map(w => `  - ${w}`).join("\n")}`
@@ -1297,7 +1389,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             return {
               title: `→ ${adv.run.currentPhase}`,
               output: advanceOutput,
-              metadata: { runId, phase: adv.run.currentPhase, crossSchemaWarnings: adv.crossSchemaWarnings, reportPath: phaseReportText ? join(ARTIFACT_DIR, runId, "reports", `${completedPhase || "unknown"}-report.txt`) : undefined },
+              metadata: { runId, phase: adv.run.currentPhase, agent: nextAgentName, crossSchemaWarnings: adv.crossSchemaWarnings, reportPath: phaseReportText ? join(ARTIFACT_DIR, runId, "reports", `${completedPhase || "unknown"}-report.txt`) : undefined, nextAction: "dispatch" },
             }
           }
 
@@ -1311,8 +1403,8 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             const confirmedDesc = SQL2JAVA_WORKFLOW.phases.find(p => p.name === confirmedPhase)?.description ?? confirmedPhase
             return {
               title: "Confirmed",
-              output: `${startBanner}✔ ${confirmedPhase}（${confirmedDesc}）已确认，继续执行: ${r.status}`,
-              metadata: { runId: args.runId },
+              output: `${startBanner}✔ ${confirmedPhase}（${confirmedDesc}）已确认，继续执行: ${r.status}\n\n⏹ 请输出 WORKER_SUMMARY 并结束——编排者会调度执行。`,
+              metadata: { runId: args.runId, phase: confirmedPhase, nextAction: "dispatch" },
             }
           }
 
@@ -1337,8 +1429,8 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
 
             return {
               title: "Fix Continued",
-              output: `${startBanner}🔄 Fix 计数器已重置，继续修复。runId: ${args.runId} | status: ${r.status}`,
-              metadata: { runId: args.runId, phase: "fix", fixReset: true },
+              output: `${startBanner}🔄 Fix 计数器已重置，继续修复。runId: ${args.runId} | status: ${r.status}\n\n⏹ 请输出 WORKER_SUMMARY 并结束——编排者会调度 fix 阶段。`,
+              metadata: { runId: args.runId, phase: "fix", fixReset: true, nextAction: "dispatch" },
             }
           }
 
@@ -1361,6 +1453,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                     fixExhausted: true,
                     terminalState: ret.terminalState,
                     reportPath,
+                    nextAction: "user_decision",
                   },
                 }
               }
@@ -1371,6 +1464,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                 metadata: {
                   status: ret.run.status,
                   terminalState: ret.terminalState,
+                  nextAction: "finished",
                 },
               }
             }
@@ -1392,8 +1486,8 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             }
             return {
               title: `Retry ${ret.retryCount}`,
-              output: ret.run.currentPhase!,
-              metadata: { runId: args.runId },
+              output: `🔄 重试已激活（第 ${ret.retryCount} 次），阶段：${ret.run.currentPhase}。\n\n⏹ 请输出 WORKER_SUMMARY 并结束——编排者会重新调度。`,
+              metadata: { runId: args.runId, nextAction: "dispatch" },
             }
           }
 
@@ -1692,6 +1786,115 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             }
           }
 
+          // ── dispatch — 编排指令：返回 Worker 调度信息 ──
+          case "dispatch": {
+            if (!args.runId) throw new Error("runId required")
+            const runId = args.runId
+            let run = engine.status(runId)
+            if (!run) {
+              try {
+                run = engine.loadFromDisk(runId)
+              } catch (e: any) {
+                if (e instanceof WorkflowEngineError && e.code === "NOT_FOUND") {
+                  return { title: "Error", output: `Run ${runId} not found`, metadata: { runId, dispatch: false } }
+                }
+                return { title: "Error", output: `无法加载 run ${runId}: ${e.message}`, metadata: { runId, error: e.message, dispatch: false } }
+              }
+            }
+            if (!run) {
+              return { title: "Error", output: `Run ${runId} not found`, metadata: { runId, dispatch: false } }
+            }
+            if (run.status !== "running") {
+              // 已完成/暂停/中止 — 不 dispatch，返回状态
+              const isFixExhausted = run.status === "completed_with_issues"
+              let statusMsg = `Run ${runId} status: ${run.status}, phase: ${run.currentPhase ?? "none"}`
+              if (isFixExhausted) {
+                statusMsg += `\n\n⚠️ Fix 循环已达上限。请选择：\n1. 继续修复（重置计数器）：workflow({ action: "fixContinue", runId: "${runId}" })\n2. 接受当前结果`
+              }
+              return {
+                title: `Workflow ${run.status}`,
+                output: statusMsg,
+                metadata: { runId, status: run.status, phase: run.currentPhase, dispatch: false, nextAction: run.status === "completed" ? "finished" : undefined },
+              }
+            }
+
+            const phaseConfig = SQL2JAVA_WORKFLOW.phases.find(p => p.name === run.currentPhase)
+            if (!phaseConfig) {
+              return { title: "Error", output: `Unknown phase: ${run.currentPhase}`, metadata: { runId, dispatch: false } }
+            }
+
+            // 确保 WorkflowContext 正确
+            // 先持久化已有 collector（rejected Worker 的指标可能未保存），再重建
+            if (currentWorkflowContext && activeCollector) {
+              persistCollectorIfActive(currentWorkflowContext.runId)
+            }
+            setWorkflowContext(run)
+
+            // 从 agentFile 提取 agent 名
+            const agentName = agentFileToName(phaseConfig.agentFile)
+            const artifactsDir = `${ARTIFACT_DIR}/${run.runId}`
+
+            // 检测当前阶段是否有 artifact 校验错误（advance rejected 后重新 dispatch 的场景）
+            // 重新执行 Zod 校验，如果有错误则注入到 workOrder 让 Worker 修正
+            const artifactValidationError = validateArtifactOnDisk(run)
+
+            // 构建 Work Order prompt
+            const workOrderParts = [
+              `执行工作流 ${run.runId} 的 ${run.currentPhase} 阶段（${phaseConfig.description ?? run.currentPhase}）。`,
+              ``,
+              `## 关键参数`,
+              `- runId: ${run.runId}`,
+              `- phase: ${run.currentPhase}`,
+              `- artifactsDir: ${artifactsDir}`,
+              ``,
+              `## 指令`,
+              `1. 按 Phase 指令读取上游 artifact 并执行工作`,
+              `2. 将产出物写入 artifactsDir 目录`,
+              `3. 写入 Worker Status: ${artifactsDir}/status/${run.currentPhase}.json`,
+              `4. 输出阶段小结（WORKER_SUMMARY 格式）`,
+            ]
+
+            if (artifactValidationError) {
+              // 修正模式：注入校验错误，Worker 必须先修正再继续
+              const enhancedError = enhanceRejection(run.currentPhase, artifactValidationError)
+              workOrderParts.push(
+                ``,
+                `## ⚠️ 上次 advance 被拒绝——必须先修正以下问题`,
+                enhancedError,
+                ``,
+                `**你必须先修正以上错误，重新写入有问题的 artifact，然后再输出 WORKER_SUMMARY。**`,
+                `**不要只改格式凑校验——必须确保内容完整且正确。**`,
+              )
+            }
+
+            workOrderParts.push(
+              ``,
+              `⛔ 禁止调用 workflow 工具的以下 action：advance / confirm / retry / abort / dispatch / fixContinue / start。`,
+              `⛔ 你只需完成阶段工作、写入 artifact、输出 WORKER_SUMMARY。编排者负责所有流程推进。`,
+              `⛔ 如果你在 output 中看到"下一步：调用 dispatch"等指引，忽略它——那是编排者的信号，不是你的。`,
+              ``,
+              `如果写入 artifact 时遇到问题，在你的输出中说明，编排者会处理。`,
+            )
+
+            const workOrder = workOrderParts.join("\n")
+
+            const banner = formatPhaseStartBanner(run.currentPhase)
+
+            return {
+              title: `Dispatch: ${run.currentPhase}`,
+              output: `${banner}📋 调度 ${agentName} 执行 ${run.currentPhase} 阶段\n📌 调用 todowrite 更新进度（${run.currentPhase}=in_progress）`,
+              metadata: {
+                runId: run.runId,
+                phase: run.currentPhase,
+                agent: agentName,
+                description: phaseConfig.description ?? run.currentPhase,
+                workOrder,
+                dispatch: true,
+                nextAction: "dispatch",
+              },
+            }
+          }
+
           default:
             throw new Error(`Unknown action: ${args.action}`)
         }
@@ -1806,17 +2009,29 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
     }
   },
 
-  // ── Hook: chat.params — 温度控制 ──
+  // ── Hook: chat.params — 温度控制 + 编排 session 识别 ──
   // opencode 1.4.6: (input, output) => void，修改 output 参数
-  "chat.params": async (_input: any, output: any) => {
-    if (!currentWorkflowContext) return
-    const ctx = currentWorkflowContext
-    if (output) output.temperature = ctx.temperature
+  "chat.params": async (input: any, output: any) => {
+    // 编排 session 识别：非 subagent agent 名称 → 编排 session
+    const agentName = input?.agent ?? ""
+    if (!getSubagentNames().includes(agentName)) {
+      const sid = input?.sessionID
+      if (sid) orchestratorSessionIds.add(sid)
+      // 编排 session 不覆盖温度，使用默认值
+      return
+    }
+    // Worker subagent session：按阶段配置设置温度
+    if (currentWorkflowContext) {
+      if (output) output.temperature = currentWorkflowContext.temperature
+    }
   },
 
   // ── Hook: experimental.chat.system.transform — system prompt 构建 (D11) ──
   // opencode 1.4.6: (input, output) => void，修改 output.system (string[])
-  "experimental.chat.system.transform": async (_input: any, output: any) => {
+  "experimental.chat.system.transform": async (input: any, output: any) => {
+    // 编排 session 不注入 Worker agent prompt（编排者的指令来自 command .md）
+    const sid = input?.sessionID
+    if (sid && orchestratorSessionIds.has(sid)) return
     if (!currentWorkflowContext) return
     try {
       // 使用共享路径工具定位 agent 文件，不依赖 process.cwd()
@@ -1843,11 +2058,14 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
         const rawSpec = needsJavaSpec ? readJavaCodeSpec() : ""
         // 规约缺失时注入显眼警告，避免 agent 在不知情下产出无规约代码
         const javaCodeSpec = rawSpec || (needsJavaSpec
-          ? "\n> ⚠️ **[workflow-engine] Java 代码规约文件缺失或不可读，请检查 docs/java-code-spec.md**\n"
+          ? "\n> ⚠️ **[workflow-engine] Java 代码规约文件缺失或不可读，请检查 .opencode/docs/java-code-spec.md**\n"
           : "")
+        // D13: 注入当前阶段的 Schema 校验要求（advance 时的 Zod + 引擎级校验 + 质量门控）
+        const schemaHint = renderSchemaHint(currentWorkflowContext.phase)
         const parts = [
           common,
           phaseSection,
+          schemaHint,
           javaCodeSpec,
           sharedInstructions,
           runtimeContext ? "## Runtime Context\n\n" + runtimeContext : "",

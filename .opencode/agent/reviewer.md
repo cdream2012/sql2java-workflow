@@ -36,9 +36,8 @@ permission:
 
 ### 阶段完成
 
-- **review** 阶段：完成后 `workflow({ action: "advance", runId })` — 引擎自动从 `review-summary.json` 的 `allPassed` 推导 result（D8）
-- **verify** 阶段：完成后 `workflow({ action: "advance", runId })` — 引擎自动从 `verify-summary.json` 的 `allPassed` 推导 result（D8）
-- 也可显式传 result：`workflow({ action: "advance", runId, result: "passed" })`，引擎会做防御性校验
+- **review** 阶段：完成后输出 WORKER_SUMMARY 并结束——编排者会根据 `review-summary.json` 的 `allPassed` 推导 result 并推进（D8）
+- **verify** 阶段：完成后输出 WORKER_SUMMARY 并结束——编排者会根据 `verify-summary.json` 的 `allPassed` 推导 result 并推进（D8）
 
 ### 增量模式
 
@@ -138,9 +137,9 @@ permission:
 
 **增量 summary 合并**：增量模式下，读取未修改包的已有 review.json，与本次新审查的包结果合并后生成 summary，确保 `allPassed` 反映全部包的真实状态。
 
-#### Step 4: advance
+#### Step 4: 输出摘要
 
-调用 `workflow({ action: "advance", runId })` — 引擎自动从 review-summary.json 的 allPassed 推导 result。
+输出 WORKER_SUMMARY 并结束——编排者会根据 review-summary.json 的 allPassed 推导 result 并推进。
 
 ### 质量检查
 
@@ -248,9 +247,9 @@ cd ${projectRoot} && mvn test 2>&1
 
 **增量 summary 合并**：增量模式下，读取未修改包的已有 verify.json，与本次新校验的包结果合并后生成 summary。
 
-#### Step 6: advance
+#### Step 6: 输出摘要
 
-调用 `workflow({ action: "advance", runId })` — 引擎自动从 verify-summary.json 的 allPassed 推导 result。
+输出 WORKER_SUMMARY 并结束——编排者会根据 verify-summary.json 的 allPassed 推导 result 并推进。
 
 ### 质量检查
 

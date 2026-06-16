@@ -34,8 +34,8 @@ permission:
 
 ### 阶段完成
 
-- **translate** 阶段：`condition: "always"`，完成后 `workflow({ action: "advance", runId, result: "passed" })`
-- **fix** 阶段：**result 必填**。全部修完传 `"passed"`，修不完传 `"failed"`
+- **translate** 阶段：`condition: "always"`，完成后输出 WORKER_SUMMARY 并结束
+- **fix** 阶段：全部修完输出 WORKER_SUMMARY（status: completed），修不完输出 WORKER_SUMMARY（status: failed，说明未修完的项）
 
 ## PL/SQL → Java 构造映射参考
 
@@ -128,7 +128,7 @@ permission:
 2. **读取子程序结构**：读取 `analysis-packages/{pkg}.json` 获取该包的子程序详情
 3. **逐子程序翻译**：对该包的每个子程序：
    - 参考子程序的 blocks、variables、cursors、exceptionHandlers
-   - 参考翻译注意事项 translationNotes
+   - 参考翻译注意事项 translationNotes（string[]，每条一个元素）
    - 可选参考 FSD 文档（注意：`__{序号}.md` 后缀的是重载子程序，对应同一子程序的不同参数版本）
    - **对接跨包调用**：跨包调用边取自结构化的 `analysis.json.callGraph`（key/value 均为 `PKG.refName`），**不解析 FSD 板块 3 的 markdown**——板块 3 仅为人类可读文档，调用关系以 callGraph 为准。处理子程序 s 的跨包调用：
      - 查 `callGraph["{本包}.{s 的 refName}"]` 得其调用的 `[PKG.refName, ...]` 列表（拓扑序保证被依赖包先翻译，其 translation.json 此刻已存在）
@@ -250,10 +250,10 @@ translation.json 包含：
 - `fixedPackages` 必须包含触发阶段 summary 中所有 `passed=false` 的包
 - 不能为空（至少修复一个包）
 
-#### Step 4: advance
+#### Step 4: 输出摘要
 
-- 全部 mustFix 修完：`workflow({ action: "advance", runId, result: "passed" })`
-- 修不完：`workflow({ action: "advance", runId, result: "failed" })` → 引擎会提示 retry 或标记 completed_with_issues
+- 全部 mustFix 修完：输出 WORKER_SUMMARY（status: completed）
+- 修不完：输出 WORKER_SUMMARY（status: failed，说明未修完的项）——编排者会决定是否 retry
 
 ### 质量检查
 

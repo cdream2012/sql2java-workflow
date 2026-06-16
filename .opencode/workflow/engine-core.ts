@@ -667,7 +667,9 @@ export class WorkflowEngine {
 
     // translationOrder 覆盖校验（大小写不敏感）
     const orderedUpper = new Set(
-      ((analysis.translationOrder as string[][]) ?? []).flat().map((n: string) => n.toUpperCase())
+      ((analysis.translationOrder as string[][]) ?? []).flat()
+        .filter((n): n is string => typeof n === "string" && n.length > 0)
+        .map((n) => n.toUpperCase())
     )
     for (const name of anaNames) {
       if (!orderedUpper.has(name.toUpperCase())) findings.push({ message: `translationOrder 缺少包: ${name}`, severity: "blocking" })
@@ -713,7 +715,9 @@ export class WorkflowEngine {
         return findings
       }
       const mappedNames = new Set(
-        (plan.packageMappings as Array<{ oraclePackage: string }>).map((m) => m.oraclePackage)
+        (plan.packageMappings as Array<{ oraclePackage: string }>)
+          .map((m) => m.oraclePackage)
+          .filter((n): n is string => typeof n === "string" && n.length > 0)
       )
       for (const name of invNames) {
         if (!mappedNames.has(name)) findings.push({ message: `plan 未映射包: ${name}`, severity: "blocking" })
@@ -834,11 +838,15 @@ export class WorkflowEngine {
         // 增量模式：只检查目标包
         const reviewEntry = this.findCurrentEntry(run)
         const reviewTargetPkgs = reviewEntry?.incrementalContext?.targetPackages
-        const reviewPkgsToCheck = reviewTargetPkgs?.length ? new Set(reviewTargetPkgs.map(p => p.toUpperCase())) : null
+        const reviewPkgsToCheck = reviewTargetPkgs?.length
+          ? new Set(reviewTargetPkgs.filter((p): p is string => typeof p === "string" && p.length > 0).map(p => p.toUpperCase()))
+          : null
 
         // G3: per-package score check
         const packageResults = (summary.packageResults as Array<{ packageName: string; passed: boolean; score: number }>) ?? []
         for (const pr of packageResults) {
+          // 跳过 packageName 无效的条目（LLM 产出的 raw JSON 可能缺字段）
+          if (typeof pr.packageName !== "string" || !pr.packageName) continue
           // 增量模式下跳过非目标包
           if (reviewPkgsToCheck && !reviewPkgsToCheck.has(pr.packageName.toUpperCase())) continue
           if (pr.passed && pr.score < QUALITY_GATE_THRESHOLDS.REVIEW_PASS_SCORE) {
@@ -998,9 +1006,11 @@ export class WorkflowEngine {
   ): Set<string> {
     let names: string[]
     if (artifact.packageNames) {
-      names = (artifact.packageNames as string[])
+      names = (artifact.packageNames as string[]).filter((n): n is string => typeof n === "string" && n.length > 0)
     } else if (artifact.packages) {
-      names = ((artifact.packages as Array<{ name: string }>) ?? []).map((p) => p.name)
+      names = ((artifact.packages as Array<{ name: string }>) ?? [])
+        .map((p) => p.name)
+        .filter((n): n is string => typeof n === "string" && n.length > 0)
     } else {
       names = []
     }
@@ -1019,7 +1029,8 @@ export class WorkflowEngine {
     severity: "blocking" | "warning" = "warning",
   ): void {
     const upperValid = new Set([...validNames].map((n) => n.toUpperCase()))
-    const invalid = refs.filter((p) => !upperValid.has(p.toUpperCase()))
+    const validRefs = refs.filter((p): p is string => typeof p === "string" && p.length > 0)
+    const invalid = validRefs.filter((p) => !upperValid.has(p.toUpperCase()))
     if (invalid.length > 0) {
       findings.push({ message: `${label} 引用了不存在的包: ${[...new Set(invalid)].join(", ")}`, severity })
     }
@@ -1211,9 +1222,9 @@ export class WorkflowEngine {
     const inventory = this.loadArtifactJson(artifactsDir, "inventory")
     if (inventory) {
       const invPackageNames = this.extractPackageNames(inventory, true)
-      const invalidPackages = fixedPackages.filter(
-        p => !invPackageNames.has(p.toUpperCase())
-      )
+      const invalidPackages = fixedPackages
+        .filter((p): p is string => typeof p === "string" && p.length > 0)
+        .filter(p => !invPackageNames.has(p.toUpperCase()))
       if (invalidPackages.length > 0) {
         return {
           run,
@@ -1245,9 +1256,13 @@ export class WorkflowEngine {
     }
     const pkgResults = (summary as { packageResults?: Array<{ packageName: string; passed: boolean }> }).packageResults ?? []
     const failedPackages = new Set(
-      pkgResults.filter(p => !p.passed).map(p => p.packageName.toUpperCase())
+      pkgResults
+        .filter(p => !p.passed && typeof p.packageName === "string" && p.packageName)
+        .map(p => p.packageName.toUpperCase())
     )
-    const fixedUpper = new Set(fixedPackages.map(p => p.toUpperCase()))
+    const fixedUpper = new Set(
+      fixedPackages.filter((p): p is string => typeof p === "string" && p.length > 0).map(p => p.toUpperCase())
+    )
     const missingPackages = Array.from(failedPackages).filter(p => !fixedUpper.has(p))
     if (missingPackages.length > 0) {
       return {

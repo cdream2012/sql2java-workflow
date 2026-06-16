@@ -33,7 +33,7 @@ export function makeInventoryIndex(overrides: Record<string, unknown> = {}) {
     tables: [{ name: "ITEMS", ddlFile: "schema/tables.sql" }],
     triggers: [{ name: "TRG_ITEM_AUD", sourceFile: "trigger/trg_item_audit.sql" }],
     views: [],
-    sequences: [{ name: "SEQ_ITEM_ID", sourceFile: "schema/sequences.sql" }],
+    sequences: [{ name: "SEQ_ITEM_ID", ddlFile: "schema/sequences.sql" }],
     standaloneProcedures: [],
     ...overrides,
   }
@@ -44,26 +44,12 @@ export function makeInventoryIndex(overrides: Record<string, unknown> = {}) {
 export function makeInventory(overrides: Record<string, unknown> = {}) {
   return {
     sourcePath: "/test/source",
-    totalPackages: 1,
-    packages: [
-      {
-        name: "CORE_PKG",
-        specFile: "pkg/core_pkg.pks",
-        bodyFile: "pkg/core_pkg.pkb",
-        procedureCount: 2,
-        procedures: [
-          { name: "GET_ITEM", type: "function", oracleLine: 10 },
-          { name: "SET_ITEM", type: "procedure", oracleLine: 52 },
-        ],
-        estimatedLoc: 200,
-        complexityGroup: "medium" as const,
-        dependencies: [],
-      },
-    ],
-    tables: [{ name: "ITEMS", ddlFile: "schema/tables.sql" }],
-    triggers: [{ name: "TRG_ITEM_AUD", sourceFile: "trigger/trg_item_audit.sql" }],
+    packageNames: ["CORE_PKG"],
+    tables: [{ name: "ITEMS", ddlFile: "schema/tables.sql", columns: [{ name: "ITEM_ID", oracleType: "NUMBER", nullable: false, isPrimaryKey: true }] }],
+    standaloneProcedures: [],
+    triggers: [],
     views: [],
-    sequences: [{ name: "SEQ_ITEM_ID", sourceFile: "schema/sequences.sql" }],
+    sequences: [],
     ...overrides,
   }
 }
@@ -121,7 +107,7 @@ export function makePlan(overrides: Record<string, unknown> = {}) {
 /** scaffold.json — 对齐 ScaffoldSchema */
 export function makeScaffold(overrides: Record<string, unknown> = {}) {
   return {
-    projectRoot: "generated/item-service",
+    projectRoot: "/abs/path/generated/item-service",
     structure: {
       directories: ["src/main/java/com/example/item"],
       pomXml: "pom.xml",
@@ -174,7 +160,7 @@ export function makeAnalysisPackage(overrides: Record<string, unknown> = {}) {
         variables: [],
         cursors: [],
         exceptionHandlers: [],
-        translationNotes: "按 id 查询",
+        translationNotes: ["按 id 查询"],
       },
     ],
     ...overrides,
@@ -262,7 +248,6 @@ export function makeDedup(overrides: Record<string, unknown> = {}) {
 export function makeFixArtifact(overrides: Record<string, unknown> = {}) {
   return {
     fixedPackages: ["CORE_PKG"],
-    fixSummary: "Fixed compilation errors in CORE_PKG",
     ...overrides,
   }
 }

@@ -83,7 +83,7 @@ const config: CaseConfig = {
           variables: [],
           cursors: [],
           exceptionHandlers: [{ name: "OTHERS", actions: ["空 catch，吞异常"] }],
-          translationNotes: "含异常处理块，翻译为 try-catch",
+          translationNotes: ["含异常处理块，翻译为 try-catch"],
         },
       ],
     })
