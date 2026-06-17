@@ -121,6 +121,19 @@ permission:
 
 读取 plan.json（映射规则、conventions）和 analysis.json（translationOrder）。
 
+#### Step 1.5: 确定翻译范围
+
+检查 Runtime Context 中的 `incrementalContext`：
+
+- **分片模式**（`targetPackages` 存在且 `shardIndex` 存在）：
+  - **只翻译 `targetPackages` 中列出的包**，不要翻译其他包
+  - 仍按 `translationOrder` 的顺序处理这些包（跳过不在 targetPackages 中的包）
+  - 依赖的已翻译包的 `translation.json` 路径已在 upstreamArtifacts 中给出，直接 `read` 即可
+  - 不翻译 targetPackages 之外的任何包
+
+- **全量模式**（无 `incrementalContext` 或无 `shardIndex`）：
+  - 翻译 `translationOrder` 中所有包（原有行为）
+
 #### Step 2: 按拓扑序逐包翻译
 
 按 `translationOrder` 的顺序处理每个包。SCC 组中的包按数组顺序依次翻译。
@@ -297,6 +310,7 @@ translation.json 包含：
 - [ ] H2 不兼容的 SQL 已标 `@Disabled`（生产 Mapper XML 保持不变）
 - [ ] 测试数据 INSERT 使用硬编码 ID 值（不使用 SEQ.NEXTVAL）
 - [ ] Mapper 集成测试方法注释使用中文
+- [ ] 分片模式下只翻译了 `targetPackages` 指定的包，未遗漏也未多余
 
 ---
 

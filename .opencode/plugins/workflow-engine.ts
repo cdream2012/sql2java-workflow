@@ -628,6 +628,10 @@ function buildRuntimeContext(run: WorkflowRun): string {
   if (currentEntry?.incrementalContext) {
     lines.push(`incrementalContext:`)
     lines.push(`  targetPackages: ${JSON.stringify(currentEntry.incrementalContext.targetPackages)}`)
+    if (currentEntry.incrementalContext.shardIndex !== undefined) {
+      lines.push(`  shardIndex: ${currentEntry.incrementalContext.shardIndex}`)
+      lines.push(`  totalShards: ${currentEntry.incrementalContext.totalShards ?? "?"}`)
+    }
   }
 
   // projectStructure: 自定义目录结构覆盖
@@ -656,7 +660,7 @@ function buildSharedInstructions(run: WorkflowRun): string {
 | \`sourcePath\` | PL/SQL 源码目录 | 读取原始 SQL 文件 |
 | \`artifactsDir\` | artifact 输出目录 | 读取上游 artifact / 写入产出 |
 | \`upstreamArtifacts\` | 上游 artifact 路径列表 | 当前阶段需要读取的文件 |
-| \`incrementalContext\` | 增量模式上下文（可选） | fix 后增量处理时传入 targetPackages |
+| \`incrementalContext\` | 增量模式上下文（可选） | fix 后增量处理时传入 targetPackages；分片模式下含 shardIndex/totalShards |
 | \`projectStructure\` | 自定义目录结构路径列表（可选，由 --spec 提取） | scaffold 阶段使用自定义目录布局替代默认模板 |
 | \`projectRoot\` | Java 项目输出根目录（绝对路径，scaffold 及之后阶段，可选） | scaffold 写入 Java 文件到此目录，后续阶段从此目录读取 |
 
@@ -1996,6 +2000,24 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             } catch (e: any) {
               getLogger().warn("[metrics]", `collector 创建失败: ${e.message}`)
             }
+
+            // 分片切换：同阶段内分片推进
+            if (adv.run.currentPhase === completedPhase) {
+              const currentEntry = engine.findCurrentEntry(adv.run)
+              const si = currentEntry?.incrementalContext?.shardIndex
+              const ts = currentEntry?.incrementalContext?.totalShards
+              if (si !== undefined && ts !== undefined) {
+                const nextPkgs = currentEntry!.incrementalContext!.targetPackages
+                const shardInfo = `📦 分片 ${si + 1}/${ts}（包: ${nextPkgs.join(", ")}）`
+                getLogger().info("[advance]", `分片切换: ${completedPhase} 分片 ${si + 1}/${ts}`)
+                return {
+                  title: `分片 ${si + 1}/${ts}: ${completedPhase}`,
+                  output: `✔ ${completedPhase} 分片 ${si}/${ts} 完成，进入分片 ${si + 1}/${ts}。\n${shardInfo}\n\n📌 调用 todowrite 更新进度（${completedPhase} 保持 in_progress，备注分片 ${si + 1}/${ts}）\n\n⏹ 请输出 WORKER_SUMMARY 并结束当前工作——编排者会调度下一分片。`,
+                  metadata: { runId, phase: completedPhase, shardIndex: si, totalShards: ts, nextAction: "dispatch" },
+                }
+              }
+            }
+
             getLogger().info("[advance]", `阶段 ${completedPhase} 完成${phaseMetrics?.wallDurationMs != null ? ` (${formatDuration(phaseMetrics.wallDurationMs)})` : ""}, 进入 ${adv.run.currentPhase}`)
             const duration = phaseMetrics?.wallDurationMs != null ? formatDuration(phaseMetrics.wallDurationMs) : undefined
             const endBanner = formatPhaseEndBanner(completedPhase, duration)
@@ -2349,6 +2371,28 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               const artifactsDir = join(ARTIFACT_DIR, runId)
               let skippedPackages: string[] | undefined
 
+              // 分片模式恢复：检查 shardPlan，恢复到下一个未完成的分片
+              const shardPlan = engine.getShardPlan(run)
+              if (shardPlan) {
+                const currentEntry = engine.findCurrentEntry(run)
+                const currentShardIndex = currentEntry?.incrementalContext?.shardIndex ?? 0
+                // 找到下一个未完成的分片
+                const nextShardIndex = shardPlan.shards.findIndex(
+                  (_, i) => !shardPlan.completedShards.includes(i),
+                )
+                if (nextShardIndex >= 0 && currentEntry) {
+                  // 更新 currentEntry 的 incrementalContext 指向未完成的分片
+                  const nextShard = shardPlan.shards[nextShardIndex]
+                  currentEntry.incrementalContext = {
+                    targetPackages: nextShard,
+                    shardIndex: nextShardIndex,
+                    totalShards: shardPlan.shards.length,
+                  }
+                  engine.persist(run)
+                  skippedPackages = shardPlan.completedShards.flatMap(i => shardPlan.shards[i] ?? [])
+                }
+              }
+
               // translate/review/verify 阶段：检查哪些包已有 artifact
               if (["translate", "review", "verify"].includes(run.currentPhase)) {
                 const translationsDir = join(artifactsDir, "translations")
@@ -2456,6 +2500,36 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             }
             setWorkflowContext(run)
 
+            // ── 分片 dispatch：计算或恢复分片计划 ──
+            const currentEntry = engine.findCurrentEntry(run)
+            const shardPlan = engine.getShardPlan(run)
+            if (shardPlan) {
+              // 已有 shardPlan：当前 entry 的 incrementalContext 已由 advance 设置
+              // 无需额外处理
+            } else if (phaseConfig.maxPackagesPerShard && phaseConfig.maxPackagesPerShard > 0 && currentEntry) {
+              // 首次 dispatch 可分片阶段：检查是否有增量上下文（fix 回来时不分片）
+              const isIncremental = !!(currentEntry.incrementalContext?.targetPackages?.length)
+              if (!isIncremental) {
+                // 从 analysis.json 读取 translationOrder
+                const analysis = engine.loadArtifactJson(`${ARTIFACT_DIR}/${run.runId}`, "analysis")
+                const translationOrder = (analysis?.translationOrder as string[][]) ?? []
+                if (translationOrder.length > 0) {
+                  const plan = engine.computeShardPlan(translationOrder, phaseConfig.maxPackagesPerShard, run.currentPhase!)
+                  if (plan.shards.length > 1) {
+                    // 多分片：设置 shardPlan 到 run.metadata，更新 currentEntry 的 incrementalContext
+                    run.metadata.shardPlan = plan
+                    currentEntry.incrementalContext = {
+                      targetPackages: plan.shards[0],
+                      shardIndex: 0,
+                      totalShards: plan.shards.length,
+                    }
+                    engine.persist(run)
+                  }
+                  // 只有 1 个分片时不需要分片机制（单包项目或包很少）
+                }
+              }
+            }
+
             // 从 agentFile 提取 agent 名
             const agentName = agentFileToName(phaseConfig.agentFile)
             const artifactsDir = `${ARTIFACT_DIR}/${run.runId}`
@@ -2476,12 +2550,48 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             ]
 
             // 上游 artifact 路径列表：明确告诉 Worker 要读取哪些文件及完整路径
-            const upstream = UPSTREAM_ARTIFACTS[run.currentPhase ?? ""]
+            const currentEntry2 = engine.findCurrentEntry(run)
+            const activeShardPlan = engine.getShardPlan(run)
+            let upstream = UPSTREAM_ARTIFACTS[run.currentPhase ?? ""]
             if (upstream && upstream.length > 0) {
+              // fix 阶段过滤只注入对应 triggerPhase 的 summary
+              if (run.currentPhase === "fix" && currentEntry2?.branchedFrom) {
+                const triggerPhase = currentEntry2.branchedFrom
+                const excludeSummary = triggerPhase === "review"
+                  ? "verify-summary.json"
+                  : "review-summary.json"
+                upstream = upstream.filter(a => a !== excludeSummary)
+              }
+              // 分片模式：将 translations/*/translation.json 通配符替换为已完成的依赖包具体路径
+              if (activeShardPlan && currentEntry2?.incrementalContext?.shardIndex !== undefined) {
+                const completedPkgs = activeShardPlan.completedShards
+                  .flatMap(i => activeShardPlan.shards[i] ?? [])
+                upstream = upstream.flatMap(a => {
+                  if (a === "translations/*/translation.json" && completedPkgs.length > 0) {
+                    return completedPkgs.map(pkg => `translations/${pkg}/translation.json`)
+                  }
+                  return [a]
+                })
+              }
               workOrderParts.push(`- upstreamArtifacts:`)
               for (const a of upstream) {
                 workOrderParts.push(`  - ${artifactsDir}/${a}`)
               }
+            }
+
+            // 分片模式：注入分片信息到 workOrder
+            if (activeShardPlan && currentEntry2?.incrementalContext?.shardIndex !== undefined) {
+              const si = currentEntry2.incrementalContext.shardIndex
+              const ts = currentEntry2.incrementalContext.totalShards ?? activeShardPlan.shards.length
+              const pkgs = currentEntry2.incrementalContext.targetPackages
+              workOrderParts.push(
+                ``,
+                `## 分片信息`,
+                `- 本分片序号: ${si + 1} / ${ts}`,
+                `- 本分片包列表: ${pkgs.join(", ")}`,
+                `- **只处理以上列出的包，不要处理其他包**`,
+                `- 已完成分片: ${activeShardPlan.completedShards.map(i => i + 1).join(", ") || "无"}`,
+              )
             }
 
             // P3c: projectRoot + 文件写入路径映射（plan 阶段之后才有 projectRoot）

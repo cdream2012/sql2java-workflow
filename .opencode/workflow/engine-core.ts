@@ -71,6 +71,7 @@ export interface PhaseConfig {
   requiresConfirmation?: boolean                // 为 true 时 advance 后暂停等待确认
   isFixPhase?: boolean                          // 标记 fix 阶段，引擎特殊处理
   needsCrossSchemaValidation?: boolean          // 为 true 时 advance 后执行跨 Schema 校验
+  maxPackagesPerShard?: number                  // 分片大小，不设置或 0 表示不分片
   tools: string[]                               // 允许的工具列表
   description?: string                          // 阶段中文描述，用于输出 banner
 }
@@ -112,7 +113,16 @@ export interface PhaseHistoryEntry {
   branchedFrom?: string                         // fix 记录触发阶段；fix 回来的 entry 记录 "fix"
   incrementalContext?: {
     targetPackages: string[]                    // 增量模式：只处理这些包
+    shardIndex?: number                         // 分片模式：当前分片序号（0-based）
+    totalShards?: number                        // 分片模式：总分片数
   }
+}
+
+/** 分片计划 — 首次 dispatch 可分片阶段时计算，持久化到 run.metadata */
+export interface ShardPlan {
+  phase: string                                 // "translate" 等可分片阶段
+  shards: string[][]                            // shards[0] = ["CONST_PKG"], ...
+  completedShards: number[]                     // 已完成的分片序号
 }
 
 /** 跨 Schema 校验发现项（D9 扩展：支持 blocking / warning 两级严重度） */
@@ -154,6 +164,8 @@ const PhaseHistoryEntrySchema = z.object({
   branchedFrom: z.string().optional(),
   incrementalContext: z.object({
     targetPackages: z.array(z.string()),
+    shardIndex: z.number().optional(),
+    totalShards: z.number().optional(),
   }).optional(),
 })
 
@@ -306,6 +318,70 @@ export class WorkflowEngine {
     // ── Step 4: fix 阶段特殊处理 ──
     if (currentPhaseConfig?.isFixPhase) {
       return this.handleFixAdvance(run, def, currentEntry, input, now, crossSchemaWarnings)
+    }
+
+    // ── Step 3.5: 分片 advance — 分片未全部完成时切换到下一分片 ──
+    const shardPlan = this.getShardPlan(run)
+    if (shardPlan) {
+      const currentShardIndex = currentEntry.incrementalContext?.shardIndex ?? 0
+      const totalShards = shardPlan.shards.length
+
+      // 标记当前分片完成
+      if (!shardPlan.completedShards.includes(currentShardIndex)) {
+        shardPlan.completedShards.push(currentShardIndex)
+      }
+
+      // 查找下一个未完成的分片
+      const nextShardIndex = shardPlan.shards.findIndex(
+        (_, i) => !shardPlan.completedShards.includes(i) && i > currentShardIndex,
+      )
+      // 也检查当前之后是否有未完成的（可能中间某分片被跳过）
+      const anyNextShardIndex = nextShardIndex >= 0
+        ? nextShardIndex
+        : shardPlan.shards.findIndex((_, i) => !shardPlan.completedShards.includes(i))
+
+      if (anyNextShardIndex >= 0) {
+        // 还有未完成的分片 → 完成当前 entry，创建新 entry（同阶段，新分片）
+        currentEntry.status = "completed"
+        currentEntry.completedAt = now
+        run.updatedAt = now
+
+        const nextShard = shardPlan.shards[anyNextShardIndex]
+        const newEntry: PhaseHistoryEntry = {
+          phase: run.currentPhase!,
+          status: "in_progress",
+          startedAt: now,
+          retryCount: 0,
+          incrementalContext: {
+            targetPackages: nextShard,
+            shardIndex: anyNextShardIndex,
+            totalShards,
+          },
+        }
+        run.phaseHistory.push(newEntry)
+        run.metadata.shardPlan = shardPlan
+        this.persist(run)
+        this.appendEvent(runId, "SHARD_ADVANCE", run.currentPhase!,
+          `分片 ${currentShardIndex + 1}/${totalShards} 完成 → 分片 ${anyNextShardIndex + 1}/${totalShards} (包: ${nextShard.join(", ")})`)
+
+        return {
+          run,
+          nextPhase: currentPhaseConfig ?? null,
+          finished: false,
+          waitingForConfirmation: false,
+          rejected: false,
+          crossSchemaWarnings,
+        }
+      }
+
+      // 全部分片完成 → 删除 shardPlan，继续执行原有 advance 逻辑（质量门控 + transition）
+      // 清除 currentEntry.incrementalContext 以触发全量校验（而非只检查最后一个分片的包）
+      delete run.metadata.shardPlan
+      currentEntry.incrementalContext = undefined
+      this.persist(run)
+      this.appendEvent(runId, "SHARD_COMPLETE", run.currentPhase!,
+        `所有分片已完成 (${totalShards} 个)，执行阶段推进`)
+      // 注意：不 return，继续走下方原有 advance 逻辑
     }
 
     // ── Step 5: review / verify 阶段 → 从 summary.allPassed 推导 result (D8) ──
@@ -990,6 +1066,41 @@ export class WorkflowEngine {
       }
     }
     return undefined
+  }
+
+  /**
+   * 根据 analysis.json 的 translationOrder 计算分片计划。
+   * 每个拓扑层内的包按 maxPackagesPerShard 切分，
+   * 不同层的包绝不混入同一分片（保证拓扑序）。
+   */
+  computeShardPlan(
+    translationOrder: string[][],
+    maxPackagesPerShard: number,
+    phase: string,
+  ): ShardPlan {
+    const shards: string[][] = []
+    for (const layer of translationOrder) {
+      if (!layer || layer.length === 0) continue
+      if (layer.length <= maxPackagesPerShard) {
+        shards.push([...layer])
+      } else {
+        // 层内按固定大小切分
+        for (let i = 0; i < layer.length; i += maxPackagesPerShard) {
+          shards.push(layer.slice(i, i + maxPackagesPerShard))
+        }
+      }
+    }
+    return { phase, shards, completedShards: [] }
+  }
+
+  /**
+   * 从 run.metadata 获取当前阶段的分片计划。
+   * 返回 null 表示不分片或非当前阶段。
+   */
+  getShardPlan(run: WorkflowRun): ShardPlan | null {
+    const sp = run.metadata.shardPlan as ShardPlan | undefined
+    if (!sp || sp.phase !== run.currentPhase) return null
+    return sp
   }
 
   /** 从 artifact JSON 提取包名集合（兼容 new/old 格式） */

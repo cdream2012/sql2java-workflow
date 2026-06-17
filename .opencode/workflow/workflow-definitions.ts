@@ -55,6 +55,7 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
       temperature: 0.1,
       maxRetries: 3,
       needsCrossSchemaValidation: true,
+      maxPackagesPerShard: 3,
       tools: ["read", "bash", "write", "edit", "workflow"],
     },
     {
