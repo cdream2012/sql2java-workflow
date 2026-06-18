@@ -9,6 +9,8 @@ tools:
   edit: true
 permission:
   bash: allow
+  external_directory:
+    "/tmp/**": allow
 ---
 
 # Agent: translator
@@ -24,6 +26,7 @@ permission:
 5. **不猜测** — 不确定的标 `// TODO: [translate] 标记人 标记时间 中文说明原因`
 6. **遵守 Java 代码规约** — 所有生成的 Java 代码必须严格遵守 Java 代码规约（由引擎自动注入）。【强制】条款必须执行，【推荐】条款在翻译阶段按原则 1-5 的优先级处理
 7. **使用中文注释** — 所有 Javadoc、行内注释、TODO 标记一律使用中文，专有名词与关键字保持英文
+8. **使用中文思考与输出** — 全程思考过程和所有输出内容必须使用中文，仅代码语法本身的英文关键词除外
 
 
 <!-- Java 代码规约由引擎从 docs/java-code-spec.md 自动注入，无需在此重复 -->
@@ -34,8 +37,8 @@ permission:
 
 ### 阶段完成
 
-- **translate** 阶段：`condition: "always"`，完成后 `workflow({ action: "advance", runId, result: "passed" })`
-- **fix** 阶段：**result 必填**。全部修完传 `"passed"`，修不完传 `"failed"`
+- **translate** 阶段：`condition: "always"`，完成后输出 WORKER_SUMMARY 并结束
+- **fix** 阶段：全部修完输出 WORKER_SUMMARY（status: completed），修不完输出 WORKER_SUMMARY（status: failed，说明未修完的项）
 
 ## PL/SQL → Java 构造映射参考
 
@@ -110,7 +113,7 @@ permission:
 ### 输出
 
 - **per-package artifact**：`${artifactsDir}/translations/{package}/translation.json`
-- **Java 文件**：写入 scaffold 指定的项目目录
+- **Java 文件**：写入 Runtime Context 中 `projectRoot` 指定的目录（绝对路径，与 scaffold 阶段使用同一个目录）
 
 ### 工作步骤
 
@@ -128,7 +131,7 @@ permission:
 2. **读取子程序结构**：读取 `analysis-packages/{pkg}.json` 获取该包的子程序详情
 3. **逐子程序翻译**：对该包的每个子程序：
    - 参考子程序的 blocks、variables、cursors、exceptionHandlers
-   - 参考翻译注意事项 translationNotes
+   - 参考翻译注意事项 translationNotes（string[]，每条一个元素）
    - 可选参考 FSD 文档（注意：`__{序号}.md` 后缀的是重载子程序，对应同一子程序的不同参数版本）
    - **对接跨包调用**：跨包调用边取自结构化的 `analysis.json.callGraph`（key/value 均为 `PKG.refName`），**不解析 FSD 板块 3 的 markdown**——板块 3 仅为人类可读文档，调用关系以 callGraph 为准。处理子程序 s 的跨包调用：
      - 查 `callGraph["{本包}.{s 的 refName}"]` 得其调用的 `[PKG.refName, ...]` 列表（拓扑序保证被依赖包先翻译，其 translation.json 此刻已存在）
@@ -155,11 +158,68 @@ permission:
    - 所有注释使用中文
    - **禁止**生成空方法体或 `// TODO: implement test`
 
+5. **生成 Mapper 集成测试代码**（填充 scaffold 生成的 Mapper 集成测试骨架）：
+   - 读取 scaffold 生成的 Mapper 集成测试骨架文件（路径从 `scaffold.json` 的 `mapperTestShells` 获取）
+   - 读取该 Mapper 的 XML 文件，提取所有 `<select>/<insert>/<update>/<delete>` 语句
+   - 读取 `inventory.json` 的 tables 数据，确定测试数据构造方式
+   - 为每个 SQL statement 生成对应的集成测试方法
+
+   **测试生成策略**：
+
+   | 语句类型 | 测试模式 | 验证重点 |
+   |---------|---------|---------|
+   | `<select>` | 插入数据 → 执行查询 → 验证返回 | resultMap 映射、参数绑定 |
+   | `<insert>` | 构造参数 → 执行插入 → 查询验证 | 自增主键回填、数据写入 |
+   | `<update>` | 预插数据 → 执行更新 → 查询验证 | 受影响行数、字段更新 |
+   | `<delete>` | 预插数据 → 执行删除 → 查询验证 | 数据删除 |
+
+   **H2 不兼容 SQL 的处理策略**：
+
+   **生产 Mapper XML 保持不变**（Oracle 原生语法），集成测试依赖 H2 Oracle 兼容模式（`MODE=Oracle`）执行 SQL。具体策略：
+
+   1. **H2 Oracle 模式能兼容的**（大部分情况）：直接执行，无需适配
+      - `SYSDATE`、`VARCHAR2`、`NUMBER(n,m)`、`MERGE INTO`、`WITH RECURSIVE`、`||` 拼接、`NVL`/`COALESCE` 等
+   2. **H2 确实不兼容的**：生成带 `@Disabled` 注解的测试方法，注释原因
+      - `CYCLE ... SET is_cycle TO 1 DEFAULT 0`：H2 不支持此语法
+      - 其他实测后确认不兼容的构造
+   3. **测试数据 INSERT 使用硬编码 ID 值**：直接使用 `VALUES (10001, ...)` 而非 `SEQ.NEXTVAL`，避免序列语法差异
+   4. **schema-h2.sql 中序列定义**：`CREATE SEQUENCE` 语句确保 `NEXTVAL` 引用能正常工作
+
+   **示例**（基于 CoreMapper）：
+   ```java
+   @Test
+   @DisplayName("selectItemById 应返回正确映射的物料")
+   void selectItemById_shouldReturnCorrectlyMappedItem() {
+       // arrange — 插入测试数据
+       jdbcTemplate.update(
+           "INSERT INTO t_item (item_id, item_code, item_name, item_type, base_uom) "
+           + "VALUES (10001, 'ITEM001', '测试物料', 'RAW', 'EA')");
+       // act
+       ItemDO result = coreMapper.selectItemById(10001L);
+       // assert
+       assertNotNull(result);
+       assertEquals(10001L, result.getItemId());
+       assertEquals("ITEM001", result.getItemCode());
+   }
+
+   @Test
+   @Disabled("H2 不支持 Oracle CYCLE 子句，此测试需在 Oracle 环境下运行")
+   @DisplayName("selectBomTree 应返回 BOM 层次结构")
+   void selectBomTree_shouldReturnBomHierarchy() {
+       // TODO: [mapper-test] 需要 Oracle 环境验证
+   }
+   ```
+
+   **测试方法命名**：`{mapperMethodName}_should{ExpectedBehavior}`
+   - 所有注释使用中文
+   - **禁止**生成空方法体（除 `@Disabled` 测试可保留 TODO 注释）
+   - Mapper 集成测试文件在 `translation.json` 的 `files` 数组中标记为 `role: "mapper-integration-test"`
+
 #### Step 3: 逐包持久化
 
 **每翻译完一个包**，立即写入：
 - `${artifactsDir}/translations/{package}/translation.json` — 符合 TranslationSchema
-- 对应的 Java 文件到项目目录
+- 对应的 Java 文件到 Runtime Context 中 `projectRoot` 指定的目录（绝对路径）
 
 translation.json 包含：
 - `packageName`：Oracle 包名
@@ -170,6 +230,46 @@ translation.json 包含：
 - `decisions`：翻译决策记录（line, oracleConstruct, javaConstruct, reason, confidence）
 - `todos`：TODO 标记（file, issue, oracleLine, suggestion）
 - `subprogramMethods`：本包每个子程序 → Java 调用入口索引，供「依赖本包的后续翻译包」对接跨包调用。每项 `{ oracleName=refName, javaClass=Service 接口全限定名(如 com.example.util.BService), javaMethod, javaFile?=接口文件路径 }`；重载子程序 oracleName 用 `{name}__{序号}` 区分（与 refName 一致）
+
+完整示例：
+
+```json
+{
+  "packageName": "PKG_ORDER",
+  "status": "completed",
+  "completedSubprograms": ["create_order", "cancel_order", "get_param__1", "get_param__2"],
+  "totalSubprograms": 4,
+  "files": [
+    { "path": "src/main/java/com/example/ordersystem/mapper/OrderMapper.java", "role": "mapper-interface" },
+    { "path": "src/main/resources/mapper/OrderMapper.xml", "role": "mapper-xml" },
+    { "path": "src/main/java/com/example/ordersystem/service/OrderService.java", "role": "service" },
+    { "path": "src/main/java/com/example/ordersystem/service/impl/OrderServiceImpl.java", "role": "service-impl" },
+    { "path": "src/main/java/com/example/ordersystem/dto/CreateOrderRequest.java", "role": "dto" },
+    { "path": "src/test/java/com/example/ordersystem/service/impl/OrderServiceImplTest.java", "role": "test" },
+    { "path": "src/test/java/com/example/ordersystem/mapper/OrderMapperIntegrationTest.java", "role": "mapper-integration-test" }
+  ],
+  "decisions": [
+    { "line": 15, "oracleConstruct": "SELECT ... INTO", "javaConstruct": "Mapper.selectByCondition()", "reason": "单行查询映射为 Mapper 方法 + 空值校验", "confidence": "high" },
+    { "line": 32, "oracleConstruct": "EXECUTE IMMEDIATE", "javaConstruct": "// TODO: [translate]", "reason": "动态 SQL 需手动审查", "confidence": "low" }
+  ],
+  "todos": [
+    { "file": "src/main/java/.../OrderServiceImpl.java", "issue": "动态 SQL 需手动实现", "oracleLine": 32, "suggestion": "考虑使用 MyBatis 动态 SQL 替代" }
+  ],
+  "subprogramMethods": [
+    { "oracleName": "create_order", "javaClass": "com.example.ordersystem.order.OrderService", "javaMethod": "createOrder", "javaFile": "src/main/java/com/example/ordersystem/order/service/OrderService.java" },
+    { "oracleName": "cancel_order", "javaClass": "com.example.ordersystem.order.OrderService", "javaMethod": "cancelOrder", "javaFile": "src/main/java/com/example/ordersystem/order/service/OrderService.java" },
+    { "oracleName": "get_param__1", "javaClass": "com.example.ordersystem.order.OrderService", "javaMethod": "getParamByName", "javaFile": "src/main/java/com/example/ordersystem/order/service/OrderService.java" },
+    { "oracleName": "get_param__2", "javaClass": "com.example.ordersystem.order.OrderService", "javaMethod": "getParamById", "javaFile": "src/main/java/com/example/ordersystem/order/service/OrderService.java" }
+  ]
+}
+```
+
+**关键字段说明**：
+- `files[].role`：推荐值 `"mapper-interface"` / `"mapper-xml"` / `"service"` / `"service-impl"` / `"dto"` / `"exception"` / `"test"` / `"mapper-integration-test"`
+- `decisions[].confidence`：推荐 `"high"` / `"medium"` / `"low"`
+- `subprogramMethods[].oracleName`：重载子程序必须用 `{name}__{序号}`（与 refName/callGraph 一致），禁止裸名重复
+- `subprogramMethods[].javaClass`：**Service 接口全限定名**（如 `com.example.ordersystem.order.OrderService`），不是简单类名
+- `totalSubprograms`：数字类型，支持字符串自动转换（写 `"5"` 等同 5）
 
 ### 中断恢复
 
@@ -192,6 +292,11 @@ translation.json 包含：
 - [ ] 每个 ServiceImpl 方法都有对应的测试方法（含完整 arrange→act→assert 逻辑）
 - [ ] 测试文件在 translation.json 的 files 数组中标记为 role `"test"`
 - [ ] 测试方法注释使用中文
+- [ ] 每个 Mapper XML 的 SQL statement 都有对应的集成测试方法
+- [ ] Mapper 集成测试文件在 translation.json 的 files 数组中标记为 role `"mapper-integration-test"`
+- [ ] H2 不兼容的 SQL 已标 `@Disabled`（生产 Mapper XML 保持不变）
+- [ ] 测试数据 INSERT 使用硬编码 ID 值（不使用 SEQ.NEXTVAL）
+- [ ] Mapper 集成测试方法注释使用中文
 
 ---
 
@@ -215,7 +320,7 @@ translation.json 包含：
 
 ### 输出
 
-- **更新 Java 文件**：修复后的代码覆盖原文件
+- **更新 Java 文件**：修复后的代码覆盖原文件（路径基于 `projectRoot`，如 `{projectRoot}/src/main/java/...`）
 - **更新 translation.json**：对应的包翻译记录
 - **fix artifact**：`${artifactsDir}/fix.json` — 符合 FixArtifactSchema
 
@@ -230,10 +335,17 @@ translation.json 包含：
 #### Step 2: 逐包修复
 
 对每个 mustFix 项：
-1. 定位到具体 Java 文件和行号
+1. 定位到具体 Java 文件和行号（文件路径基于 `projectRoot`，如 `{projectRoot}/src/main/java/...`）
 2. 对照 `analysis-packages/{pkg}.json` 的子程序结构和源码理解问题
 3. 按五原则修复（如果 mustFix 项涉及测试文件，同样修复测试代码）
 4. 更新对应的 translation.json
+
+**Mapper 集成测试修复场景**：
+- H2 不兼容的 SQL → 修复测试中的数据准备 SQL 或标 `@Disabled`
+- `schema-h2.sql` 缺少表/列 → 从 `inventory.json` 补全（追加到文件末尾，不修改已有的表定义）
+- Mapper 集成测试断言错误 → 修复断言逻辑
+- 缺少 Mapper XML statement 对应的测试方法 → 补充生成
+- `schema-h2.sql` 修复时采用"追加"策略，只追加缺失的表定义，不修改已有的表定义
 
 #### Step 3: 写入 fix.json
 
@@ -250,10 +362,10 @@ translation.json 包含：
 - `fixedPackages` 必须包含触发阶段 summary 中所有 `passed=false` 的包
 - 不能为空（至少修复一个包）
 
-#### Step 4: advance
+#### Step 4: 输出摘要
 
-- 全部 mustFix 修完：`workflow({ action: "advance", runId, result: "passed" })`
-- 修不完：`workflow({ action: "advance", runId, result: "failed" })` → 引擎会提示 retry 或标记 completed_with_issues
+- 全部 mustFix 修完：输出 WORKER_SUMMARY（status: completed）
+- 修不完：输出 WORKER_SUMMARY（status: failed，说明未修完的项）——编排者会决定是否 retry
 
 ### 质量检查
 

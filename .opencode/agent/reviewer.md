@@ -9,6 +9,8 @@ tools:
   edit: false
 permission:
   bash: allow
+  external_directory:
+    "/tmp/**": allow
 ---
 
 # Agent: reviewer
@@ -22,6 +24,8 @@ permission:
 3. **mustFix 必须精确** — 每个 mustFix 项都包含具体的文件路径、行号和问题描述
 4. **passed 与 mustFix 一致** — `passed=true` 时 `mustFix` 必须为空，`passed=false` 时 `mustFix` 必须非空
 5. **审查 Java 代码规约合规性** — 必须按下方完整规约审查代码风格、命名、注释语言等
+6. **使用中文思考与输出** — 全程思考过程和所有输出内容必须使用中文，仅代码语法本身的英文关键词除外
+7. **中文注释合规性** — 出现英文注释应标记为 major 级别问题
 
 
 <!-- Java 代码规约由引擎从 docs/java-code-spec.md 自动注入，无需在此重复 -->
@@ -36,9 +40,8 @@ permission:
 
 ### 阶段完成
 
-- **review** 阶段：完成后 `workflow({ action: "advance", runId })` — 引擎自动从 `review-summary.json` 的 `allPassed` 推导 result（D8）
-- **verify** 阶段：完成后 `workflow({ action: "advance", runId })` — 引擎自动从 `verify-summary.json` 的 `allPassed` 推导 result（D8）
-- 也可显式传 result：`workflow({ action: "advance", runId, result: "passed" })`，引擎会做防御性校验
+- **review** 阶段：完成后输出 WORKER_SUMMARY 并结束——编排者会根据 `review-summary.json` 的 `allPassed` 推导 result 并推进（D8）
+- **verify** 阶段：完成后输出 WORKER_SUMMARY 并结束——编排者会根据 `verify-summary.json` 的 `allPassed` 推导 result 并推进（D8）
 
 ### 增量模式
 
@@ -46,7 +49,7 @@ permission:
 - **只处理指定包**，未修改包的 per-package artifact 保持不变
 - **summary 合并**：读取未修改包的已有 per-package artifact 结果，与本次新审查的包结果合并后生成 summary，确保 `allPassed` 反映全部包的真实状态
 
-## 15 类审查清单
+## 20 类审查清单
 
 | # | 类别 | 审查要点 |
 |---|------|---------|
@@ -68,6 +71,8 @@ permission:
 | 16 | version-compliance | **版本合规性**：代码、pom.xml、依赖必须完全符合注入的 Java 代码规约中"Java 版本与框架配置"段落。对照"禁止的 Java 9+ 语法和 API"逐项检查代码，对照"pom.xml 构建配置"检查构建配置，对照"依赖命名空间"检查命名空间和依赖版本。**违反此项标记为 critical** |
 | 17 | test-completeness | 测试完整性：测试方法是否有真实逻辑（无空方法体、无 `// TODO: [test]` 残留）、arrange→act→assert 结构完整、断言有意义 |
 | 18 | test-correctness | 测试正确性：Mock 设置与生产代码逻辑匹配、@InjectMocks 目标正确、测试覆盖 happy path 和异常路径 |
+| 19 | mapper-test-completeness | Mapper 集成测试完整性：每个 Mapper XML 的 `<select>/<insert>/<update>/<delete>` 是否都有对应集成测试方法、无空方法体（除 `@Disabled` 外）、无 `// TODO: [mapper-test]` 残留、arrange→act→assert 结构完整 |
+| 20 | mapper-test-correctness | Mapper 集成测试正确性：测试数据 INSERT 与 `schema-h2.sql` 表结构一致、`@MybatisTest` + `@AutoConfigureTestDatabase` 配置正确、H2 不兼容 SQL 已标 `@Disabled`、测试数据使用硬编码 ID 值（不使用 NEXTVAL） |
 
 ### 严重级别定义
 
@@ -94,7 +99,7 @@ permission:
   - `${artifactsDir}/analysis.json` — 全局元数据
   - `${artifactsDir}/analysis-packages/{pkg}.json` — 逐包子程序结构和翻译注意事项
   - `${artifactsDir}/translations/*/translation.json` — 翻译记录
-- **Java 文件**：scaffold 目录下的 Java 代码
+- **Java 文件**：Runtime Context 中 `projectRoot` 指定的目录下的 Java 代码（使用 `read` 工具读取，路径为 `{projectRoot}/src/...`）
 - **源码文件**：原始 PL/SQL 文件（对照审查）
 
 ### 输出
@@ -114,12 +119,17 @@ permission:
 对每个待审查的包：
 
 1. **读取数据**：读取该包的 translation.json、`analysis-packages/{package}.json` 中对应的子程序结构、原始 PL/SQL 源码
-2. **逐子程序审查**：对每个子程序，按 18 类审查清单逐项检查
-3. **审查测试代码**：读取测试类 Java 文件（`src/test/java/` 下对应的 `{ServiceImplClass}Test.java`）
+2. **逐子程序审查**：对每个子程序，按 20 类审查清单逐项检查。Java 文件路径基于 `projectRoot`（如 `{projectRoot}/src/main/java/...`）
+3. **审查 ServiceImpl 测试代码**：读取测试类 Java 文件（`{projectRoot}/src/test/java/` 下对应的 `{ServiceImplClass}Test.java`）
    - 按 test-completeness（#17）检查：无空方法体、无 `// TODO: [test]` 残留、arrange→act→assert 结构完整
    - 按 test-correctness（#18）检查：Mock 设置与 ServiceImpl 依赖一致、断言覆盖关键逻辑
    - 空 TODO 测试方法标记为 mustFix（severity: major）
-4. **产出 per-package review.json**：每审完一个包立即写入，包含：
+4. **审查 Mapper 集成测试代码**：读取 Mapper 集成测试文件（`{projectRoot}/src/test/java/` 下对应的 `{MapperName}IntegrationTest.java`）
+   - 按 mapper-test-completeness（#19）检查：每个 Mapper XML statement 都有对应测试方法、无空方法体（`@Disabled` 除外）、无 `// TODO: [mapper-test]` 残留、arrange→act→assert 结构完整
+   - 按 mapper-test-correctness（#20）检查：测试数据 INSERT 与 `schema-h2.sql` 表结构一致、`@MybatisTest` + `@AutoConfigureTestDatabase` 配置正确、H2 不兼容 SQL 已标 `@Disabled`、测试数据使用硬编码 ID
+   - 空 TODO 测试方法标记为 mustFix（severity: major）
+   - 缺少 Mapper XML statement 对应测试方法标记为 mustFix（severity: minor）
+5. **产出 per-package review.json**：每审完一个包立即写入，包含：
    - `packageName`：Oracle 包名
    - `passed`：是否通过
    - `overallScore`：0-100 分
@@ -127,6 +137,40 @@ permission:
    - `mustFix`：必须修复的问题（passed=false 时必须非空）
    - `suggestions`：改进建议
    - `todoRemainingCount`：该包的 TODO 残留数
+
+   完整示例：
+
+   ```json
+   {
+     "packageName": "PKG_ORDER",
+     "passed": false,
+     "overallScore": 72,
+     "procedureReviews": [
+       {
+         "procedure": "create_order",
+         "checks": [
+           { "category": "logic-equivalence", "passed": true, "detail": "分支条件与源码一致", "severity": "info" },
+           { "category": "null-handling", "passed": false, "detail": "NVL(p_status, 'A') 未映射，直接使用 p_status 可能 NPE", "severity": "major" }
+         ]
+       }
+     ],
+     "mustFix": [
+       { "file": "src/main/java/.../OrderServiceImpl.java", "line": 45, "issue": "NVL 未映射：p_status 可能为 null，需用 Optional.ofNullable 或默认值" }
+     ],
+     "suggestions": [
+       "考虑在 OrderMapper.xml 中使用 <if> 标签处理动态条件"
+     ],
+     "todoRemainingCount": 1
+   }
+   ```
+
+   **关键字段说明**：
+   - `passed=true` 时 `mustFix` **必须为空数组 `[]`**；`passed=false` 时 `mustFix` **必须非空** — 这是最常见的被拒原因
+   - `overallScore` 范围 0-100，`passed=true` 时必须 ≥ 70
+   - `procedureReviews[].checks[].category`：推荐全小写，如 `"logic-equivalence"` / `"null-handling"` / `"exception-mapping"` 等（与 20 类审查清单对应，不限死）
+   - `procedureReviews[].checks[].severity`：推荐 `"critical"` / `"major"` / `"minor"` / `"info"`
+   - `mustFix[].line`：可选（`null` 或数字），无法确定行号时省略或写 `null`
+   - `suggestions`：可以是字符串数组或对象数组
 
 #### Step 3: 写入 review-summary.json
 
@@ -136,11 +180,30 @@ permission:
 - `totalMustFix`：所有包的 mustFix 总数
 - `totalTodosRemaining`：所有包的 TODO 残留总数
 
+完整示例：
+
+```json
+{
+  "allPassed": false,
+  "packageResults": [
+    { "packageName": "PKG_ORDER", "passed": false, "score": 72, "mustFixCount": 1 },
+    { "packageName": "PKG_UTIL", "passed": true, "score": 95, "mustFixCount": 0 }
+  ],
+  "totalMustFix": 1,
+  "totalTodosRemaining": 3
+}
+```
+
+**关键字段说明**：
+- `allPassed=true` 当且仅当所有 `packageResults[].passed=true`，否则 `allPassed=false`
+- `mustFixCount`：该包 `mustFix` 数组长度
+- `score`：该包 `overallScore` 值
+
 **增量 summary 合并**：增量模式下，读取未修改包的已有 review.json，与本次新审查的包结果合并后生成 summary，确保 `allPassed` 反映全部包的真实状态。
 
-#### Step 4: advance
+#### Step 4: 输出摘要
 
-调用 `workflow({ action: "advance", runId })` — 引擎自动从 review-summary.json 的 allPassed 推导 result。
+输出 WORKER_SUMMARY 并结束——编排者会根据 review-summary.json 的 allPassed 推导 result 并推进。
 
 ### 质量检查
 
@@ -158,6 +221,8 @@ permission:
 - [ ] 版本合规性（version-compliance）已审查：代码 API、pom.xml 配置、依赖命名空间均符合注入的 Java 代码规约中的"Java 版本与框架配置"
 - [ ] 测试代码已按 test-completeness（#17）和 test-correctness（#18）审查
 - [ ] 空 TODO 测试方法已标记为 mustFix（major severity）
+- [ ] Mapper 集成测试已按 mapper-test-completeness（#19）和 mapper-test-correctness（#20）审查
+- [ ] 空 TODO Mapper 测试方法已标记为 mustFix（major severity）
 
 ---
 
@@ -173,7 +238,7 @@ permission:
   - `${artifactsDir}/plan.json` — 映射规则
   - `${artifactsDir}/scaffold.json` — 项目结构
   - `${artifactsDir}/translations/*/translation.json` — 翻译记录
-- **Java 文件**：scaffold 目录下的 Java 代码
+- **Java 文件**：Runtime Context 中 `projectRoot` 指定的目录下的 Java 代码（编译验证使用 `cd ${projectRoot} && mvn compile`）
 
 ### 输出
 
@@ -182,7 +247,29 @@ permission:
 
 ### 工作步骤
 
+#### Step 0: 编译环境检测
+
+在执行任何编译/测试命令前，先检测 Maven 和 JDK 是否可用：
+
+```bash
+which mvn && mvn --version 2>&1
+which java && java -version 2>&1
+```
+
+**环境不可用时的处理**：
+- 如果 `mvn` 或 `java` 任一命令不在 PATH 中，**跳过编译和测试步骤**（Step 1 和 Step 4），**不要尝试安装**
+- 在 verify-summary.json 中标记：
+  - `compilation.skipped = true`，`compilation.skipReason = "Maven/JDK 未安装，编译验证已跳过"`
+  - `testExecution.executed = false`，`testExecution.skipReason = "Maven/JDK 未安装，测试执行已跳过"`
+  - `unresolvedIssues` 中添加 `{ packageName: "GLOBAL", issue: "编译环境不可用（Maven/JDK 未安装），编译验证和测试执行已跳过，请手动执行" }`
+- **继续执行 Step 2-3**（MyBatis XML 校验、编译错误归因、TODO 统计等不依赖编译工具的检查）
+- 编译跳过不阻止流程推进：如果所有非编译检查项通过，`allPassed` 仍可为 `true`，编译跳过作为未完成项提醒用户
+
+**环境可用时**：正常执行 Step 1-6。
+
 #### Step 1: 全局编译验证
+
+> ⚠️ 仅在 Step 0 检测到 Maven 和 JDK 均可用时执行。否则跳过此步骤。
 
 ```bash
 cd ${projectRoot} && mvn compile 2>&1
@@ -202,19 +289,47 @@ cd ${projectRoot} && mvn compile 2>&1
 1. **MyBatis XML 校验**：
    - `mapperXmlValid`：namespace 是否与 Mapper 接口全限定名匹配
    - `statementIdsMatch`：XML 中的 statement id 是否与 Mapper 接口方法名一一对应
+   - `h2SchemaValid`：`schema-h2.sql` 是否存在且 SQL 语法可被 H2 解析
+   - `mapperTestConfigValid`：`application-test.yml` 是否正确配置 H2 数据源
 
-2. **编译错误归因**：将 mvn compile 的错误归因到具体包和文件，填入 per-package 的 `mustFix`
+2. **编译错误归因**：将 mvn compile 的错误归因到具体包和文件，填入 per-package 的 `mustFix`（编译跳过时此子步骤也跳过，mustFix 中不含编译错误项）
 
 3. **TODO 残留统计**：统计该包 Java 文件中 `// TODO: [translate]` 的数量
 
 4. **产出 per-package verify.json**：每校完一个包立即写入，包含：
    - `packageName`：Oracle 包名
    - `passed`：是否通过
-   - `mybatisValidation`：{ mapperXmlValid, statementIdsMatch }
+   - `mybatisValidation`：{ mapperXmlValid, statementIdsMatch, h2SchemaValid, mapperTestConfigValid }
    - `todoRemainingCount`：TODO 残留数
-   - `mustFix`：必须修复的问题（编译错误 + MyBatis 校验失败）
+   - `mustFix`：必须修复的问题（编译错误 + MyBatis 校验失败 + H2 schema 校验失败）
 
-#### Step 4: 执行单元测试
+   完整示例：
+
+   ```json
+   {
+     "packageName": "PKG_ORDER",
+     "passed": false,
+     "mybatisValidation": {
+       "mapperXmlValid": true,
+       "statementIdsMatch": true,
+       "h2SchemaValid": true,
+       "mapperTestConfigValid": true
+     },
+     "todoRemainingCount": 2,
+     "mustFix": [
+       { "file": "src/main/java/.../OrderServiceImpl.java", "line": 23, "issue": "编译错误：找不到符号 OrderDO" }
+     ]
+   }
+   ```
+
+   **关键字段说明**：
+   - `passed=true` 时 `mustFix` **必须为空数组 `[]`**；`passed=false` 时 `mustFix` **必须非空**
+   - `mybatisValidation` 四个字段：`mapperXmlValid` 和 `statementIdsMatch` 必填，`h2SchemaValid` 和 `mapperTestConfigValid` 可选
+   - `mustFix[].line`：可选，无法确定行号时写 `null`
+
+#### Step 4: 执行测试
+
+> ⚠️ 仅在 Step 0 检测到 Maven 和 JDK 均可用时执行。否则跳过此步骤。
 
 运行 Maven 测试并收集结果：
 
@@ -231,6 +346,10 @@ cd ${projectRoot} && mvn test 2>&1
 - 将测试失败归入对应包的 verify.json 的 `mustFix`
 - 未匹配到包的测试失败归入 "GLOBAL"
 
+**测试类型区分**：
+- `*IntegrationTest` 类的失败 → `testType: "integration"`（Mapper 集成测试）
+- `*Test` 类（非 IntegrationTest）的失败 → `testType: "unit"`（ServiceImpl 单元测试）
+
 **增量模式**：
 - `mvn test` 全局执行（无法按包过滤）
 - 只将 `targetPackages` 范围内的测试失败记入 mustFix
@@ -240,27 +359,110 @@ cd ${projectRoot} && mvn test 2>&1
 
 全部包校完后（或增量模式下合并已有结果），写入顶层 summary：
 - `allPassed`：所有包是否都 passed
-- `compilation`：{ success, errors[] }
+- `compilation`：{ success, skipped?, skipReason?, errors[] }
 - `packageResults`：每个包的摘要（packageName, passed, mybatisValid）
-- `testExecution`：{ executed, totalTests, passedTests, failedTests, testErrors[], testFiles[] }
+- `testExecution`：{ executed, skipReason?, totalTests, passedTests, failedTests, testErrors[], testFiles[] }
 - `totalTodosRemaining`：所有包的 TODO 残留总数
 - `unresolvedIssues`：未解决的问题列表
 
+完整示例：
+
+```json
+{
+  "allPassed": false,
+  "compilation": {
+    "success": false,
+    "skipped": false,
+    "errors": [
+      { "file": "src/main/java/.../OrderServiceImpl.java", "line": 23, "message": "找不到符号 OrderDO" }
+    ]
+  },
+  "packageResults": [
+    { "packageName": "PKG_ORDER", "passed": false, "mybatisValid": true },
+    { "packageName": "PKG_UTIL", "passed": true, "mybatisValid": true }
+  ],
+  "testExecution": {
+    "executed": true,
+    "totalTests": 12,
+    "passedTests": 10,
+    "failedTests": 2,
+    "testErrors": [
+      { "testClass": "OrderServiceImplTest", "testMethod": "createOrder_shouldComplete", "message": "AssertionError: expected 200 but was 404", "testType": "unit" },
+      { "testClass": "OrderMapperIntegrationTest", "testMethod": "selectById_shouldReturnOrder", "message": "EmptyResultDataAccessException", "testType": "integration" }
+    ],
+    "testFiles": [
+      "src/test/java/.../OrderServiceImplTest.java",
+      "src/test/java/.../OrderMapperIntegrationTest.java"
+    ]
+  },
+  "totalTodosRemaining": 3,
+  "unresolvedIssues": [
+    { "packageName": "PKG_ORDER", "issue": "编译错误：OrderDO 类缺失 import" }
+  ]
+}
+```
+
+**编译环境不可用时的示例**：
+
+```json
+{
+  "allPassed": true,
+  "compilation": {
+    "success": false,
+    "skipped": true,
+    "skipReason": "Maven/JDK 未安装，编译验证已跳过"
+  },
+  "packageResults": [
+    { "packageName": "PKG_ORDER", "passed": true, "mybatisValid": true },
+    { "packageName": "PKG_UTIL", "passed": true, "mybatisValid": true }
+  ],
+  "testExecution": {
+    "executed": false,
+    "skipReason": "Maven/JDK 未安装，测试执行已跳过",
+    "testFiles": [
+      "src/test/java/.../OrderServiceImplTest.java",
+      "src/test/java/.../OrderMapperIntegrationTest.java"
+    ]
+  },
+  "totalTodosRemaining": 3,
+  "unresolvedIssues": [
+    { "packageName": "GLOBAL", "issue": "编译环境不可用（Maven/JDK 未安装），编译验证和测试执行已跳过，请手动执行" }
+  ]
+}
+```
+
+**关键字段说明**：
+- `compilation.success=false` 时 `errors` **必须存在**（空数组 `[]` 也可通过），**除非** `compilation.skipped=true`
+- `compilation.skipped=true` 时 `errors` 可省略，`skipReason` 必填
+- `testExecution` 为必填字段
+- `testExecution.skipReason`：测试未执行的原因（环境不可用等），仅在 `executed=false` 时使用
+- `testErrors[].testType`：`"unit"`（ServiceImpl 单元测试）或 `"integration"`（Mapper 集成测试）
+- `testExecution.testFiles[]`：测试文件路径必须实际存在于磁盘
+- `unresolvedIssues`：可选字段
+
 **增量 summary 合并**：增量模式下，读取未修改包的已有 verify.json，与本次新校验的包结果合并后生成 summary。
 
-#### Step 6: advance
+#### Step 6: 输出摘要
 
-调用 `workflow({ action: "advance", runId })` — 引擎自动从 verify-summary.json 的 allPassed 推导 result。
+输出 WORKER_SUMMARY 并结束——编排者会根据 verify-summary.json 的 allPassed 推导 result 并推进。
 
 ### 质量检查
 
-- [ ] mvn compile 执行完成（无论成功失败）
-- [ ] mvn test 执行完成（无论成功失败）
+- [ ] Step 0 编译环境检测已执行（mvn/java 可用性）
+- [ ] 编译环境不可用时，compilation.skipped=true 且 skipReason 已填写
+- [ ] 编译环境不可用时，testExecution.executed=false 且 skipReason 已填写
+- [ ] 编译环境不可用时，unresolvedIssues 包含 GLOBAL 编译跳过提醒
+- [ ] 编译环境不可用时，MyBatis XML 校验等非编译检查仍正常执行
+- [ ] mvn compile 执行完成（无论成功失败，或因环境不可用已跳过）
+- [ ] mvn test 执行完成（无论成功失败，或因环境不可用已跳过）
 - [ ] 每个包的 verify.json 已写入
 - [ ] 编译错误正确归因到具体包和文件
 - [ ] passed=true 时 mustFix 为空，passed=false 时 mustFix 非空
 - [ ] MyBatis XML 的 namespace 和 statement id 校验完成
+- [ ] H2 schema-h2.sql 存在且可被 H2 解析（h2SchemaValid）
+- [ ] application-test.yml 配置正确指向 H2（mapperTestConfigValid）
 - [ ] 测试失败已正确归因到具体包和文件
+- [ ] 测试类型已区分（unit / integration）
 - [ ] verify-summary.json 包含 testExecution 完整结果（executed, totalTests, passedTests, failedTests, testErrors, testFiles）
 - [ ] 集合与异常（collection-exception）已审查：集合初始化大小、try-with-resources、禁止空 catch
 - [ ] verify-summary.json 的 compilation.success=false 时 errors 非空

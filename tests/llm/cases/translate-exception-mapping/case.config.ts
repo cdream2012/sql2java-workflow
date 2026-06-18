@@ -92,7 +92,7 @@ const config: CaseConfig = {
           variables: [],
           cursors: [],
           exceptionHandlers: [{ name: "OTHERS", actions: ["ROLLBACK", "log_error(SQLERRM)", "RAISE"] }],
-          translationNotes: "异常块应映射为 catch：记录日志后重抛，不得吞异常",
+          translationNotes: ["异常块应映射为 catch：记录日志后重抛，不得吞异常"],
         },
       ],
     })

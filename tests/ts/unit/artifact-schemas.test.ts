@@ -106,7 +106,7 @@ describe("Schema 有效数据通过校验", () => {
         variables: [],
         cursors: [],
         exceptionHandlers: [],
-        translationNotes: "Simple getter",
+        translationNotes: ["Simple getter"],
       }],
     }
     expect(AnalysisPackageSchema.safeParse(data).success).toBe(true)
@@ -118,7 +118,7 @@ describe("Schema 有效数据通过校验", () => {
 
   it("ScaffoldSchema 通过", () => {
     const data = {
-      projectRoot: "generated/item-service",
+      projectRoot: "/abs/path/generated/item-service",
       structure: {
         directories: ["src/main/java/com/example"],
         pomXml: "pom.xml",
@@ -374,10 +374,22 @@ describe("Schema 无效数据被拒绝", () => {
     expect(result.success).toBe(false)
   })
 
-  it("VerifySummarySchema compilation failed 但 errors 空 → refine 失败", () => {
+  it("VerifySummarySchema compilation failed 但 errors=[] → 通过（已放松：空数组视为已声明）", () => {
     const data = {
       allPassed: false,
       compilation: { success: false, errors: [] },
+      packageResults: [{ packageName: "CORE_PKG", passed: false, mybatisValid: false }],
+      testExecution: { executed: false, testFiles: [] },
+      totalTodosRemaining: 1,
+    }
+    const result = VerifySummarySchema.safeParse(data)
+    expect(result.success).toBe(true)
+  })
+
+  it("VerifySummarySchema compilation failed 且 errors 完全缺失 → refine 失败", () => {
+    const data = {
+      allPassed: false,
+      compilation: { success: false },
       packageResults: [{ packageName: "CORE_PKG", passed: false, mybatisValid: false }],
       testExecution: { executed: false, testFiles: [] },
       totalTodosRemaining: 1,
@@ -391,17 +403,7 @@ describe("Schema 无效数据被拒绝", () => {
     expect(result.success).toBe(false)
   })
 
-  it("PlanSchema 无效 namingConvention 失败", () => {
-    const data = {
-      ...makePlan(),
-      rules: {
-        namingConvention: "snake_case",
-        nullHandling: "optional",
-        exceptionStrategy: "spring-data",
-        logFramework: "slf4j",
-      },
-    }
-    // makePlan uses old format, need to construct properly
+  it("PlanSchema 无效 namingConvention 现在也能通过（已放开为 string）", () => {
     const planData = {
       targetProject: {
         groupId: "com.example", artifactId: "item-service",
@@ -419,7 +421,7 @@ describe("Schema 无效数据被拒绝", () => {
       conventions: "",
     }
     const result = PlanSchema.safeParse(planData)
-    expect(result.success).toBe(false)
+    expect(result.success).toBe(true)
   })
 })
 
@@ -505,5 +507,310 @@ describe("getInventoryPackageSchema", () => {
 describe("getAnalysisPackageSchema", () => {
   it("返回非 null schema", () => {
     expect(getAnalysisPackageSchema()).not.toBeNull()
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// 类型放松：Zod 不再因合理变体拒绝 LLM 产出
+// ═══════════════════════════════════════════════════════════════
+
+describe("类型放松 — 合理 LLM 变体不再被拒", () => {
+  it("InventoryPackageSchema: bodyFile='' + procedures → 通过", () => {
+    const data = {
+      packageName: "CORE_PKG",
+      bodyFile: "",
+      procedures: [
+        { name: "P", type: "procedure", params: [], lineRange: [1, 10] as [number, number], loc: 10 },
+      ],
+      types: [],
+      variables: [],
+      constants: [],
+    }
+    expect(InventoryPackageSchema.safeParse(data).success).toBe(true)
+  })
+
+  it("InventoryPackageSchema: bodyFile=null + procedures → 通过", () => {
+    const data = {
+      packageName: "CORE_PKG",
+      bodyFile: null,
+      procedures: [
+        { name: "P", type: "procedure", params: [], returnType: null, lineRange: [1, 10] as [number, number], loc: 10 },
+      ],
+      types: [],
+      variables: [],
+      constants: [],
+    }
+    expect(InventoryPackageSchema.safeParse(data).success).toBe(true)
+  })
+
+  it("InventorySchema: defaultValue=null → 通过", () => {
+    const data = {
+      sourcePath: "/test",
+      packageNames: ["X"],
+      tables: [{
+        name: "T",
+        ddlFile: null,
+        columns: [{ name: "C", oracleType: "NUM", nullable: true, isPrimaryKey: false, defaultValue: null }],
+      }],
+      standaloneProcedures: [],
+      triggers: [],
+      views: [],
+      sequences: [],
+    }
+    expect(InventorySchema.safeParse(data).success).toBe(true)
+  })
+
+  it("VerifySummarySchema: errors=[] + success=false → 通过", () => {
+    const data = {
+      allPassed: false,
+      compilation: { success: false, errors: [] },
+      packageResults: [{ packageName: "X", passed: false, mybatisValid: false }],
+      testExecution: { executed: false, testFiles: [] },
+      totalTodosRemaining: 0,
+    }
+    expect(VerifySummarySchema.safeParse(data).success).toBe(true)
+  })
+
+  it("TranslationSchema: files.role 非枚举值 → 通过", () => {
+    const data = {
+      packageName: "X",
+      status: "completed",
+      completedSubprograms: ["A"],
+      totalSubprograms: 1,
+      files: [{ path: "a.java", role: "entity" }],
+      decisions: [],
+      todos: [],
+    }
+    expect(TranslationSchema.safeParse(data).success).toBe(true)
+  })
+
+  it("TranslationSchema: status 非枚举值 → 通过", () => {
+    const data = {
+      packageName: "X",
+      status: "in_progress",
+      completedSubprograms: [],
+      totalSubprograms: 5,
+      files: [],
+      decisions: [],
+      todos: [],
+    }
+    expect(TranslationSchema.safeParse(data).success).toBe(true)
+  })
+
+  it("TranslationSchema: totalSubprograms 为字符串 → 通过（coerce）", () => {
+    const data = {
+      packageName: "X",
+      status: "completed",
+      completedSubprograms: ["A"],
+      totalSubprograms: "5",
+      files: [],
+      decisions: [],
+      todos: [],
+    }
+    expect(TranslationSchema.safeParse(data).success).toBe(true)
+  })
+
+  it("ReviewSchema: checks.category 非枚举值 → 通过", () => {
+    const data = {
+      packageName: "X",
+      passed: true,
+      overallScore: 85,
+      procedureReviews: [{ procedure: "P", checks: [{ category: "custom-check", passed: true, detail: "ok", severity: "info" }] }],
+      mustFix: [],
+      suggestions: [],
+      todoRemainingCount: 0,
+    }
+    expect(ReviewSchema.safeParse(data).success).toBe(true)
+  })
+
+  it("ReviewSchema: suggestions 含对象 → 通过", () => {
+    const data = {
+      packageName: "X",
+      passed: true,
+      overallScore: 85,
+      mustFix: [],
+      suggestions: [{ severity: "info", issue: "minor issue" }],
+      todoRemainingCount: 0,
+    }
+    expect(ReviewSchema.safeParse(data).success).toBe(true)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// 大小写 normalize — ciEnum 自动纠正 LLM 大小写变体
+// ═══════════════════════════════════════════════════════════════
+
+describe("大小写 normalize — ciEnum 自动纠正 LLM 大小写变体", () => {
+  // ── direction (ciEnumUpper) ──────────────────────────────
+
+  it("InventoryProcedureSchema: direction 大小写变体 normalize 为大写", () => {
+    const base = {
+      name: "GET_ITEM",
+      params: [{ name: "P_ID", oracleType: "NUMBER", direction: "IN" }],
+      returnType: null,
+      lineRange: [1, 10] as [number, number],
+      loc: 10,
+    }
+
+    // 小写 "in" → normalize 为 "IN"
+    const lower = { ...base, type: "procedure", params: [{ ...base.params[0], direction: "in" }] }
+    const resultLower = InventoryPackageSchema.safeParse({
+      packageName: "CORE_PKG", bodyFile: "pkg.pkb",
+      procedures: [lower], types: [], variables: [], constants: [],
+    })
+    expect(resultLower.success).toBe(true)
+    if (resultLower.success) {
+      expect(resultLower.data.procedures[0].params[0].direction).toBe("IN")
+    }
+
+    // 混合大小写 "In" → normalize 为 "IN"
+    const mixed = { ...base, type: "procedure", params: [{ ...base.params[0], direction: "In" }] }
+    const resultMixed = InventoryPackageSchema.safeParse({
+      packageName: "CORE_PKG", bodyFile: "pkg.pkb",
+      procedures: [mixed], types: [], variables: [], constants: [],
+    })
+    expect(resultMixed.success).toBe(true)
+    if (resultMixed.success) {
+      expect(resultMixed.data.procedures[0].params[0].direction).toBe("IN")
+    }
+  })
+
+  it("InventoryProcedureSchema: direction 'in out' normalize 为 'IN OUT'", () => {
+    const data = {
+      packageName: "CORE_PKG", bodyFile: "pkg.pkb",
+      procedures: [{
+        name: "P", type: "procedure",
+        params: [{ name: "X", oracleType: "NUMBER", direction: "in out" }],
+        returnType: null, lineRange: [1, 10] as [number, number], loc: 10,
+      }],
+      types: [], variables: [], constants: [],
+    }
+    const result = InventoryPackageSchema.safeParse(data)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.procedures[0].params[0].direction).toBe("IN OUT")
+    }
+  })
+
+  // ── type (ciEnumLower) ───────────────────────────────────
+
+  it("InventoryIndexSchema: type 大小写变体 normalize 为小写", () => {
+    const base = {
+      sourcePath: "/test", scannedAt: "2026-06-01T00:00:00.000Z", scannerUsed: "regex",
+      packages: [{
+        name: "PKG", specFile: "a.pks", bodyFile: "a.pkb",
+        procedures: [{ name: "P", type: "PROCEDURE", lineRange: [1, 10] as [number, number] }],
+        estimatedLoc: 10,
+      }],
+      tables: [], triggers: [], views: [], sequences: [], standaloneProcedures: [],
+    }
+    const result = InventoryIndexSchema.safeParse(base)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.packages[0].procedures[0].type).toBe("procedure")
+    }
+  })
+
+  it("InventoryIndexSchema: type 'Function' normalize 为 'function'", () => {
+    const base = {
+      sourcePath: "/test", scannedAt: "2026-06-01T00:00:00.000Z", scannerUsed: "regex",
+      packages: [{
+        name: "PKG", specFile: "a.pks", bodyFile: "a.pkb",
+        procedures: [{ name: "F", type: "Function", lineRange: [1, 10] as [number, number] }],
+        estimatedLoc: 10,
+      }],
+      tables: [], triggers: [], views: [], sequences: [], standaloneProcedures: [],
+    }
+    const result = InventoryIndexSchema.safeParse(base)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.packages[0].procedures[0].type).toBe("function")
+    }
+  })
+
+  // ── scannerUsed (ciEnumLower) ────────────────────────────
+
+  it("InventoryIndexSchema: scannerUsed 'AST' normalize 为 'ast'", () => {
+    const base = makeInventoryIndex()
+    base.scannerUsed = "AST" as any
+    const result = InventoryIndexSchema.safeParse(base)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.scannerUsed).toBe("ast")
+    }
+  })
+
+  // ── riskLevel (ciEnumLower) ──────────────────────────────
+
+  it("AnalysisMetaSchema: riskLevel 'HIGH' normalize 为 'high'", () => {
+    const data = {
+      callGraph: {},
+      packageDependency: {},
+      translationOrder: [["CORE_PKG"]],
+      complexity: { CORE_PKG: { score: 5, patterns: ["cursor"], riskLevel: "HIGH" } },
+      sccGroups: [["CORE_PKG"]],
+      packageNames: ["CORE_PKG"],
+    }
+    const result = AnalysisMetaSchema.safeParse(data)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.complexity.CORE_PKG.riskLevel).toBe("high")
+    }
+  })
+
+  // ── triggers (ciEnumLower) ───────────────────────────────
+
+  it("InventorySchema: triggers 大小写变体 normalize 为小写", () => {
+    const data = {
+      sourcePath: "/test",
+      packageNames: ["PKG"],
+      tables: [],
+      standaloneProcedures: [],
+      triggers: [{
+        name: "TRG",
+        timing: "BEFORE",
+        level: "ROW",
+        targetTable: "T",
+        events: ["INSERT", "UPDATE"],
+        sourceFile: "trg.sql",
+        lineRange: [1, 10] as [number, number],
+      }],
+      views: [],
+      sequences: [],
+    }
+    const result = InventorySchema.safeParse(data)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.triggers[0].timing).toBe("before")
+      expect(result.data.triggers[0].level).toBe("row")
+      expect(result.data.triggers[0].events).toEqual(["insert", "update"])
+    }
+  })
+
+  // ── direction 在 InventorySchema.standaloneProcedures ────
+
+  it("InventorySchema: standaloneProcedures direction 'out' normalize 为 'OUT'", () => {
+    const data = {
+      sourcePath: "/test",
+      packageNames: ["PKG"],
+      tables: [],
+      standaloneProcedures: [{
+        name: "SP",
+        type: "Procedure",
+        params: [{ name: "X", oracleType: "NUMBER", direction: "out" }],
+        returnType: null,
+        sourceFile: "sp.sql",
+        lineRange: [1, 10] as [number, number],
+      }],
+      triggers: [],
+      views: [],
+      sequences: [],
+    }
+    const result = InventorySchema.safeParse(data)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.standaloneProcedures[0].type).toBe("procedure")
+      expect(result.data.standaloneProcedures[0].params[0].direction).toBe("OUT")
+    }
   })
 })

@@ -68,7 +68,7 @@ describe("validateCrossSchema — 包名一致性", () => {
     expect(findings.length).toBe(0)
   })
 
-  it("analysis 缺少包（inventory 有但 analysis 没有）→ blocking", () => {
+  it("analysis 缺少包（inventory 有但 analysis 没有）→ warning", () => {
     ctx = createEngineWithTempDir()
     writeArtifact(ctx.dir, RUN_ID, "inventory.json", {
       sourcePath: "src", packageNames: ["CORE_PKG", "EXTRA_PKG"], tables: [],
@@ -92,7 +92,7 @@ describe("validateCrossSchema — 包名一致性", () => {
     )
     const missing = findings.find(f => f.message.includes("analysis 缺少包: EXTRA_PKG"))
     expect(missing).toBeTruthy()
-    expect(missing!.severity).toBe("blocking")
+    expect(missing!.severity).toBe("warning")
   })
 
   it("inventory 缺少包（analysis 有但 inventory 没有）→ warning", () => {
@@ -131,7 +131,7 @@ describe("validateCrossSchema — translationOrder 覆盖", () => {
   let ctx: ReturnType<typeof createEngineWithTempDir>
   afterEach(() => ctx?.cleanup())
 
-  it("translationOrder 缺少包 → blocking", () => {
+  it("translationOrder 缺少包 → warning", () => {
     ctx = createEngineWithTempDir()
     writeArtifact(ctx.dir, RUN_ID, "inventory.json", {
       sourcePath: "src", packageNames: ["CORE_PKG", "EXTRA_PKG"], tables: [],
@@ -158,7 +158,7 @@ describe("validateCrossSchema — translationOrder 覆盖", () => {
     )
     const missing = findings.find(f => f.message.includes("translationOrder 缺少包: EXTRA_PKG"))
     expect(missing).toBeTruthy()
-    expect(missing!.severity).toBe("blocking")
+    expect(missing!.severity).toBe("warning")
   })
 })
 
@@ -166,7 +166,7 @@ describe("validateCrossSchema — plan 映射覆盖", () => {
   let ctx: ReturnType<typeof createEngineWithTempDir>
   afterEach(() => ctx?.cleanup())
 
-  it("plan 未映射包 → blocking", () => {
+  it("plan 未映射包 → warning", () => {
     ctx = createEngineWithTempDir()
     setupBaseline(ctx.dir)
     writeArtifact(ctx.dir, RUN_ID, "plan.json", {
@@ -192,7 +192,7 @@ describe("validateCrossSchema — plan 映射覆盖", () => {
     )
     const missing = findings.find(f => f.message.includes("plan 未映射包: EXTRA_PKG"))
     expect(missing).toBeTruthy()
-    expect(missing!.severity).toBe("blocking")
+    expect(missing!.severity).toBe("warning")
   })
 })
 
@@ -204,7 +204,7 @@ describe("advance() — blocking 拒绝", () => {
   let ctx: ReturnType<typeof createEngineWithTempDir>
   afterEach(() => ctx?.cleanup())
 
-  it("analysis 缺少包 → advance 被拒绝（rejected=true, warningPending 无）", () => {
+  it("analysis 缺少包 → warning 自动放行（不再 blocking）", () => {
     ctx = createEngineWithTempDir()
     const engine = ctx.engine
     engine.start("sql2java", RUN_ID)
@@ -217,7 +217,7 @@ describe("advance() — blocking 拒绝", () => {
     })
     writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
       callGraph: {}, packageDependency: {},
-      translationOrder: [["CORE_PKG"]],  // 也缺少 EXTRA_PKG（blocking）
+      translationOrder: [["CORE_PKG"]],  // 也缺少 EXTRA_PKG
       complexity: {}, sccGroups: [],
       packageNames: ["CORE_PKG"],
     })
@@ -234,18 +234,17 @@ describe("advance() — blocking 拒绝", () => {
     })
 
     const result = engine.advance(RUN_ID)
-    expect(result.rejected).toBe(true)
-    expect(result.warningPending).toBeFalsy()
-    expect(result.rejectionReason).toContain("阻塞级")
-    expect(result.rejectionReason).toContain("EXTRA_PKG")
+    expect(result.rejected).toBe(false)
+    expect(result.crossSchemaWarnings).toBeDefined()
+    expect(result.crossSchemaWarnings!.some(w => w.includes("EXTRA_PKG"))).toBe(true)
   })
 })
 
-describe("advance() — warningPending 确认", () => {
+describe("advance() — warning 自动放行", () => {
   let ctx: ReturnType<typeof createEngineWithTempDir>
   afterEach(() => ctx?.cleanup())
 
-  it("仅有 warning 且未 acceptWarnings → warningPending=true", () => {
+  it("仅有 warning → 不阻断，自动放行并附带 crossSchemaWarnings", () => {
     ctx = createEngineWithTempDir()
     const engine = ctx.engine
     engine.start("sql2java", RUN_ID)
@@ -278,13 +277,12 @@ describe("advance() — warningPending 确认", () => {
     })
 
     const result = engine.advance(RUN_ID)
-    expect(result.rejected).toBe(true)
-    expect(result.warningPending).toBe(true)
+    expect(result.rejected).toBe(false)
     expect(result.crossSchemaWarnings).toBeDefined()
     expect(result.crossSchemaWarnings!.length).toBeGreaterThan(0)
   })
 
-  it("acceptWarnings=true → 放行，附带 crossSchemaWarnings", () => {
+  it("acceptWarnings=true 同样放行，附带 crossSchemaWarnings（兼容旧调用方式）", () => {
     ctx = createEngineWithTempDir()
     const engine = ctx.engine
     engine.start("sql2java", RUN_ID)
@@ -326,14 +324,14 @@ describe("advance() — 混合场景", () => {
   let ctx: ReturnType<typeof createEngineWithTempDir>
   afterEach(() => ctx?.cleanup())
 
-  it("同时有 blocking + warning → 按 blocking 拒绝，warning 附带在 crossSchemaWarnings", () => {
+  it("同时有多条 warning → 全部自动放行，附带在 crossSchemaWarnings", () => {
     ctx = createEngineWithTempDir()
     const engine = ctx.engine
     engine.start("sql2java", RUN_ID)
     pushToPhase(engine, "analyze")
 
     // inventory 有 CORE_PKG + EXTRA_PKG，analysis 有 CORE_PKG + GHOST_PKG
-    // → EXTRA_PKG: analysis 缺少包 = blocking
+    // → EXTRA_PKG: analysis 缺少包 = warning
     // → GHOST_PKG: inventory 缺少包 = warning
     writeArtifact(ctx.dir, RUN_ID, "inventory.json", {
       sourcePath: "src", packageNames: ["CORE_PKG", "EXTRA_PKG"], tables: [],
@@ -365,12 +363,10 @@ describe("advance() — 混合场景", () => {
     })
 
     const result = engine.advance(RUN_ID)
-    expect(result.rejected).toBe(true)
-    expect(result.warningPending).toBeFalsy() // blocking 优先，不是 warningPending
-    expect(result.rejectionReason).toContain("阻塞级")
-    expect(result.rejectionReason).toContain("EXTRA_PKG")
-    // warning 应附带在 crossSchemaWarnings
+    expect(result.rejected).toBe(false)
+    // 两条 warning 都附带在 crossSchemaWarnings
     expect(result.crossSchemaWarnings).toBeDefined()
+    expect(result.crossSchemaWarnings!.some(w => w.includes("EXTRA_PKG"))).toBe(true)
     expect(result.crossSchemaWarnings!.some(w => w.includes("GHOST_PKG"))).toBe(true)
   })
 })

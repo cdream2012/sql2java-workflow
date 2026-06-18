@@ -37,7 +37,7 @@
                                                 └───────┘             └→ fix → review（增量回到触发阶段）
 ```
 
-**单流水线**：9 个阶段（含 dedup）+ 1 个条件分支阶段（fix），一个 runId，无条件前进 + review/verify 失败时进入 fix 循环（增量重做）。fix 完成后直接回到 review 审查，dedup 只在主线 translate 后执行一次。启动前可选执行 Schema 预获取（发现 `db.xml` 时自动连接数据库拉取 DDL）。
+**单流水线**：8 个阶段 + 1 个条件分支阶段（fix），一个 runId，无条件前进 + review/verify 失败时进入 fix 循环（增量重做）。fix 完成后直接回到 review 审查，dedup 只在主线 translate 后执行一次。启动前可选执行 Schema 预获取（发现 `db.xml` 时自动连接数据库拉取 DDL）。
 
 ## 项目结构
 
@@ -52,7 +52,7 @@ sql2java-workflow/
 │   │   ├── translator.md             # translate + fix 阶段
 │   │   └── reviewer.md               # review + verify 阶段
 │   ├── docs/
-│   │   └── java-code-spec.md         # 统一 Java 代码规约（自动注入 3 个 agent）
+│   │   └── java-code-spec.md         # 统一 Java 代码规约（自动注入 3 个 agent，支持 --spec 覆盖）
 │   ├── workflow/
 │   │   ├── engine-core.ts            # 状态机核心
 │   │   ├── workflow-definitions.ts   # 工作流定义 + TransitionRule + PHASE_PREREQUISITES
@@ -63,17 +63,30 @@ sql2java-workflow/
 │   │   ├── rejection-guidance.ts     # PHASE_REJECTION_GUIDANCE + enhanceRejection
 │   │   ├── cross-platform.ts         # 跨平台文件操作（atomicRename/safeRm/safeWriteFile）
 │   │   ├── phase-metrics-collector.ts # 阶段指标采集与报告
+│   │   ├── schema-hint-enrichments.ts # D13 Schema Hint 数据定义（阶段校验要求）
+│   │   ├── schema-hint-renderer.ts   # D13 Schema Hint 渲染（注入 system prompt）
+│   │   ├── ensure-deps.ts            # 依赖自动安装（node_modules 缺失时 npm/bun install）+ findOpencodeDir
+│   │   ├── workflow-logger.ts        # 运行日志模块
+│   │   ├── wf-util.js                # 工具函数
 │   │   ├── constants.ts              # 共享常量（GENERATED_OUTPUT_DIR 等）
 │   │   └── type-mappings.ts          # Oracle → Java/JDBC 类型映射表
 │   ├── plugins/
 │   │   └── workflow-engine.ts        # 插件入口（workflow 工具 + hooks + artifact 校验）
 │   └── package.json                  # 依赖：@opencode-ai/plugin, zod, ts-plsql-parser, oracledb(optional)
 ├── resources/
-│   └── mfg_erp_sql/                  # 示例 PL/SQL 输入（schema/pkg/func/trigger/type）
+│   ├── mfg_erp_sql/                  # 完整示例 PL/SQL 输入（schema/pkg/func/trigger/type）
+│   ├── mfg_erp_sql_mini/             # 中等规模示例（子集）
+│   └── mfg_erp_sql_tiny/             # 最小示例（快速验证）
 ├── minimum_feature_design.md         # 最小可行功能设计文档
 ├── sp-to-fsd-design.md               # 子程序 → FSD 转换设计
 ├── sql2java-run-diagram.md           # 工作流运行图解
 ├── sql2java-standard-example.md      # 标准转译示例
+├── orchestrator-worker-architecture.md # Orchestrator-Worker 架构设计
+├── metrics-report-design.md          # 指标报告设计
+├── scalability-risks.md              # 扩展性风险分析
+├── test-framework-design.md          # 测试框架设计
+├── todo-tracking-design.md           # Todo 追踪设计
+├── AGENTS.md                         # Agent 说明
 └── README.md
 ```
 
@@ -140,12 +153,14 @@ sql2java-workflow/
 | D21 | L3 质量门控 | 确定性数值门控：G1 翻译完成率≥0.8 / G3 review 分数≥70 / G6 测试通过率≥0.7 |
 | D22 | rejection guidance | 每阶段的拒绝引导，鼓励重做而非修补 JSON |
 | D23 | 跨平台文件操作 | atomicRename/safeRm/safeWriteFile 处理 Windows 文件锁定 |
+| D24 | 用户自定义规约 | `--spec` 参数指定 Markdown 规约文件，按 `##` 章节覆盖内置 java-code-spec.md 同名章节，独有章节追加；目录结构从"工程结构"章节提取 |
 
 ## 命令用法
 
 ```
 /sql2java <path>                              # 端到端全流程
 /sql2java --db_conf db.xml <path>             # 指定数据库配置文件
+/sql2java --spec project-spec.md <path>       # 指定用户自定义代码规约文件
 /sql2java --status                            # 查看工作流状态
 /sql2java --resume                            # 断点续传
 /sql2java --phases plan,scaffold <path>       # 指定阶段执行
@@ -301,6 +316,34 @@ opencode models zai-coding-plan  # 只看 z.ai 模型
 
 **严重级别**：违反【强制】规则 → major/critical，违反【推荐】→ minor/info。**出现英文注释标记为 major 级别问题。**
 
+### 用户自定义规约（--spec）
+
+通过 `--spec` 参数提供自定义规约文件，按 `##` 章节覆盖内置 `java-code-spec.md` 的同名章节：
+
+```markdown
+## 【强制】Java 版本与框架配置（唯一事实来源）
+
+- **Java 版本**: 17
+- **Spring Boot 版本**: 3.2.x
+
+## (一) 命名风格
+
+1. 【强制】方法名使用 snake_case（公司内部规范）
+
+## 工程结构
+
+src/main/java/{packageBase}/controller
+src/main/java/{packageBase}/service
+```
+
+**合并规则**：
+- 用户 `##` 标题与内置**精确匹配** → 覆盖该章节
+- 用户独有的 `##` 章节 → 追加到末尾
+- 用户未覆盖的内置章节 → 保留默认
+- `## 工程结构` 等目录结构章节 → 自动提取路径列表
+
+**文件发现优先级**：`--spec <path>` → `<sourcePath>/project-spec.md` → `<sourcePath>/project-structure.md`（旧格式，仅目录结构）
+
 ## Workflow Engine 核心方法
 
 | 方法 | 说明 |
@@ -314,12 +357,15 @@ opencode models zai-coding-plan  # 只看 z.ai 模型
 | `listRuns()` | 列出所有 run |
 | `loadFromDisk(runId)` | 从 run.json 恢复 |
 | `fixContinue(runId)` | fix 循环继续（exhausted 后新 epoch） |
+| `registerDefinition(def)` | 注册工作流定义 |
 | `validateCrossSchema()` | 跨 Schema 语义校验（D9，blocking/warning 分级） |
+| `validateInventoryIndexConsistency()` | inventory ↔ index 一致性校验 |
+| `validateQualityGates()` | L3 确定性数值门控检查（D21，实际执行逻辑） |
 | `isFixExhausted()` | 双层 exhausted 判定（D2） |
 | `handleFixAdvance()` | fix 阶段特殊处理（D3/D7/D12） |
 | `deriveReviewResult()` | review/verify result 自动推导（D8） |
-| `checkQualityGates()` | L3 确定性数值门控检查（D21） |
 | `extractPackageNames()` | 双格式包名提取（packageNames 优先，旧格式回退） |
+| `clearArtifactCache()` | advance 结束后清除 artifact 缓存（D17） |
 
 ## Artifact Schema 工具函数
 
@@ -340,7 +386,7 @@ opencode models zai-coding-plan  # 只看 z.ai 模型
 - **Schema 获取**：oracledb 7.x thin mode（可选依赖，有 db.xml 时自动启用）
 - **Schema 校验**：Zod ^3.23.0
 - **Agent 定义**：Markdown（按 `## Phase: xxx` 分节，位于 `.opencode/agent/`）
-- **代码规约**：`docs/java-code-spec.md`（自动注入 agent system prompt）
+- **代码规约**：`docs/java-code-spec.md`（自动注入 agent system prompt），支持 `--spec` 用户自定义覆盖
 - **LLM**：Claude API
 - **目标框架**：Spring Boot + MyBatis + Lombok + Maven
 

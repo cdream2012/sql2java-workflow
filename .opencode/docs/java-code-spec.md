@@ -2,6 +2,7 @@
 
 > 此规约由工作流引擎自动注入到 java-architect、translator、reviewer 三个 agent 的 system prompt 中。
 > 修改此文件即可全局生效，无需同步修改多个 agent 文件。
+> 用户也可通过 `--spec` 参数提供自定义规约文件（按 `##` 章节覆盖同名内置章节，独有章节追加）。
 
 ## 适用范围
 

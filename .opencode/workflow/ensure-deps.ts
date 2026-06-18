@@ -17,9 +17,62 @@ let ensurePromise: Promise<void> | null = null
 
 // ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
-/** 找到 .opencode/ 目录（本文件在 .opencode/workflow/ 下，向上一级） */
+/**
+ * 找到 .opencode/ 目录
+ *
+ * 策略（按优先级）：
+ *   1. __filename 回溯：从本文件所在目录向上查找含 .opencode 特征的目录
+ *   2. process.cwd() 回溯：从工作目录向上查找 .opencode/ 子目录
+ *
+ * 不直接依赖 `dirname(__filename) + "/.."` 的原因：tsx/bun 转译时 __filename
+ * 可能指向临时缓存目录，导致拼接出错误路径。
+ */
 export function findOpencodeDir(): string {
+  // 策略 1：从 __filename 向上查找含 package.json（含 @opencode-ai/plugin 依赖）的目录
+  try {
+    const fileDir = dirname(__filename)
+    const candidate = _walkUpForOpencode(fileDir)
+    if (candidate) return candidate
+  } catch {}
+
+  // 策略 2：从 cwd 向上查找 .opencode/ 子目录
+  const cwdCandidate = _walkUpForDotOpencode(process.cwd())
+  if (cwdCandidate) return cwdCandidate
+
+  // 兜底：返回原始 __filename 向上一级（兼容旧行为）
   return join(dirname(__filename), "..")
+}
+
+/** 向上遍历，找到包含 @opencode-ai/plugin 依赖的目录（即 .opencode/） */
+function _walkUpForOpencode(startDir: string): string | null {
+  let dir = startDir
+  for (let i = 0; i < 10; i++) {
+    const pkgPath = join(dir, "package.json")
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
+      if (pkg.dependencies?.["@opencode-ai/plugin"]) return dir
+    } catch {}
+    const parent = join(dir, "..")
+    if (parent === dir) break // 到达根目录
+    dir = parent
+  }
+  return null
+}
+
+/** 向上遍历，找到含 .opencode/ 子目录的父目录，返回该 .opencode/ 的完整路径 */
+function _walkUpForDotOpencode(startDir: string): string | null {
+  let dir = startDir
+  for (let i = 0; i < 10; i++) {
+    const candidate = join(dir, ".opencode")
+    if (existsSync(candidate)) {
+      // 二次确认：是 .opencode 目录且含 package.json
+      if (existsSync(join(candidate, "package.json"))) return candidate
+    }
+    const parent = join(dir, "..")
+    if (parent === dir) break
+    dir = parent
+  }
+  return null
 }
 
 /** 读取 package.json 中的 dependencies（不含 optionalDependencies，可选依赖由使用方自行处理） */

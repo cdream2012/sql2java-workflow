@@ -10,6 +10,32 @@
 import { z } from "zod"
 
 // ============================================================================
+// 大小写不敏感枚举辅助 — LLM 产出大小写不一致时自动 normalize
+// ============================================================================
+
+/**
+ * 创建大小写不敏感枚举：接受任意大小写输入，normalize 为大写后再校验。
+ *
+ * 典型用途：SQL 关键字枚举（direction="IN"/"OUT"/"IN OUT"），
+ * SQL 语法本身不区分大小写，LLM 可能输出 "in"/"In"/"IN"。
+ *
+ * 用法：ciEnumUpper(["IN", "OUT", "IN OUT"]) 替代 z.enum(["IN", "OUT", "IN OUT"])
+ */
+function ciEnumUpper<T extends readonly [string, ...string[]]>(values: T) {
+  return z.string().transform(v => v.toUpperCase()).pipe(z.enum(values))
+}
+
+/**
+ * 创建大小写不敏感枚举：接受任意大小写输入，normalize 为小写后再校验。
+ *
+ * 典型用途：语义分类枚举（type="procedure"/"function"、riskLevel="low" 等），
+ * 这些是约定值而非 SQL 关键字，规范写法为小写，但不应因大小写拒绝。
+ */
+function ciEnumLower<T extends readonly [string, ...string[]]>(values: T) {
+  return z.string().transform(v => v.toLowerCase()).pipe(z.enum(values))
+}
+
+// ============================================================================
 // 共享枚举 — 跨 Schema 共用的常量定义
 // ============================================================================
 
@@ -33,15 +59,15 @@ const ModuleCategorySchema = z.enum(ModuleCategoryValues)
 export const InventoryIndexSchema = z.object({
   sourcePath: z.string(),
   scannedAt: z.string(),
-  scannerUsed: z.enum(["ast", "regex"]),
+  scannerUsed: ciEnumLower(["ast", "regex"]),
 
   packages: z.array(z.object({
     name: z.string(),
-    specFile: z.string().optional(),
-    bodyFile: z.string().optional(),
+    specFile: z.string().nullable().optional(),
+    bodyFile: z.string().nullable().optional(),
     procedures: z.array(z.object({
       name: z.string(),
-      type: z.enum(["procedure", "function"]),
+      type: ciEnumLower(["procedure", "function"]),
       lineRange: z.tuple([z.number(), z.number()]).optional(),
     })),
     estimatedLoc: z.number(),
@@ -49,7 +75,7 @@ export const InventoryIndexSchema = z.object({
 
   tables: z.array(z.object({
     name: z.string(),
-    ddlFile: z.string().optional(),
+    ddlFile: z.string().nullable().optional(),
   })),
 
   triggers: z.array(z.object({
@@ -59,22 +85,22 @@ export const InventoryIndexSchema = z.object({
 
   views: z.array(z.object({
     name: z.string(),
-    ddlFile: z.string().optional(),
+    ddlFile: z.string().nullable().optional(),
   })),
 
   sequences: z.array(z.object({
     name: z.string(),
-    ddlFile: z.string().optional(),
+    ddlFile: z.string().nullable().optional(),
   })),
 
   standaloneProcedures: z.array(z.object({
     name: z.string(),
-    type: z.enum(["procedure", "function"]),
+    type: ciEnumLower(["procedure", "function"]),
     sourceFile: z.string(),
   })),
 
   callGraph: z.record(z.string(), z.array(z.string())).optional(),
-})
+}).passthrough()
 
 // ============================================================================
 // Inventory Package Schema（逐包 inventory，LLM enriched）
@@ -83,21 +109,21 @@ export const InventoryIndexSchema = z.object({
 /** 逐包 inventory 的 procedure 结构 — 与 InventorySchema 旧格式兼容 */
 const InventoryProcedureSchema = z.object({
   name: z.string(),
-  type: z.enum(["procedure", "function"]),
+  type: ciEnumLower(["procedure", "function"]),
   params: z.array(z.object({
     name: z.string(),
     oracleType: z.string(),
-    direction: z.enum(["IN", "OUT", "IN OUT"]),
+    direction: ciEnumUpper(["IN", "OUT", "IN OUT"]),
   })),
-  returnType: z.string().optional(),
+  returnType: z.string().nullable().optional(),
   lineRange: z.tuple([z.number(), z.number()]),
   loc: z.number(),
 })
 
 export const InventoryPackageSchema = z.object({
   packageName: z.string(),
-  specFile: z.string().optional(),
-  bodyFile: z.string().optional(),
+  specFile: z.string().nullable().optional(),
+  bodyFile: z.string().nullable().optional(),
   procedures: z.array(InventoryProcedureSchema),
   types: z.array(z.object({
     name: z.string(),
@@ -107,18 +133,17 @@ export const InventoryPackageSchema = z.object({
   variables: z.array(z.object({
     name: z.string(),
     type: z.string(),
-    defaultValue: z.string().optional(),
+    defaultValue: z.string().nullable().optional(),
   })),
   constants: z.array(z.object({
     name: z.string(),
     type: z.string(),
     value: z.string(),
   })),
-}).refine(
-  pkg => pkg.procedures.length === 0 || (pkg.bodyFile !== undefined && pkg.bodyFile.length > 0),
-  { message: "有 procedures 的包必须有非空的 bodyFile（procedure 实现体在 body 中）" }
+}).passthrough().refine(
+  pkg => pkg.procedures.length === 0 || pkg.bodyFile !== undefined,
+  { message: "有 procedures 的包必须有 bodyFile（procedure 实现体在 body 中）" }
 )
-
 // ============================================================================
 // Inventory Schema（索引模式：packages 拆分为 per-package 文件，DDL 保留在此）
 // ============================================================================
@@ -129,58 +154,58 @@ export const InventorySchema = z.object({
 
   tables: z.array(z.object({
     name: z.string(),
-    ddlFile: z.string().optional(),
+    ddlFile: z.string().nullable().optional(),
     columns: z.array(z.object({
       name: z.string(),
       oracleType: z.string(),
       nullable: z.boolean(),
       isPrimaryKey: z.boolean(),
-      defaultValue: z.string().optional(),
+      defaultValue: z.string().nullable().optional(),
     })),
   })),
 
   standaloneProcedures: z.array(z.object({
     name: z.string(),
-    type: z.enum(["procedure", "function"]),
+    type: ciEnumLower(["procedure", "function"]),
     params: z.array(z.object({
       name: z.string(),
       oracleType: z.string(),
-      direction: z.enum(["IN", "OUT", "IN OUT"]),
+      direction: ciEnumUpper(["IN", "OUT", "IN OUT"]),
     })),
-    returnType: z.string().optional(),
+    returnType: z.string().nullable().optional(),
     sourceFile: z.string(),
     lineRange: z.tuple([z.number(), z.number()]),
   })),
 
   triggers: z.array(z.object({
     name: z.string(),
-    timing: z.enum(["before", "after", "instead-of", "compound"]),
-    level: z.enum(["statement", "row"]),
+    timing: ciEnumLower(["before", "after", "instead-of", "compound"]),
+    level: ciEnumLower(["statement", "row"]),
     targetTable: z.string(),
-    events: z.array(z.enum(["insert", "update", "delete"])),
+    events: z.array(ciEnumLower(["insert", "update", "delete"])),
     sourceFile: z.string(),
     lineRange: z.tuple([z.number(), z.number()]),
-    condition: z.string().optional(),
+    condition: z.string().nullable().optional(),
   })),
 
   views: z.array(z.object({
     name: z.string(),
-    ddlFile: z.string().optional(),
-    sourceFile: z.string().optional(),
+    ddlFile: z.string().nullable().optional(),
+    sourceFile: z.string().nullable().optional(),
     columns: z.array(z.string()),
-    underlyingTables: z.array(z.string()).optional(),
+    underlyingTables: z.array(z.string()).nullable().optional(),
   })),
 
   sequences: z.array(z.object({
     name: z.string(),
-    ddlFile: z.string().optional(),
-    startWith: z.number().optional(),
-    incrementBy: z.number().optional(),
-    minValue: z.number().optional(),
-    maxValue: z.number().optional(),
-    cycle: z.boolean().optional(),
+    ddlFile: z.string().nullable().optional(),
+    startWith: z.number().nullable().optional(),
+    incrementBy: z.number().nullable().optional(),
+    minValue: z.number().nullable().optional(),
+    maxValue: z.number().nullable().optional(),
+    cycle: z.boolean().nullable().optional(),
   })),
-})
+}).passthrough()
 
 // ============================================================================
 // Analysis Schema（拆分为 Meta + Per-Package）
@@ -190,10 +215,7 @@ export const InventorySchema = z.object({
 const SubprogramSchema = z.object({
   name: z.string(),
   blocks: z.array(z.object({
-    type: z.enum([
-      "loop", "cursor", "if-else", "exception-block",
-      "sql-statement", "assignment", "call",
-    ]),
+    type: z.string(),
     oracleLine: z.number(),
     description: z.string(),
     dependencies: z.array(z.string()),
@@ -206,13 +228,13 @@ const SubprogramSchema = z.object({
   cursors: z.array(z.object({
     name: z.string(),
     query: z.string(),
-    fetchMode: z.enum(["BULK", "ONE_BY_ONE", "FOR_UPDATE", "OTHER"]),
+    fetchMode: z.string(),
   })),
   exceptionHandlers: z.array(z.object({
     name: z.string(),
     actions: z.array(z.string()),
   })),
-  translationNotes: z.string(),
+  translationNotes: z.array(z.string()),
 })
 
 /** analysis.json — 全局元数据（不含逐包子程序数据） */
@@ -228,17 +250,17 @@ export const AnalysisMetaSchema = z.object({
   complexity: z.record(z.string(), z.object({
     score: z.number().min(1).max(10),
     patterns: z.array(z.string()),
-    riskLevel: z.enum(["low", "medium", "high"]),
+    riskLevel: ciEnumLower(["low", "medium", "high"]),
   })),
   sccGroups: z.array(z.array(z.string())),
   packageNames: z.array(z.string()),
-})
+}).passthrough()
 
 /** analysis-packages/{pkg}.json — 逐包子程序结构 */
 export const AnalysisPackageSchema = z.object({
   packageName: z.string(),
   subprograms: z.array(SubprogramSchema),
-})
+}).passthrough()
 
 /** @deprecated 旧格式兼容，仅用于跨 Schema 校验的 fallback */
 export const AnalysisSchema = z.object({
@@ -248,7 +270,7 @@ export const AnalysisSchema = z.object({
   complexity: z.record(z.string(), z.object({
     score: z.number().min(1).max(10),
     patterns: z.array(z.string()),
-    riskLevel: z.enum(["low", "medium", "high"]),
+    riskLevel: ciEnumLower(["low", "medium", "high"]),
   })),
   sccGroups: z.array(z.array(z.string())),
   packages: z.array(z.object({
@@ -256,7 +278,7 @@ export const AnalysisSchema = z.object({
     subprograms: z.array(SubprogramSchema),
   })).optional(),
   packageNames: z.array(z.string()).optional(),
-})
+}).passthrough()
 
 // ============================================================================
 // Plan Schema
@@ -280,10 +302,10 @@ export const PlanSchema = z.object({
   })),
 
   rules: z.object({
-    namingConvention: z.enum(["keep-oracle", "camelCase", "mixed"]),
-    nullHandling: z.enum(["optional", "nullable", "throw-empty"]),
-    exceptionStrategy: z.enum(["spring-data", "custom-business", "oracle-mirror"]),
-    logFramework: z.enum(["slf4j", "log4j2"]),
+    namingConvention: z.string(),
+    nullHandling: z.string(),
+    exceptionStrategy: z.string(),
+    logFramework: z.string(),
   }),
 
   typeMappings: z.record(z.string(), z.string()),
@@ -293,13 +315,14 @@ export const PlanSchema = z.object({
   })),
 
   conventions: z.string(),
-})
+}).passthrough()
 
 // ============================================================================
 // Scaffold Schema
 // ============================================================================
 
 export const ScaffoldSchema = z.object({
+  /** Java 项目输出根目录（绝对路径，由引擎注入，指向 cwd/generated/{artifactId}） */
   projectRoot: z.string(),
   structure: z.object({
     directories: z.array(z.string()),
@@ -323,6 +346,17 @@ export const ScaffoldSchema = z.object({
       oraclePackage: z.string(),
       testClass: z.string(),
     })).optional(),
+    /** Mapper 集成测试骨架（@MybatisTest + H2） */
+    mapperTestShells: z.array(z.object({
+      file: z.string(),
+      oraclePackage: z.string(),
+      testClass: z.string(),
+      mapperInterface: z.string(),
+    })).optional(),
+    /** H2 兼容建表脚本路径（相对于 projectRoot） */
+    h2SchemaFile: z.string().optional(),
+    /** 测试用 application 配置路径（相对于 projectRoot） */
+    testApplicationConfig: z.string().optional(),
     // TODO (F8): commonClasses {file, purpose} 和 commonModules.classes {file, purpose, category}
     // 结构重叠。考虑统一为单一数组（category 可选），避免消费者需检查两个数组。
     commonClasses: z.array(z.object({
@@ -334,14 +368,14 @@ export const ScaffoldSchema = z.object({
       classes: z.array(z.object({
         file: z.string(),
         purpose: z.string(),
-        category: ModuleCategorySchema,
+        category: z.string(),
       })),
       directories: z.array(z.string()),
     }).optional(),
   }),
   conventions: z.string(),
-  basedOnPlanHash: z.string().optional(),
-})
+  basedOnPlanHash: z.string().nullable().optional(),
+}).passthrough()
 
 // ============================================================================
 // Translation Schema（每包一个）
@@ -349,30 +383,27 @@ export const ScaffoldSchema = z.object({
 
 export const TranslationSchema = z.object({
   packageName: z.string(),
-  status: z.enum(["completed", "partial"]),
+  status: z.string(),
   completedSubprograms: z.array(z.string()),
-  totalSubprograms: z.number(),
+  totalSubprograms: z.coerce.number(),
 
   files: z.array(z.object({
     path: z.string(),
-    role: z.enum([
-      "mapper-interface", "mapper-xml", "service",
-      "service-impl", "dto", "exception", "test",
-    ]),
+    role: z.string(),
   })),
 
   decisions: z.array(z.object({
-    line: z.number(),
+    line: z.coerce.number(),
     oracleConstruct: z.string(),
     javaConstruct: z.string(),
     reason: z.string(),
-    confidence: z.enum(["high", "medium", "low"]),
+    confidence: z.string(),
   })),
 
   todos: z.array(z.object({
     file: z.string(),
     issue: z.string(),
-    oracleLine: z.number(),
+    oracleLine: z.coerce.number(),
     suggestion: z.string(),
   })),
 
@@ -394,12 +425,12 @@ export const TranslationSchema = z.object({
     oracleName: z.string(),
     javaClass: z.string(),
     javaMethod: z.string(),
-    javaFile: z.string().optional(),
+    javaFile: z.string().nullable().optional(),
   })).refine(
     (methods) => new Set(methods.map((m) => m.oracleName.toUpperCase())).size === methods.length,
     { message: "subprogramMethods.oracleName 必须唯一（重载子程序用 {name}__序号 区分，禁用裸名重复）" },
   ).default([]),
-})
+}).passthrough()
 
 // ============================================================================
 // 共享 Refine 描述（消除 ReviewSchema/VerifySchema 和 Summary Schema 之间的复制粘贴）
@@ -426,33 +457,24 @@ const allPassedRefine = {
 export const ReviewSchema = z.object({
   packageName: z.string(),
   passed: z.boolean(),
-  overallScore: z.number().min(0).max(100),
+  overallScore: z.coerce.number().min(0).max(100),
   procedureReviews: z.array(z.object({
     procedure: z.string(),
     checks: z.array(z.object({
-      category: z.enum([
-        "logic-equivalence", "sql-completeness", "null-handling",
-        "type-mapping", "exception-mapping", "transaction-boundary",
-        "cursor-mapping", "parameter-direction", "naming-consistency",
-        "todo-remaining",
-        "naming-convention", "code-format", "oop-convention",
-        "comment-convention", "collection-exception",
-        "version-compliance",
-        "test-completeness", "test-correctness",
-      ]),
+      category: z.string(),
       passed: z.boolean(),
       detail: z.string(),
-      severity: z.enum(["critical", "major", "minor", "info"]),
+      severity: z.string(),
     })),
-  })),
+  })).default([]),
   mustFix: z.array(z.object({
     file: z.string(),
-    line: z.number().optional(),
+    line: z.coerce.number().nullable().optional(),
     issue: z.string(),
-  })),
-  suggestions: z.array(z.string()),
-  todoRemainingCount: z.number(),
-}).refine(
+  })).default([]),
+  suggestions: z.array(z.unknown()),
+  todoRemainingCount: z.coerce.number(),
+}).passthrough().refine(
   passedMustFixRefine.check,
   { message: passedMustFixRefine.message }
 )
@@ -466,12 +488,12 @@ export const ReviewSummarySchema = z.object({
   packageResults: z.array(z.object({
     packageName: z.string(),
     passed: z.boolean(),
-    score: z.number(),
-    mustFixCount: z.number(),
+    score: z.coerce.number(),
+    mustFixCount: z.coerce.number(),
   })),
-  totalMustFix: z.number(),
-  totalTodosRemaining: z.number(),
-}).refine(
+  totalMustFix: z.coerce.number(),
+  totalTodosRemaining: z.coerce.number(),
+}).passthrough().refine(
   allPassedRefine.check,
   { message: allPassedRefine.message }
 )
@@ -486,14 +508,18 @@ export const VerifySchema = z.object({
   mybatisValidation: z.object({
     mapperXmlValid: z.boolean(),
     statementIdsMatch: z.boolean(),
+    /** schema-h2.sql 是否存在且可被 H2 执行 */
+    h2SchemaValid: z.boolean().optional(),
+    /** application-test.yml 是否正确配置 H2 数据源 */
+    mapperTestConfigValid: z.boolean().optional(),
   }),
-  todoRemainingCount: z.number(),
+  todoRemainingCount: z.coerce.number(),
   mustFix: z.array(z.object({
     file: z.string(),
-    line: z.number().optional(),
+    line: z.coerce.number().nullable().optional(),
     issue: z.string(),
-  })),
-}).refine(
+  })).default([]),
+}).passthrough().refine(
   passedMustFixRefine.check,
   { message: passedMustFixRefine.message }
 )
@@ -506,9 +532,13 @@ export const VerifySummarySchema = z.object({
   allPassed: z.boolean(),
   compilation: z.object({
     success: z.boolean(),
+    /** 编译是否因环境不可用（Maven/JDK 缺失）而跳过 */
+    skipped: z.boolean().optional(),
+    /** 跳过原因（skipped=true 时必填） */
+    skipReason: z.string().optional(),
     errors: z.array(z.object({
       file: z.string(),
-      line: z.number(),
+      line: z.coerce.number(),
       message: z.string(),
     })).optional(),
   }),
@@ -521,27 +551,31 @@ export const VerifySummarySchema = z.object({
   // 如需恢复旧数据兼容，改回 .optional() 并加 refine 保证至少一个存在
   testExecution: z.object({
     executed: z.boolean(),
-    totalTests: z.number().optional(),
-    passedTests: z.number().optional(),
-    failedTests: z.number().optional(),
+    /** 测试未执行的原因（如环境不可用），executed=false 时使用 */
+    skipReason: z.string().optional(),
+    totalTests: z.coerce.number().nullable().optional(),
+    passedTests: z.coerce.number().nullable().optional(),
+    failedTests: z.coerce.number().nullable().optional(),
     testErrors: z.array(z.object({
       testClass: z.string(),
       testMethod: z.string(),
       message: z.string(),
+      /** 测试类型：unit = ServiceImpl 单元测试，integration = Mapper 集成测试 */
+      testType: z.enum(["unit", "integration"]).optional(),
     })).optional(),
     testFiles: z.array(z.string()),
   }),
-  totalTodosRemaining: z.number(),
+  totalTodosRemaining: z.coerce.number(),
   unresolvedIssues: z.array(z.object({
     packageName: z.string(),
     issue: z.string(),
   })).optional(),
-}).refine(
+}).passthrough().refine(
   allPassedRefine.check,
   { message: allPassedRefine.message }
 ).refine(
-  data => data.compilation.success === true || (data.compilation.errors !== undefined && data.compilation.errors.length > 0),
-  { message: "compilation.success=false 时 errors 必须非空" }
+  data => data.compilation.success === true || data.compilation.skipped === true || data.compilation.errors !== undefined,
+  { message: "compilation.success=false 时 errors 必须存在（允许空数组），除非 skipped=true" }
 )
 
 // ============================================================================
@@ -561,7 +595,7 @@ export const DedupSchema = z.object({
     /** 新建的公共模块文件路径（相对于 projectRoot） */
     file: z.string(),
     /** 模块类别 */
-    category: ModuleCategorySchema,
+    category: z.string(),
     /** 模块用途描述 */
     purpose: z.string(),
     /** 此模块来源：从哪些包的哪些代码中抽取 */
@@ -596,7 +630,7 @@ export const DedupSchema = z.object({
     linesRemoved: z.number(),
     linesAdded: z.number(),
   }),
-})
+}).passthrough()
 
 // ============================================================================
 // Fix Artifact Schema（fix 阶段产出）
@@ -604,7 +638,7 @@ export const DedupSchema = z.object({
 
 export const FixArtifactSchema = z.object({
   fixedPackages: z.array(z.string().min(1)),
-}).refine(
+}).passthrough().refine(
   data => data.fixedPackages.length > 0,
   { message: "fixedPackages 不能为空，fix 必须至少修复一个包" }
 )

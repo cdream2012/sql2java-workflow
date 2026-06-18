@@ -100,7 +100,7 @@ const config: CaseConfig = {
 
     writeArtifactJson(join(dir, "analysis-packages"), `${PKG_B}.json`, makeAnalysisPackage({
       packageName: PKG_B,
-      subprograms: [{ name: "get_by_id", blocks: [{ type: "sql-statement", oracleLine: 3, description: "SELECT INTO 查询", dependencies: [] }], variables: [], cursors: [], exceptionHandlers: [], translationNotes: "按 id 查询" }],
+      subprograms: [{ name: "get_by_id", blocks: [{ type: "sql-statement", oracleLine: 3, description: "SELECT INTO 查询", dependencies: [] }], variables: [], cursors: [], exceptionHandlers: [], translationNotes: ["按 id 查询"] }],
     }))
     writeArtifactJson(join(dir, "analysis-packages"), `${PKG_A}.json`, makeAnalysisPackage({
       packageName: PKG_A,
@@ -108,7 +108,7 @@ const config: CaseConfig = {
         name: "create_order",
         blocks: [{ type: "call", oracleLine: 5, description: "调用 UTIL_PKG.get_by_id", dependencies: ["UTIL_PKG.get_by_id"] }],
         variables: [], cursors: [], exceptionHandlers: [],
-        translationNotes: "调用 util 包查询后建单（跨包调用）",
+        translationNotes: ["调用 util 包查询后建单（跨包调用）"],
       }],
     }))
 

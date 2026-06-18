@@ -130,7 +130,7 @@ export interface AdvanceResult {
   rejected: boolean                             // 校验被拒绝时为 true（Zod/D8/D12），LLM 应修正后重新 advance
   fixFailed?: boolean                           // fix 失败但未 exhausted，LLM 应调用 retry()（仅 fix 阶段设置）
   rejectionReason?: string                      // 拒绝/失败原因
-  warningPending?: boolean                      // 有未确认的 warning，需显式 acceptWarnings 才放行
+  warningPending?: boolean                      // [deprecated] 不再阻断，warning 自动放行
   crossSchemaWarnings?: string[]                // 跨 schema warning 消息列表
 }
 
@@ -259,12 +259,21 @@ export class WorkflowEngine {
     }
 
     // ── Step 3b: 跨 Schema 校验 (D9) — 仅 needsCrossSchemaValidation 阶段 ──
-    // inventory-index ↔ inventory 包名一致性校验由 plugin 层 validateInventoryPackages 完成，此处不重复
+    // inventory-index ↔ inventory 包名一致性作为 warning 在 advance 中检查（plugin 层不再 blocking 校验此项）
     let crossSchemaFindings: CrossSchemaFinding[] = []
     if (currentPhaseConfig?.needsCrossSchemaValidation) {
       crossSchemaFindings = this.validateCrossSchema(run, run.currentPhase!)
       for (const f of crossSchemaFindings) {
         this.appendEvent(runId, "ADVANCE", run.currentPhase ?? "", `[cross-schema-${f.severity}] ${f.message}`)
+      }
+    }
+
+    // inventory 阶段：包名一致性作为 warning（不阻断，但要求确认）
+    if (run.currentPhase === "inventory") {
+      const invWarnings = this.validateInventoryIndexConsistency(run)
+      for (const w of invWarnings) {
+        crossSchemaFindings.push({ message: w, severity: "warning" })
+        this.appendEvent(runId, "ADVANCE", run.currentPhase ?? "", `[inventory-consistency-warning] ${w}`)
       }
     }
 
@@ -286,24 +295,12 @@ export class WorkflowEngine {
       }
     }
 
-    // 路径 B：仅 warning 且未显式接受 → 拒绝 advance，要求确认
-    if (warningFindings.length > 0 && !input.acceptWarnings) {
-      return {
-        run,
-        nextPhase: null,
-        finished: false,
-        waitingForConfirmation: false,
-        rejected: true,
-        warningPending: true,
-        crossSchemaWarnings: warningFindings.map(f => f.message),
-      }
-    }
-
-    // 路径 C：无问题 或 warning 已接受 → 放行
+    // 路径 B：warning 不阻断，直接放行并在结果中附带醒目警告
+    // 不再要求 acceptWarnings 确认——LLM 遗漏包名等常见偏差不应卡住流程
     crossSchemaWarnings = warningFindings.length > 0 ? warningFindings.map(f => f.message) : undefined
-    if (input.acceptWarnings && warningFindings.length > 0) {
+    if (warningFindings.length > 0) {
       this.appendEvent(runId, "ADVANCE", run.currentPhase ?? "",
-        `[warnings-accepted] LLM 接受了 ${warningFindings.length} 个校验警告（含 quality-gate 和 cross-schema）`)
+        `[warnings-auto-accepted] ${warningFindings.length} 个校验警告（含 quality-gate 和 cross-schema），已自动放行：\n${warningFindings.map(f => `  - ${f.message}`).join("\n")}`)
     }
 
     // ── Step 4: fix 阶段特殊处理 ──
@@ -607,12 +604,8 @@ export class WorkflowEngine {
     const inventoryIndex = this.loadArtifactJson(artifactsDir, "inventory-index")
     const inventory = this.loadArtifactJson(artifactsDir, "inventory")
 
-    if (!inventory) {
-      warnings.push("inventory-index ↔ inventory 校验跳过：inventory.json 不存在或无法解析")
-      return warnings
-    }
-    if (!inventoryIndex) {
-      warnings.push("inventory-index ↔ inventory 校验跳过：inventory-index.json 不存在（预扫描可能失败）")
+    // 两者都存在时才比对；缺任一文件说明不是完整的 workflow 运行场景，不产生 warning
+    if (!inventory || !inventoryIndex) {
       return warnings
     }
 
@@ -659,7 +652,7 @@ export class WorkflowEngine {
     const invUpper = new Set([...invNames].map((n) => n.toUpperCase()))
     const anaUpper = new Set([...anaNames].map((n) => n.toUpperCase()))
     for (const name of invNames) {
-      if (!anaUpper.has(name.toUpperCase())) findings.push({ message: `analysis 缺少包: ${name}`, severity: "blocking" })
+      if (!anaUpper.has(name.toUpperCase())) findings.push({ message: `analysis 缺少包: ${name}`, severity: "warning" })
     }
     for (const name of anaNames) {
       if (!invUpper.has(name.toUpperCase())) findings.push({ message: `inventory 缺少包: ${name}（analysis 中存在但 inventory 中不存在）`, severity: "warning" })
@@ -667,10 +660,12 @@ export class WorkflowEngine {
 
     // translationOrder 覆盖校验（大小写不敏感）
     const orderedUpper = new Set(
-      ((analysis.translationOrder as string[][]) ?? []).flat().map((n: string) => n.toUpperCase())
+      ((analysis.translationOrder as string[][]) ?? []).flat()
+        .filter((n): n is string => typeof n === "string" && n.length > 0)
+        .map((n) => n.toUpperCase())
     )
     for (const name of anaNames) {
-      if (!orderedUpper.has(name.toUpperCase())) findings.push({ message: `translationOrder 缺少包: ${name}`, severity: "blocking" })
+      if (!orderedUpper.has(name.toUpperCase())) findings.push({ message: `translationOrder 缺少包: ${name}`, severity: "warning" })
     }
 
     // callGraph refName 一致性校验（仅 analyze 完成后；防"裸名撞重载"缺陷）
@@ -713,10 +708,12 @@ export class WorkflowEngine {
         return findings
       }
       const mappedNames = new Set(
-        (plan.packageMappings as Array<{ oraclePackage: string }>).map((m) => m.oraclePackage)
+        (plan.packageMappings as Array<{ oraclePackage: string }>)
+          .map((m) => m.oraclePackage)
+          .filter((n): n is string => typeof n === "string" && n.length > 0)
       )
       for (const name of invNames) {
-        if (!mappedNames.has(name)) findings.push({ message: `plan 未映射包: ${name}`, severity: "blocking" })
+        if (!mappedNames.has(name)) findings.push({ message: `plan 未映射包: ${name}`, severity: "warning" })
       }
     }
 
@@ -834,11 +831,15 @@ export class WorkflowEngine {
         // 增量模式：只检查目标包
         const reviewEntry = this.findCurrentEntry(run)
         const reviewTargetPkgs = reviewEntry?.incrementalContext?.targetPackages
-        const reviewPkgsToCheck = reviewTargetPkgs?.length ? new Set(reviewTargetPkgs.map(p => p.toUpperCase())) : null
+        const reviewPkgsToCheck = reviewTargetPkgs?.length
+          ? new Set(reviewTargetPkgs.filter((p): p is string => typeof p === "string" && p.length > 0).map(p => p.toUpperCase()))
+          : null
 
         // G3: per-package score check
         const packageResults = (summary.packageResults as Array<{ packageName: string; passed: boolean; score: number }>) ?? []
         for (const pr of packageResults) {
+          // 跳过 packageName 无效的条目（LLM 产出的 raw JSON 可能缺字段）
+          if (typeof pr.packageName !== "string" || !pr.packageName) continue
           // 增量模式下跳过非目标包
           if (reviewPkgsToCheck && !reviewPkgsToCheck.has(pr.packageName.toUpperCase())) continue
           if (pr.passed && pr.score < QUALITY_GATE_THRESHOLDS.REVIEW_PASS_SCORE) {
@@ -998,9 +999,11 @@ export class WorkflowEngine {
   ): Set<string> {
     let names: string[]
     if (artifact.packageNames) {
-      names = (artifact.packageNames as string[])
+      names = (artifact.packageNames as string[]).filter((n): n is string => typeof n === "string" && n.length > 0)
     } else if (artifact.packages) {
-      names = ((artifact.packages as Array<{ name: string }>) ?? []).map((p) => p.name)
+      names = ((artifact.packages as Array<{ name: string }>) ?? [])
+        .map((p) => p.name)
+        .filter((n): n is string => typeof n === "string" && n.length > 0)
     } else {
       names = []
     }
@@ -1019,7 +1022,8 @@ export class WorkflowEngine {
     severity: "blocking" | "warning" = "warning",
   ): void {
     const upperValid = new Set([...validNames].map((n) => n.toUpperCase()))
-    const invalid = refs.filter((p) => !upperValid.has(p.toUpperCase()))
+    const validRefs = refs.filter((p): p is string => typeof p === "string" && p.length > 0)
+    const invalid = validRefs.filter((p) => !upperValid.has(p.toUpperCase()))
     if (invalid.length > 0) {
       findings.push({ message: `${label} 引用了不存在的包: ${[...new Set(invalid)].join(", ")}`, severity })
     }
@@ -1211,9 +1215,9 @@ export class WorkflowEngine {
     const inventory = this.loadArtifactJson(artifactsDir, "inventory")
     if (inventory) {
       const invPackageNames = this.extractPackageNames(inventory, true)
-      const invalidPackages = fixedPackages.filter(
-        p => !invPackageNames.has(p.toUpperCase())
-      )
+      const invalidPackages = fixedPackages
+        .filter((p): p is string => typeof p === "string" && p.length > 0)
+        .filter(p => !invPackageNames.has(p.toUpperCase()))
       if (invalidPackages.length > 0) {
         return {
           run,
@@ -1245,9 +1249,13 @@ export class WorkflowEngine {
     }
     const pkgResults = (summary as { packageResults?: Array<{ packageName: string; passed: boolean }> }).packageResults ?? []
     const failedPackages = new Set(
-      pkgResults.filter(p => !p.passed).map(p => p.packageName.toUpperCase())
+      pkgResults
+        .filter(p => !p.passed && typeof p.packageName === "string" && p.packageName)
+        .map(p => p.packageName.toUpperCase())
     )
-    const fixedUpper = new Set(fixedPackages.map(p => p.toUpperCase()))
+    const fixedUpper = new Set(
+      fixedPackages.filter((p): p is string => typeof p === "string" && p.length > 0).map(p => p.toUpperCase())
+    )
     const missingPackages = Array.from(failedPackages).filter(p => !fixedUpper.has(p))
     if (missingPackages.length > 0) {
       return {
