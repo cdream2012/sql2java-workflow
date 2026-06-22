@@ -71,6 +71,7 @@ export interface PhaseConfig {
   requiresConfirmation?: boolean                // 为 true 时 advance 后暂停等待确认
   isFixPhase?: boolean                          // 标记 fix 阶段，引擎特殊处理
   needsCrossSchemaValidation?: boolean          // 为 true 时 advance 后执行跨 Schema 校验
+  maxPackagesPerShard?: number                  // 分片大小，不设置或 0 表示不分片
   tools: string[]                               // 允许的工具列表
   description?: string                          // 阶段中文描述，用于输出 banner
 }
@@ -112,7 +113,16 @@ export interface PhaseHistoryEntry {
   branchedFrom?: string                         // fix 记录触发阶段；fix 回来的 entry 记录 "fix"
   incrementalContext?: {
     targetPackages: string[]                    // 增量模式：只处理这些包
+    shardIndex?: number                         // 分片模式：当前分片序号（0-based）
+    totalShards?: number                        // 分片模式：总分片数
   }
+}
+
+/** 分片计划 — 首次 dispatch 可分片阶段时计算，持久化到 run.metadata */
+export interface ShardPlan {
+  phase: string                                 // "translate" 等可分片阶段
+  shards: string[][]                            // shards[0] = ["CONST_PKG"], ...
+  completedShards: number[]                     // 已完成的分片序号
 }
 
 /** 跨 Schema 校验发现项（D9 扩展：支持 blocking / warning 两级严重度） */
@@ -154,6 +164,8 @@ const PhaseHistoryEntrySchema = z.object({
   branchedFrom: z.string().optional(),
   incrementalContext: z.object({
     targetPackages: z.array(z.string()),
+    shardIndex: z.number().optional(),
+    totalShards: z.number().optional(),
   }).optional(),
 })
 
@@ -282,16 +294,26 @@ export class WorkflowEngine {
     const blockingFindings = allFindings.filter(f => f.severity === "blocking")
     const warningFindings = allFindings.filter(f => f.severity === "warning")
 
-    // 路径 A：阻断级 → 拒绝 advance
+    // 路径 A：阻断级 → 拒绝 advance（D16：达 REJECTION_BOUND 次后降级为 warning 放行）
     if (blockingFindings.length > 0) {
-      return {
-        run,
-        nextPhase: null,
-        finished: false,
-        waitingForConfirmation: false,
-        rejected: true,
-        rejectionReason: `校验失败（阻塞级）：\n${blockingFindings.map(f => `  - ${f.message}`).join("\n")}`,
-        crossSchemaWarnings: warningFindings.length > 0 ? warningFindings.map(f => f.message) : undefined,
+      // fix 阶段走自有 maxRetries→completed_with_issues 机制，不参与降级
+      const isFixPhase = currentPhaseConfig?.isFixPhase === true
+      if (!isFixPhase && this.rejectionBoundExceeded(run)) {
+        // 降级：连续达到上限，blocking 问题转 warning 放行，不阻断流程
+        this.appendEvent(runId, "ADVANCE", run.currentPhase ?? "",
+          `[rejection-bound-exceeded] 阶段 ${run.currentPhase} 已连续 ${this.getRejectionCount(run)} 次拒绝，达到上限(${WorkflowEngine.REJECTION_BOUND})，blocking 问题降级为 warning 放行：\n${blockingFindings.map(f => `  - ${f.message}`).join("\n")}`)
+        // 不 return，继续走下方放行/推进逻辑（shard advance 或 phase transition）
+      } else {
+        if (!isFixPhase) this.bumpRejectionCount(run)
+        return {
+          run,
+          nextPhase: null,
+          finished: false,
+          waitingForConfirmation: false,
+          rejected: true,
+          rejectionReason: `校验失败（阻塞级）：\n${blockingFindings.map(f => `  - ${f.message}`).join("\n")}`,
+          crossSchemaWarnings: warningFindings.length > 0 ? warningFindings.map(f => f.message) : undefined,
+        }
       }
     }
 
@@ -306,6 +328,70 @@ export class WorkflowEngine {
     // ── Step 4: fix 阶段特殊处理 ──
     if (currentPhaseConfig?.isFixPhase) {
       return this.handleFixAdvance(run, def, currentEntry, input, now, crossSchemaWarnings)
+    }
+
+    // ── Step 3.5: 分片 advance — 分片未全部完成时切换到下一分片 ──
+    const shardPlan = this.getShardPlan(run)
+    if (shardPlan) {
+      const currentShardIndex = currentEntry.incrementalContext?.shardIndex ?? 0
+      const totalShards = shardPlan.shards.length
+
+      // 标记当前分片完成
+      if (!shardPlan.completedShards.includes(currentShardIndex)) {
+        shardPlan.completedShards.push(currentShardIndex)
+      }
+
+      // 查找下一个未完成的分片。completedShards 由本函数顺序 push，恒为紧凑 [0..k]，
+      // 故“第一个未完成”即等于“当前分片之后的下一个”；无需额外 fallback。
+      const nextShardIndex = shardPlan.shards.findIndex(
+        (_, i) => !shardPlan.completedShards.includes(i),
+      )
+
+      if (nextShardIndex >= 0) {
+        // 还有未完成的分片 → 完成当前 entry，创建新 entry（同阶段，新分片）
+        currentEntry.status = "completed"
+        currentEntry.completedAt = now
+        run.updatedAt = now
+
+        const nextShard = shardPlan.shards[nextShardIndex]
+        const newEntry: PhaseHistoryEntry = {
+          phase: run.currentPhase!,
+          status: "in_progress",
+          startedAt: now,
+          retryCount: 0,
+          incrementalContext: {
+            targetPackages: nextShard,
+            shardIndex: nextShardIndex,
+            totalShards,
+          },
+        }
+        run.phaseHistory.push(newEntry)
+        run.metadata.shardPlan = shardPlan
+        this.persist(run)
+        this.appendEvent(runId, "SHARD_ADVANCE", run.currentPhase!,
+          `分片 ${currentShardIndex + 1}/${totalShards} 完成 → 分片 ${nextShardIndex + 1}/${totalShards} (包: ${nextShard.join(", ")})`)
+
+        return {
+          run,
+          nextPhase: currentPhaseConfig ?? null,
+          finished: false,
+          waitingForConfirmation: false,
+          rejected: false,
+          crossSchemaWarnings,
+        }
+      }
+
+      // 全部分片完成 → 删除 shardPlan，继续走下方原有 advance 逻辑（transition）。
+      // 注意：质量门控（G1/G2）与跨 Schema 校验已在 Step 3a/3b 执行——它们是 per-package
+      // 的，每个分片 advance 时各自检查了该分片的包，故全量覆盖在分片推进过程中已完成，
+      // 此处无需也不应重跑。清除 incrementalContext 仅是为了让最终 transition 不携带
+      // 分片作用域上下文（避免下游误以为仍是增量模式）。
+      delete run.metadata.shardPlan
+      currentEntry.incrementalContext = undefined
+      this.persist(run)
+      this.appendEvent(runId, "SHARD_COMPLETE", run.currentPhase!,
+        `所有分片已完成 (${totalShards} 个)，执行阶段推进`)
+      // 注意：不 return，继续走下方原有 advance 逻辑
     }
 
     // ── Step 5: review / verify 阶段 → 从 summary.allPassed 推导 result (D8) ──
@@ -668,10 +754,10 @@ export class WorkflowEngine {
       if (!orderedUpper.has(name.toUpperCase())) findings.push({ message: `translationOrder 缺少包: ${name}`, severity: "warning" })
     }
 
-    // callGraph refName 一致性校验（仅 analyze 完成后；防"裸名撞重载"缺陷）
+    // callGraph refName 一致性校验（仅 inventory 完成后；analysis.json 现由 inventory 阶段代码产出）
     // analysis.json.callGraph 的 key/value 须为 PKG.refName，refName 须落在该包 inventory-packages
     // 推导出的合法集合内（非重载=裸名，重载={name}__序号，全部带序号）。
-    if (completedPhase === "analyze") {
+    if (completedPhase === "inventory") {
       const callGraph = (analysis.callGraph as Record<string, string[]>) ?? {}
       const refNameByPkg = this.buildRefNameIndex(artifactsDir, anaNames)
       const refs: Array<[string, "key" | "value"]> = []
@@ -990,6 +1076,122 @@ export class WorkflowEngine {
       }
     }
     return undefined
+  }
+
+  // ── 拒绝次数上限（D16）──────────────────────────────────────────────────────
+  // 非 fix 阶段的 blocking 拒绝（Zod 结构 / 质量门控 / 跨 schema）共享一个计数器，
+  // 达 REJECTION_BOUND 次后降级为 warning 放行，避免无限 round-trip 烧 LLM。
+  // fix 阶段有自有的 maxRetries→completed_with_issues 机制，不走此路径。
+  // 计数按 "phase:shardIndex" 分桶：分片阶段每个分片独立计数，互不连累。
+
+  /** 拒绝上限：达到此次数后，本目标的 blocking 问题降级为 warning 放行 */
+  static readonly REJECTION_BOUND = 3
+
+  /** 当前 dispatch 目标（phase + shardIndex）的计数键 */
+  private rejectionKey(run: WorkflowRun): string {
+    const entry = this.findCurrentEntry(run)
+    const shard = entry?.incrementalContext?.shardIndex
+    return `${run.currentPhase ?? "?"}:${shard ?? "-"}`
+  }
+
+  /** 读取当前目标的拒绝次数 */
+  getRejectionCount(run: WorkflowRun): number {
+    const counts = (run.metadata.rejectionCounts as Record<string, number>) ?? {}
+    return counts[this.rejectionKey(run)] ?? 0
+  }
+
+  /** 递增当前目标的拒绝次数并持久化，返回递增后的值 */
+  bumpRejectionCount(run: WorkflowRun): number {
+    const counts = ((run.metadata.rejectionCounts as Record<string, number>) ?? {}) as Record<string, number>
+    const key = this.rejectionKey(run)
+    counts[key] = (counts[key] ?? 0) + 1
+    run.metadata.rejectionCounts = counts
+    this.persist(run)
+    return counts[key]
+  }
+
+  /** 当前目标是否已达拒绝上限（应降级为 warning 放行而非再次拒绝） */
+  rejectionBoundExceeded(run: WorkflowRun): boolean {
+    return this.getRejectionCount(run) >= WorkflowEngine.REJECTION_BOUND
+  }
+
+  /** 公共事件日志入口（供 plugin 层降级时记录 warning） */
+  logEvent(runId: string, eventType: string, phase: string, message: string): void {
+    this.appendEvent(runId, eventType, phase, message)
+  }
+
+  /**
+   * 根据 analysis.json 的 translationOrder 计算分片计划。
+   *
+   * translationOrder 的每个内层数组要么是单包（独立包），要么是 SCC 组
+   *（强连通循环依赖包，必须同 session 翻译以解析循环引用，见 sql-analyst.md）。
+   *
+   * 切分策略：按拓扑序贪心打包到 maxPackagesPerShard 上限的分片，跨层合并独立包
+   *（独立包互不依赖，同分片内按 translationOrder 顺序处理仍安全）。关键不变量：
+   * **SCC 组（length > 1 的层）原子不可分**——绝不拆到不同分片，否则组内循环引用
+   * 会因被依赖包尚未翻译而沦为 TODO 占位（review/fix 才能兜底）。单个 SCC 组超过
+   * maxPackagesPerShard 时，作为超大分片整组发出。
+   */
+
+  /**
+   * 按阶段决定分片所用的包序列：analyze/review 拍平 SCC 组（每包一层，真正一包一分片），
+   * translate 保留 translationOrder 原貌（SCC 互依赖组必须共处）。
+   *
+   * 为什么 analyze/review 可拆 SCC：每包的子程序结构 / FSD / 审查独立产出，跨包调用关系
+   * （callGraph）已由 inventory 代码预算，不依赖同组其它包的在 session 产物。
+   * 为什么 translate 不可拆：互依赖包翻译时需同 session 拿到对方的 Java 方法签名，拆开会让
+   * 循环引用沦为 TODO 占位。
+   */
+  shardOrderForPhase(translationOrder: string[][], phase: string): string[][] {
+    if (phase === "analyze" || phase === "review") {
+      return translationOrder
+        .flat()
+        .filter((p): p is string => typeof p === "string" && p.length > 0)
+        .map(p => [p])
+    }
+    return translationOrder
+  }
+
+  computeShardPlan(
+    translationOrder: string[][],
+    maxPackagesPerShard: number,
+    phase: string,
+  ): ShardPlan {
+    const shards: string[][] = []
+    let current: string[] = []
+    for (const layer of translationOrder) {
+      if (!layer || layer.length === 0) continue
+      // 当前分片非空且加入本层会超限 → 先 flush（本层作为新分片开头）
+      if (current.length > 0 && current.length + layer.length > maxPackagesPerShard) {
+        shards.push(current)
+        current = []
+      }
+      current.push(...layer)
+      // 单个 SCC 组本身就超限（current 仅含本层）→ 整组作为超大分片立即 flush
+      if (current.length > maxPackagesPerShard && current.length === layer.length) {
+        shards.push(current)
+        current = []
+      }
+    }
+    if (current.length > 0) shards.push(current)
+    return { phase, shards, completedShards: [] }
+  }
+
+  /**
+   * 从 run.metadata 获取当前阶段的分片计划。
+   * 返回 null 表示不分片或非当前阶段。
+   */
+  getShardPlan(run: WorkflowRun): ShardPlan | null {
+    const sp = run.metadata.shardPlan as ShardPlan | undefined
+    // metadata 是 z.record(z.unknown())，shardPlan 形状无 schema 约束；
+    // 防御性校验：结构异常（外部篡改/旧版残留）时丢弃而非让 advance 误用。
+    if (!sp
+      || typeof sp.phase !== "string"
+      || sp.phase !== run.currentPhase
+      || !Array.isArray(sp.shards)
+      || !Array.isArray(sp.completedShards)
+    ) return null
+    return sp
   }
 
   /** 从 artifact JSON 提取包名集合（兼容 new/old 格式） */

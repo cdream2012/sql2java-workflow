@@ -98,15 +98,15 @@ permission:
 ### 输入
 
 - **上游 artifact**：
-  - `${artifactsDir}/inventory-index.json` — 包名 + 文件路径（轻量索引）
   - `${artifactsDir}/inventory.json` — 表、触发器、视图、序列编目
-  - `${artifactsDir}/inventory-packages/{PKG}.json` — 当前翻译包的完整细节（procedures, types, variables, constants）
+  - `${artifactsDir}/inventory-packages/{PKG}.json` — 当前翻译包的完整细节（procedures, types, variables, constants）+ 本包源码路径（specFile/bodyFile）
   - `${artifactsDir}/plan.json` — 映射规则和编码约定
-  - `${artifactsDir}/analysis.json` — 全局元数据（translationOrder、complexity）
+  - `${artifactsDir}/analysis.json` — 全局元数据（translationOrder、complexity、callGraph）
   - `${artifactsDir}/analysis-packages/{pkg}.json` — 逐包子程序结构（逐包读取）
   - `${artifactsDir}/scaffold.json` — 已生成的项目骨架
-  - `${artifactsDir}/fsd/*/*.md` — FSD 文档（可选参考）
+  - `${artifactsDir}/fsd/{pkg}/*.md` — **本包** FSD 文档（translate 按它实施）
     - **重载子程序**的 FSD 文件名格式为 `{name}__{序号}.md`（全部带序号，如 `get_param__1.md`、`get_param__2.md`），对应同一子程序名但不同参数签名的多个版本；非重载为 `{name}.md`
+    - ⛔ **只读本包的 FSD**（`fsd/{pkg}/*.md`）。FSD 是聚合文档，本包子程序的设计全在本包 FSD 里。**禁止 glob 全量 FSD**（`fsd/*/*.md`）。仅当本包 FSD 确实缺少必要信息时，才 `read` **某个具体**的其他包 FSD 文件，并必须显式指明完整路径（如 `fsd/OTHER_PKG/specific_subprogram.md`），不得通配。
   - **已翻译依赖包的 `translations/{pkg}/translation.json`**：按拓扑序翻译时被依赖的包已先翻译，其 `subprogramMethods` 提供「子程序 → 真实 Java 方法名」映射，用于跨包调用对接（见 Step 2）；用 `read` 主动读取
 - **源码文件**：原始 PL/SQL 文件
 
@@ -121,18 +121,32 @@ permission:
 
 读取 plan.json（映射规则、conventions）和 analysis.json（translationOrder）。
 
+#### Step 1.5: 确定翻译范围
+
+检查 Runtime Context 中的 `incrementalContext`：
+
+- **分片模式**（`targetPackages` 存在且 `shardIndex` 存在）：
+  - **只翻译 `targetPackages` 中列出的包**，不要翻译其他包
+  - **只读取本分片 `targetPackages` 中包的源码和 per-package 文件**（源码路径取自 `inventory-packages/{PKG}.json` 的 specFile/bodyFile），不要读其他包的源码/文件，不要一次性读全部源码
+  - 仍按 `translationOrder` 的顺序处理这些包（跳过不在 targetPackages 中的包）
+  - 依赖的已翻译包的 `translation.json` 路径已在 upstreamArtifacts 中给出，直接 `read` 即可（仅限跨包调用对接，不要顺带处理这些包）
+  - 不翻译 targetPackages 之外的任何包
+
+- **全量模式**（无 `incrementalContext` 或无 `shardIndex`）：
+  - 翻译 `translationOrder` 中所有包（原有行为）
+
 #### Step 2: 按拓扑序逐包翻译
 
 按 `translationOrder` 的顺序处理每个包。SCC 组中的包按数组顺序依次翻译。
 
 对每个包：
 
-1. **读取 Oracle 源码**：读取 `.pks` 和 `.pkb` 文件
+1. **读取 Oracle 源码**：读取本包的 `.pks` 和 `.pkb` 文件（路径取自 `inventory-packages/{pkg}.json` 的 specFile/bodyFile，只读本包，不要读其他包源码）
 2. **读取子程序结构**：读取 `analysis-packages/{pkg}.json` 获取该包的子程序详情
 3. **逐子程序翻译**：对该包的每个子程序：
    - 参考子程序的 blocks、variables、cursors、exceptionHandlers
    - 参考翻译注意事项 translationNotes（string[]，每条一个元素）
-   - 可选参考 FSD 文档（注意：`__{序号}.md` 后缀的是重载子程序，对应同一子程序的不同参数版本）
+   - 参考**本包** FSD 文档 `fsd/{pkg}/*.md`（注意：`__{序号}.md` 后缀的是重载子程序，对应同一子程序的不同参数版本）。仅当本包 FSD 缺少必要信息时，才 `read` 某个具体的其他包 FSD 文件并显式指明路径，禁止通配全量 FSD
    - **对接跨包调用**：跨包调用边取自结构化的 `analysis.json.callGraph`（key/value 均为 `PKG.refName`），**不解析 FSD 板块 3 的 markdown**——板块 3 仅为人类可读文档，调用关系以 callGraph 为准。处理子程序 s 的跨包调用：
      - 查 `callGraph["{本包}.{s 的 refName}"]` 得其调用的 `[PKG.refName, ...]` 列表（拓扑序保证被依赖包先翻译，其 translation.json 此刻已存在）
      - 对每个跨包目标 `目标包.目标refName`：在被依赖包 `translations/{目标包}/translation.json` 的 `subprogramMethods` 按 `oracleName` 查真实 `javaClass`（Service 接口**全限定名**）和 `javaMethod`
@@ -297,6 +311,7 @@ translation.json 包含：
 - [ ] H2 不兼容的 SQL 已标 `@Disabled`（生产 Mapper XML 保持不变）
 - [ ] 测试数据 INSERT 使用硬编码 ID 值（不使用 SEQ.NEXTVAL）
 - [ ] Mapper 集成测试方法注释使用中文
+- [ ] 分片模式下只翻译了 `targetPackages` 指定的包，未遗漏也未多余
 
 ---
 

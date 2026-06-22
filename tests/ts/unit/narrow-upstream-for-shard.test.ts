@@ -1,0 +1,90 @@
+/**
+ * narrow-upstream-for-shard.test.ts — 分片模式 upstream 收窄测试
+ *
+ * 核心回归点：分片 worker 只应拿到本分片包的 per-package 文件，不能拿到全量 glob，
+ * 否则会读所有包、顺手写出其他包的产物（analyze FSD / translate / review 的 per-package 文件）。
+ */
+
+import { describe, it, expect } from "vitest"
+import { narrowUpstreamForShard } from "@plugins/workflow-engine"
+
+describe("narrowUpstreamForShard", () => {
+  it("analyze: inventory-packages/*.json 收窄到本分片包，全局只读 artifact 保留", () => {
+    const upstream = ["inventory-index.json", "inventory.json", "inventory-packages/*.json", "analysis.json"]
+    const result = narrowUpstreamForShard(upstream, "analyze", ["PKG_A"], [])
+    expect(result).toContain("inventory-index.json")
+    expect(result).toContain("inventory.json")
+    expect(result).toContain("analysis.json")
+    // 收窄到本分片包，不再有 glob
+    expect(result).toContain("inventory-packages/PKG_A.json")
+    expect(result).not.toContain("inventory-packages/*.json")
+    // 不包含其他包
+    expect(result).not.toContain("inventory-packages/PKG_B.json")
+  })
+
+  it("analyze: 多包分片都保留（SCC 共处场景），但仍不含本分片外的包", () => {
+    const upstream = ["inventory-packages/*.json", "analysis.json"]
+    const result = narrowUpstreamForShard(upstream, "analyze", ["PKG_A", "PKG_B"], [])
+    expect(result).toEqual(expect.arrayContaining(["inventory-packages/PKG_A.json", "inventory-packages/PKG_B.json"]))
+    expect(result).not.toContain("inventory-packages/PKG_C.json")
+  })
+
+  it("translate: inventory-packages + analysis-packages + fsd 都收窄到本分片包", () => {
+    const upstream = [
+      "inventory.json", "inventory-packages/*.json",
+      "plan.json", "analysis.json", "analysis-packages/*.json", "scaffold.json",
+      "fsd/*/*.md",
+    ]
+    const result = narrowUpstreamForShard(upstream, "translate", ["PKG_A"], [])
+    expect(result).toContain("inventory-packages/PKG_A.json")
+    expect(result).toContain("analysis-packages/PKG_A.json")
+    expect(result).toContain("fsd/PKG_A/*.md")
+    expect(result).not.toContain("inventory-packages/*.json")
+    expect(result).not.toContain("analysis-packages/*.json")
+    expect(result).not.toContain("fsd/*/*.md")
+    // 全局只读 artifact 保留
+    expect(result).toContain("plan.json")
+    expect(result).toContain("scaffold.json")
+  })
+
+  it("translate: 追加已完成分片的 translation.json（跨包调用依赖）", () => {
+    const upstream = ["inventory-packages/*.json", "analysis-packages/*.json", "plan.json"]
+    const result = narrowUpstreamForShard(upstream, "translate", ["PKG_C"], ["PKG_A", "PKG_B"])
+    expect(result).toContain("translations/PKG_A/translation.json")
+    expect(result).toContain("translations/PKG_B/translation.json")
+    // 本分片包的 per-package 收窄
+    expect(result).toContain("inventory-packages/PKG_C.json")
+    expect(result).toContain("analysis-packages/PKG_C.json")
+    // 不收窄到已完成分片包的 per-package（那些用 translation.json 即可）
+    expect(result).not.toContain("inventory-packages/PKG_A.json")
+  })
+
+  it("review: analysis-packages/*.json 收窄到本分片包，translations/* 展开为已完成分片", () => {
+    const upstream = ["plan.json", "scaffold.json", "analysis.json", "analysis-packages/*.json", "dedup.json", "translations/*/translation.json"]
+    const result = narrowUpstreamForShard(upstream, "review", ["PKG_B"], ["PKG_A"])
+    expect(result).toContain("analysis-packages/PKG_B.json")
+    expect(result).not.toContain("analysis-packages/*.json")
+    expect(result).toContain("translations/PKG_A/translation.json")
+    expect(result).not.toContain("translations/*/translation.json")
+  })
+
+  it("非分片（targetPkgs 空）：glob 原样保留，不收窄", () => {
+    const upstream = ["inventory-packages/*.json", "analysis-packages/*.json", "analysis.json"]
+    const result = narrowUpstreamForShard(upstream, "analyze", [], [])
+    expect(result).toEqual(upstream)
+  })
+
+  it("无 glob 的 upstream 原样返回", () => {
+    const upstream = ["plan.json", "scaffold.json", "dedup.json"]
+    const result = narrowUpstreamForShard(upstream, "verify", ["PKG_A"], [])
+    expect(result).toEqual(upstream)
+  })
+
+  it("回归核心：analyze 分片不再把全量 inventory-packages 交给 worker", () => {
+    // 修复前：upstream 含 inventory-packages/*.json → worker 读全部包 → 写出其他包的 FSD
+    const upstream = ["inventory.json", "inventory-packages/*.json", "analysis.json"]
+    const result = narrowUpstreamForShard(upstream, "analyze", ["ONLY_THIS_PKG"], [])
+    const perPkgEntries = result.filter(a => a.startsWith("inventory-packages/"))
+    expect(perPkgEntries).toEqual(["inventory-packages/ONLY_THIS_PKG.json"])
+  })
+})
