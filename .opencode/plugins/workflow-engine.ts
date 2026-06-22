@@ -362,6 +362,11 @@ let _cachedUserSpecPath: string | null = null
  *  旧格式检测：project-structure.md 无 ## 标题时，退化为纯目录结构文件。
  */
 function loadUserSpec(specConf?: string, sourcePath?: string): UserSpecResult | null {
+  // 入口规范化为绝对路径：防御历史 run 在 metadata/run-context 中存入的相对路径，
+  // 保证内部 join 与返回的 sourcePath 都基于绝对路径，消除 cwd 依赖。
+  if (specConf) specConf = resolve(specConf)
+  if (sourcePath) sourcePath = resolve(sourcePath)
+
   let filePath: string | null = null
 
   // 优先级 1: CLI --spec 参数指定（必须存在，否则报错）
@@ -1886,6 +1891,13 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
         switch (args.action) {
           // ── start ──
           case "start": {
+            // 路径规范化：在入口统一 resolve 成绝对路径，下游（metadata / run-context.json /
+            // dispatch 注入 / loadUserSpec / scanSource / fetchSchemaIfNeeded）全部消费绝对路径，
+            // 消除 worker subagent 与 resume 跨 cwd 的对齐风险。originalInput 仍保留用户原文用于回溯。
+            if (args.sourcePath) args.sourcePath = resolve(args.sourcePath)
+            if (args.dbConf) args.dbConf = resolve(args.dbConf)
+            if (args.specConf) args.specConf = resolve(args.specConf)
+
             const runId = args.runId ?? formatRunId(args.sourcePath)
             initLogger(runId)
 
@@ -2886,9 +2898,10 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             const restoredCtx = loadRunContext(runId)
             if (restoredCtx) {
               const md = run.metadata as Record<string, unknown>
-              if (restoredCtx.params.path && !md.sourcePath) md.sourcePath = restoredCtx.params.path
-              if (restoredCtx.params.dbConf && !md.dbConf) md.dbConf = restoredCtx.params.dbConf
-              if (restoredCtx.params.specConf && !md.specConf) md.specConf = restoredCtx.params.specConf
+              // 历史回填：旧 run 的 run-context.json 可能存相对路径，统一 resolve 成绝对路径
+              if (restoredCtx.params.path && !md.sourcePath) md.sourcePath = resolve(restoredCtx.params.path)
+              if (restoredCtx.params.dbConf && !md.dbConf) md.dbConf = resolve(restoredCtx.params.dbConf)
+              if (restoredCtx.params.specConf && !md.specConf) md.specConf = resolve(restoredCtx.params.specConf)
               if (restoredCtx.params.mainEntry && !md.mainEntry) md.mainEntry = restoredCtx.params.mainEntry
             }
             setWorkflowContext(run)
