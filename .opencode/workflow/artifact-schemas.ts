@@ -726,6 +726,58 @@ export const DedupSchema = z.object({
     linesRemoved: z.number(),
     linesAdded: z.number(),
   }),
+
+  /**
+   * PMD CPD 不可用（mvn 缺失/执行失败/离线）时，engine 写占位 dedup.json 跳过抽取，
+   * pipeline 继续到 review/verify（dedup 是优化项，非正确性必需）。skipped:true 时校验直接放行。
+   */
+  skipped: z.boolean().optional(),
+  skipReason: z.string().optional(),
+}).passthrough()
+
+/**
+ * dedup-duplicates.json — PMD CPD 确定性扫描产物（零 LLM，dedup dispatch 时由 engine 生成）。
+ *
+ * 重复组 = 同 token 序列出现在多个文件/位置（CPD）。LLM dedup agent 读此文件，对
+ * suggestedExtract=true / forceExtract=true 的组做抽取+重构+改引用。
+ *
+ * - category：由 Java 文件 role 推导（dto/util/constant/exception/mapper-xml/unknown）。
+ * - suggestedExtract：规则判定（跨≥2包 + 无 TODO + 非业务逻辑）。
+ * - forceExtract：dedup-rules.json 的 force matcher 覆盖（必须抽取，LLM 不得否决）。
+ * - skipped：PMD/mvn 不可用时整体跳过，不写 groups。
+ */
+export const DedupDuplicatesSchema = z.object({
+  scanStats: z.object({
+    totalPackages: z.number(),
+    totalFilesScanned: z.number(),
+    duplicateGroupsFound: z.number(),
+  }),
+  groups: z.array(z.object({
+    /** 组 id（稳定，用于闭环校验） */
+    id: z.string(),
+    /** 类别：dto/util/constant/exception/mapper-xml/unknown */
+    category: z.string(),
+    /** 重复出现的各处 */
+    sources: z.array(z.object({
+      packageName: z.string(),
+      file: z.string(),
+      startLine: z.number(),
+      endLine: z.number().optional(),
+      tokens: z.number().optional(),
+    })),
+    /** 0=完全一致；越高越分歧（CPD 同组即 token 一致 → 0） */
+    diffScore: z.number().min(0).max(1),
+    /** 规则判定是否建议抽取 */
+    suggestedExtract: z.boolean(),
+    /** dedup-rules.json force 覆盖：必须抽取，LLM 不得否决 */
+    forceExtract: z.boolean().optional(),
+    /** 不抽取的原因（user-excluded / business-logic / has-todo / single-package / diff-too-high） */
+    skipReason: z.string().optional(),
+  })),
+  /** PMD/mvn 不可用 → 跳过，groups 为空 */
+  skipped: z.boolean().optional(),
+  skipReason: z.string().optional(),
+  generatedBy: z.string(),
 }).passthrough()
 
 // ============================================================================

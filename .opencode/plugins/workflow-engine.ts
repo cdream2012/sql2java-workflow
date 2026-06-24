@@ -11,7 +11,7 @@
  *   - 依赖自动安装（node_modules 缺失时自动 npm/bun install）
  */
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, statSync, realpathSync } from "node:fs"
-import { join, dirname, resolve, sep, relative, isAbsolute } from "node:path"
+import { join, dirname, resolve, sep, relative, isAbsolute, basename } from "node:path"
 import { safeWriteFile } from "../workflow/cross-platform"
 import { WorkflowEngine, WorkflowEngineError, formatZodIssues, type WorkflowRun } from "../workflow/engine-core"
 import { enhanceRejection } from "../workflow/rejection-guidance"
@@ -29,6 +29,7 @@ import { buildInventoryFromIndex } from "../workflow/inventory-builder"
 import { buildAnalysisFromIndex } from "../workflow/analysis-builder"
 import { buildReviewSummary } from "../workflow/review-summary-builder"
 import { buildVerifySummary } from "../workflow/verify-summary-builder"
+import { scanDuplicates } from "../workflow/dedup-scanner"
 import { ensureDeps, findOpencodeDir } from "../workflow/ensure-deps"
 import {
   PhaseMetricsCollector,
@@ -87,6 +88,7 @@ export interface RunContext {
     dbConf?: string
     specConf?: string
     mainEntry?: string
+    dedupRules?: string
     phases?: string
     mode?: string
   }
@@ -1335,6 +1337,9 @@ function validateArtifactOnDisk(run: WorkflowRun): string | null {
 
       // dedup 阶段：增量模式下校验 dedup.json 未丢失非增量包数据
       if (phase === "dedup") {
+        // skipped（PMD CPD 不可用）：引擎写占位 dedup.json，直接放行，不跑增量/强制项校验
+        if (parsed.skipped === true) return null
+
         const currentEntry = engine.findCurrentEntry(run)
         const isIncremental = !!currentEntry?.incrementalContext?.targetPackages?.length
         if (isIncremental) {
@@ -1368,6 +1373,33 @@ function validateArtifactOnDisk(run: WorkflowRun): string | null {
               return `dedup.json incremental run has extracted modules only from target packages (${[...targetPkgs].join(", ")}), but inventory has ${invPkgCount} packages. Non-target package data may have been lost during merge.`
             }
           }
+        }
+
+        // forceExtract 闭环：dedup-duplicates.json 里 forceExtract=true 的组必须在
+        // dedup.json.extractedModules 命中（防 LLM 漏抽强制项）
+        const dupFile = join(artifactsDir, "dedup-duplicates.json")
+        if (existsSync(dupFile)) {
+          try {
+            const dup = JSON.parse(readFileSync(dupFile, "utf-8"))
+            const forceGroups = (dup.groups ?? []).filter((g: any) => g.forceExtract === true)
+            if (forceGroups.length > 0) {
+              const extractedClassNames = new Set(
+                ((parsed.extractedModules as any[]) ?? [])
+                  .flatMap((m) => (m.sources ?? []).map((s: any) => s.originalClassName))
+                  .filter((s: unknown): s is string => typeof s === "string" && s.length > 0)
+                  .map((s) => s.toLowerCase())
+              )
+              for (const g of forceGroups) {
+                const hit = (g.sources ?? []).some((s: any) => {
+                  const cn = basename(String(s.file)).replace(/\.java$/i, "").toLowerCase()
+                  return extractedClassNames.has(cn)
+                })
+                if (!hit) {
+                  return `dedup: forceExtract 组 ${g.id}（${(g.sources ?? []).map((s: any) => s.file).join(", ")}）未在 dedup.json.extractedModules 中抽取——forceExtract 项必须抽取，不得遗漏`
+                }
+              }
+            }
+          } catch { /* dedup-duplicates.json 读失败不阻断（scanner 已校验过 schema） */ }
         }
       }
     } catch (e: any) {
@@ -2322,6 +2354,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
         dbConf: zFn.string().optional(),        // --db_conf 用
         specConf: zFn.string().optional(),      // --spec 用
         mainEntry: zFn.string().optional(),     // 翻译起点/对外门面包，自然语言提取或 --mainEntry
+        dedupRules: zFn.string().optional(),    // --dedupRules 用：dedup-rules.json 路径（exclude/force 覆盖）
         originalInput: zFn.string().optional(), // 用户原始 $ARGUMENTS 文字，写入 run-context.json 供回溯
       },
       execute: async (args: any, context: any) => {
@@ -2351,6 +2384,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             if (args.sourcePath) args.sourcePath = resolve(args.sourcePath)
             if (args.dbConf) args.dbConf = resolve(args.dbConf)
             if (args.specConf) args.specConf = resolve(args.specConf)
+            if (args.dedupRules) args.dedupRules = resolve(args.dedupRules)
 
             const runId = args.runId ?? formatRunId(args.sourcePath)
             initLogger(runId)
@@ -2371,6 +2405,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             if (args.dbConf) metadata.dbConf = args.dbConf
             if (args.specConf) metadata.specConf = args.specConf
             if (args.mainEntry) metadata.mainEntry = args.mainEntry
+            if (args.dedupRules) metadata.dedupRulesPath = args.dedupRules
             if (userSpecResult?.projectStructure) metadata.projectStructure = userSpecResult.projectStructure
             if (userSpecResult?.sourcePath) metadata.userSpecPath = userSpecResult.sourcePath
 
@@ -3356,6 +3391,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               if (restoredCtx.params.dbConf && !md.dbConf) md.dbConf = resolve(restoredCtx.params.dbConf)
               if (restoredCtx.params.specConf && !md.specConf) md.specConf = resolve(restoredCtx.params.specConf)
               if (restoredCtx.params.mainEntry && !md.mainEntry) md.mainEntry = restoredCtx.params.mainEntry
+              if (restoredCtx.params.dedupRules && !md.dedupRulesPath) md.dedupRulesPath = resolve(restoredCtx.params.dedupRules)
             }
             setWorkflowContext(run)
 
@@ -3416,6 +3452,36 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             const agentName = agentFileToName(phaseConfig.agentFile)
             const artifactsDir = `${ARTIFACT_DIR}/${run.runId}`
 
+            // dedup：dispatch 前 run PMD CPD 确定性扫描 → dedup-duplicates.json（零 LLM）。
+            // 扫描失败（mvn/PMD 不可用）→ 写占位 dedup.json（skipped:true），agent 仅收尾。
+            let dedupScanSkipped: { skipReason: string } | null = null
+            if (run.currentPhase === "dedup") {
+              const planArt = engine.loadArtifactJson(artifactsDir, "plan")
+              const artifactId = (planArt?.targetProject as any)?.artifactId
+              if (artifactId) {
+                const projectRoot = join(resolveProjectRoot(), "generated", artifactId)
+                const dedupRulesPath = (run.metadata as Record<string, unknown>).dedupRulesPath as string | undefined
+                const targetPkgs = currentEntry?.incrementalContext?.targetPackages as string[] | undefined
+                const res = scanDuplicates(artifactsDir, projectRoot, targetPkgs, dedupRulesPath)
+                if (res.skipped) {
+                  dedupScanSkipped = { skipReason: res.skipReason ?? "PMD CPD 不可用" }
+                  // 引擎写占位 dedup.json，agent 无需抽取
+                  const placeholder = {
+                    scanStats: res.scanStats ?? { totalPackages: 0, totalFilesScanned: 0, duplicateGroupsFound: 0 },
+                    extractedModules: [],
+                    packageChanges: [],
+                    metrics: { filesExtracted: 0, filesModified: 0, linesRemoved: 0, linesAdded: 0 },
+                    skipped: true,
+                    skipReason: dedupScanSkipped.skipReason,
+                  }
+                  safeWriteFile(join(artifactsDir, "dedup.json"), JSON.stringify(placeholder, null, 2))
+                  getLogger().warn("[dispatch]", `dedup 跳过（PMD CPD 不可用）: ${dedupScanSkipped.skipReason}`)
+                }
+              } else {
+                dedupScanSkipped = { skipReason: "plan.json 缺失 targetProject.artifactId，无法定位 projectRoot" }
+              }
+            }
+
             // 检测当前阶段是否有 artifact 校验错误（advance rejected 后重新 dispatch 的场景）
             // 重新执行 Zod 校验，如果有错误则注入到 workOrder 让 Worker 修正
             const artifactValidationError = validateArtifactOnDisk(run)
@@ -3448,6 +3514,27 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                 for (const f of pf) {
                   workOrderParts.push(`  - { packageName: ${f.packageName}, file: ${f.file}, line: ${f.line ?? "null"}, issue: ${JSON.stringify(f.issue)} }`)
                 }
+              }
+            }
+
+            // dedup：注入扫描结果指引（skipped 时指示 agent 仅收尾）
+            if (run.currentPhase === "dedup") {
+              if (dedupScanSkipped) {
+                workOrderParts.push(
+                  ``,
+                  `## ⚠️ dedup 已跳过（PMD CPD 不可用）`,
+                  `- 引擎已写占位 \`dedup.json\`（skipped:true，${dedupScanSkipped.skipReason}）`,
+                  `- 你无需做任何抽取/重构。仅确认 \`dedup.json\` 已写入后输出 WORKER_SUMMARY 结束`,
+                )
+              } else {
+                workOrderParts.push(
+                  ``,
+                  `## dedup 扫描结果`,
+                  `- dedup-duplicates.json：${artifactsDir}/dedup-duplicates.json（引擎已用 PMD CPD 扫描，零 LLM）`,
+                  `- 按其中 \`suggestedExtract=true\` / \`forceExtract=true\` 的组**逐个**抽取+重构+改引用`,
+                  `- ⛔ \`forceExtract=true\` 必须抽取不得否决；\`skipReason=user-excluded\` 不得抽取`,
+                  `- **禁止自己全量扫 Java 检测重复**（已由引擎完成）；业务逻辑方法可否决（记 skippedDuplicates）`,
+                )
               }
             }
 

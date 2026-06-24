@@ -557,26 +557,29 @@ mybatis:
 
 ### 目标
 
-扫描所有包的翻译结果，检测跨包重复代码，将重复代码抽取为共享公共模块，减少冗余并提高可维护性。
+**重复检测已由引擎静态完成**（PMD CPD，零 LLM，产 `dedup-duplicates.json`）。你的职责：按其中的重复组**逐个**做抽取决策 + 创建公共模块 + 改引用 + 写 `dedup.json`。⛔ 禁止自己全量扫 Java 检测重复（已由引擎完成）。
 
 ### 输入
 
 - **上游 artifact**：
+  - `${artifactsDir}/dedup-duplicates.json` — **引擎 PMD CPD 扫描结果**（重复组：category/sources/diffScore/suggestedExtract/forceExtract/skipReason）。这是你的工作清单
   - `${artifactsDir}/plan.json` — 映射规则和编码约定
   - `${artifactsDir}/scaffold.json` — 项目结构和已有公共模块
   - `${artifactsDir}/inventory.json` — 包名列表
   - `${artifactsDir}/analysis.json` — 全局元数据
   - `${artifactsDir}/translations/*/translation.json` — 所有包的翻译记录
 
+### 跳过模式（PMD CPD 不可用）
+
+若 `dedup-duplicates.json` 不存在或 workOrder 标注「dedup 已跳过」：引擎已写占位 `dedup.json`（`skipped:true`）。你**无需做任何抽取/重构**，仅确认 `dedup.json` 已写入后输出 WORKER_SUMMARY 结束。dedup 是优化项，跳过不阻断 pipeline。
+
 ### 增量模式
 
-当 `incrementalContext.targetPackages` 非空时，dedup 处于增量模式（由 fix 循环触发）：
+当 `incrementalContext.targetPackages` 非空时（由 fix 循环触发）：
 
-- 仅重新扫描 `targetPackages` 中列出的包
-- 保留已有的非增量模块（不重新抽取不涉及的包）
-- 更新 dedup.json 时合并：替换涉及的包的 packageChanges，保留不涉及的部分
-- 如果已有 dedup.json，在其基础上更新而非从头生成
-- scaffold 阶段不再生成骨架文件，公共模块全部由 dedup 从零创建
+- 引擎已只重扫 `targetPackages` 的 Java 并与已有 `dedup-duplicates.json` 合并（非目标包的组保留）
+- 你只处理 `dedup-duplicates.json` 中涉及 targetPackages 的组；非目标包的已有 extractedModules 保留
+- 更新 dedup.json 时合并：替换涉及包的 packageChanges，保留不涉及的部分
 
 ### 输出
 
@@ -586,43 +589,32 @@ mybatis:
 
 ### 工作步骤
 
-#### Step 1: 读取所有包的翻译结果
+#### Step 1: 读取扫描结果
 
-读取 `translations/*/translation.json`，获取每个包生成的文件列表。
-逐文件从 `projectRoot` 目录读取 Java 源码内容（路径如 `{projectRoot}/src/main/java/...`），建立全量代码索引。
+读取 `${artifactsDir}/dedup-duplicates.json`，获取重复组列表。**不要自己扫 Java 检测重复**。读取 `translations/*/translation.json` 拿文件清单 + projectRoot 定位 Java 文件。
 
-#### Step 2: 重复代码检测
+若 `dedup-duplicates.json` 缺失或 `skipped:true` → 进入跳过模式（见上），直接输出 WORKER_SUMMARY 结束。
 
-按以下维度检测重复（同一模式出现在 ≥ 2 个包中才标记为重复）：
+#### Step 2: 逐组抽取决策
 
-1. **DTO 类重复**：字段名 + 类型完全一致（忽略类名差异）
-2. **工具方法重复**：方法体相同（允许局部变量名差异）
-3. **常量重复**：常量名 + 值相同
-4. **异常类重复**：字段 + 构造器相同
-5. **MyBatis 片段重复**：resultMap / SQL 片段相同
+对 `dedup-duplicates.json` 中每个组：
 
-#### Step 3: 抽取决策
+- `forceExtract=true` → **必须抽取**，不得否决（用户 `dedup-rules.json` 强制项）
+- `skipReason` 含 `user-excluded` → **不得抽取**（用户排除项）
+- `suggestedExtract=true`（非 force）→ 默认抽取；但若判定为**业务逻辑**（ServiceImpl 方法体、Service 接口方法），可否决并记入 `skippedDuplicates`（reason=`business-logic`）
+- `suggestedExtract=false`（single-package/has-todo）→ 不抽取，可记入 `skippedDuplicates`
 
-对每个重复组：
-- 如果差异度 < 10%（仅变量名/注释不同）→ 抽取
-- 如果差异度 ≥ 10%（有实质性差异）→ 记录到 `skippedDuplicates`，不抽取
-- 包含 `// TODO: [translate]` 标记的代码 → 不抽取
-- 仅 1 个包使用的代码 → 不抽取
+对决定抽取的组，定 target 公共类名/包路径/类别（按 `category` 归到 util/dto/common/constants/exception）。
 
-**不抽取的代码类型**：
-- 业务逻辑方法（违反"不重构"原则）
-- Service 接口 / ServiceImpl 方法体
-- 相似但有实质差异的代码
+#### Step 3: 创建公共模块
 
-#### Step 4: 创建公共模块
-
-对每个决定抽取的重复组：
+对每个决定抽取的组：
 1. 在 `projectRoot` 下的对应公共目录中**从零创建**新文件（`{projectRoot}/src/main/java/.../util/`、`dto/common/`、`constants/`、`exception/`）— scaffold 不再生成骨架，dedup 负责创建完整文件
 2. 确保新文件遵循 Java 代码规约（命名、注释、格式）
 3. 所有 Javadoc 使用中文注释
 4. 公共模块必须包含完整实现，不允许出现 `// TODO` 空方法
 
-#### Step 5: 更新各包引用
+#### Step 4: 更新各包引用
 
 对每个受影响的包：
 1. 在 `projectRoot` 下的 Java 文件中添加 import 语句
@@ -630,9 +622,9 @@ mybatis:
 3. 将调用改为使用公共模块
 4. 更新 `translations/{package}/translation.json` 的 `decisions` 字段，追加抽取决策记录
 
-#### Step 6: 写入 dedup.json
+#### Step 5: 写入 dedup.json
 
-组装符合 DedupSchema 的 JSON，写入 `${artifactsDir}/dedup.json`。示例：
+组装符合 DedupSchema 的 JSON，写入 `${artifactsDir}/dedup.json`。`scanStats` 直接取自 `dedup-duplicates.json`（勿自算）。示例：
 
 ```json
 {
@@ -684,9 +676,10 @@ mybatis:
 ```
 
 **字段说明**：
-- `scanStats.totalPackages`：必须等于 inventory 包数（增量模式下也需等于）
+- `scanStats.totalPackages`：必须等于 inventory 包数（增量模式下也需等于）；`scanStats` 取自 `dedup-duplicates.json`
 - `extractedModules[].category`：推荐全小写，如 `"type-mapper"`/`"mybatis-fragment"`/`"mapper-interface"`/`"test-base"`/`"util"`/`"dto"`/`"constants"`/`"exception"`/`"config"`
 - `extractedModules[].sources[].packageName`：必须引用 inventory 中存在的包名
+- `extractedModules[].sources[].originalClassName`：**forceExtract 闭环校验依赖此字段**——forceExtract 组的 className 必须出现在某 extractedModule.sources[].originalClassName，否则 advance 拒绝
 - `extractedModules[].affectedPackages`：引用被更新的包名
 - `skippedDuplicates`：可选，记录未抽取的重复及原因
 - `metrics`：4 个数值字段均为必填
@@ -697,6 +690,7 @@ mybatis:
 2. **不修改 Mapper XML 的外部 SQL** — SQL 语句内容不变，只允许抽取 resultMap/SQL 片段引用
 3. **不合并业务逻辑** — ServiceImpl 的方法体不合并，只抽取纯工具性质的代码
 4. **保持翻译五原则** — 抽取后的代码仍须遵循"不重构、不优化、不合并、不省略、不猜测"
+5. **forceExtract 必须抽取** — 用户强制项不得以"业务逻辑"为由否决
 
 ### 阶段完成
 
@@ -706,10 +700,12 @@ dedup 是 `condition: "always"` 阶段，完成后直接输出摘要即可。
 
 ### 质量检查
 
-- [ ] 所有包的翻译结果已扫描（scanStats.totalPackages 覆盖所有包）
-- [ ] 重复代码已被正确识别和分类
+- [ ] 读取了 `dedup-duplicates.json`（未自扫 Java）
+- [ ] `forceExtract=true` 的组全部抽取（originalClassName 进 extractedModules）
+- [ ] `user-excluded` 组未抽取
 - [ ] 抽取的公共模块遵循 Java 代码规约
 - [ ] 各包的引用已正确更新（import 齐全、无编译错误）
 - [ ] 未抽取的重复有明确的跳过原因记录（skippedDuplicates）
+- [ ] `scanStats` 取自 dedup-duplicates.json，totalPackages 等于 inventory 包数
 - [ ] dedup.json 格式符合 DedupSchema
 - [ ] 受影响包的 translation.json 的 decisions 已更新
