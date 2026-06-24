@@ -3695,9 +3695,14 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
 
             const banner = formatPhaseStartBanner(run.currentPhase)
 
+            // dedup 跳过时在 dispatch 输出即时告警（不只进日志/workOrder），让编排者/用户可见
+            const dedupSkipNotice = dedupScanSkipped
+              ? `\n⚠️ dedup 已跳过（PMD CPD 不可用）：${dedupScanSkipped.skipReason}\n   引擎已写占位 dedup.json（skipped:true），pipeline 继续——dedup 是优化项，不影响 verify 正确性验证。`
+              : ""
+
             return {
               title: `Dispatch: ${run.currentPhase}`,
-              output: `${banner}📋 调度 ${agentName} 执行 ${run.currentPhase} 阶段\n📌 调用 todowrite 更新进度（${run.currentPhase}=in_progress，priority 保持原值）`,
+              output: `${banner}📋 调度 ${agentName} 执行 ${run.currentPhase} 阶段\n📌 调用 todowrite 更新进度（${run.currentPhase}=in_progress，priority 保持原值）${dedupSkipNotice}`,
               metadata: {
                 runId: run.runId,
                 phase: run.currentPhase,
