@@ -24,16 +24,24 @@
  *   refNamesForPackage(["get_param","get_param"]) // => ["get_param__1","get_param__2"]
  */
 export function refNamesForPackage(procedureNames: string[]): string[] {
-  // 第一遍：统计每个名字的总出现次数，判定是否重载
+  // PL/SQL 标识符不区分大小写（Oracle 默认把未加引号的标识符大写化），因此 get_item 与
+  // GET_ITEM 是同一子程序、互为重载，必须按大写键合并计数——否则 analysis-builder 与
+  // validateCrossSchema 的 validRefNameSet 会对大小写变体产出不相交的 refName 集合。
+  // 第一遍：按大写键统计每个名字的总出现次数，判定是否重载
   const totals = new Map<string, number>()
-  for (const name of procedureNames) totals.set(name, (totals.get(name) ?? 0) + 1)
+  for (const name of procedureNames) {
+    const key = name.toUpperCase()
+    totals.set(key, (totals.get(key) ?? 0) + 1)
+  }
 
-  // 第二遍：重载名按出现顺序追加 1-based 序号，非重载保留裸名
+  // 第二遍：重载名按出现顺序追加 1-based 序号（序号同样按大写键累计），非重载保留裸名。
+  // refName 保留 Oracle 原始大小写（裸名/带序号均用原始 name 拼接）。
   const seen = new Map<string, number>()
   return procedureNames.map((name) => {
-    if ((totals.get(name) ?? 0) === 1) return name
-    const i = (seen.get(name) ?? 0) + 1
-    seen.set(name, i)
+    const key = name.toUpperCase()
+    if ((totals.get(key) ?? 0) === 1) return name
+    const i = (seen.get(key) ?? 0) + 1
+    seen.set(key, i)
     return `${name}__${i}`
   })
 }
@@ -56,4 +64,23 @@ export function parseQualified(qualified: string): [string, string] | null {
   const idx = qualified.indexOf(".")
   if (idx <= 0 || idx >= qualified.length - 1) return null
   return [qualified.slice(0, idx), qualified.slice(idx + 1)]
+}
+
+/**
+ * 从 unit id `PKG.refName` 取包名（宽松版，按首个 `.` 切分）。
+ * 无 `.` 时返回原串（用于已保证合法的 unit id 热路径，避免 null 检查）。
+ * 需要严格校验非法格式时用 parseQualified。
+ *
+ * 与 refOf 配对，取代散落在 workflow-engine / engine-core / analysis-builder 的
+ * `const i = u.indexOf("."); return i < 0 ? u : u.slice(...)` 内联闭包（单一真相源）。
+ */
+export function pkgOf(unitId: string): string {
+  const i = unitId.indexOf(".")
+  return i < 0 ? unitId : unitId.slice(0, i)
+}
+
+/** 从 unit id `PKG.refName` 取 refName（宽松版，按首个 `.` 切分）。无 `.` 时返回原串。 */
+export function refOf(unitId: string): string {
+  const i = unitId.indexOf(".")
+  return i < 0 ? unitId : unitId.slice(i + 1)
 }

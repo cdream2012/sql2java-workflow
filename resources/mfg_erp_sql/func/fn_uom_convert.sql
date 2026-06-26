@@ -3,41 +3,41 @@
 --   select fn_uom_convert(1.5, 'KG', 'G') from dual
 -- 跨类换算返回 null(不抛异常，报表场景更宽容)，命中不到换算系数也返回 null
 
-create or replace function fn_uom_convert(
-    p_qty      in number,
-    p_from_uom in varchar2,
-    p_to_uom   in varchar2
-) return number deterministic is
-    v_factor   number;
-    v_from_cat varchar2(8);
-    v_to_cat   varchar2(8);
-begin
-    if p_qty is null or p_from_uom is null or p_to_uom is null then
-        return p_qty;
-    end if;
-    if p_from_uom = p_to_uom then
-        return p_qty;
-    end if;
+CREATE OR REPLACE FUNCTION fn_uom_convert(
+    p_qty      IN NUMBER,
+    p_from_uom IN VARCHAR2,
+    p_to_uom   IN VARCHAR2
+) RETURN NUMBER DETERMINISTIC IS
+    v_factor   NUMBER;
+    v_from_cat VARCHAR2(8);
+    v_to_cat   VARCHAR2(8);
+BEGIN
+    IF p_qty IS NULL OR p_from_uom IS NULL OR p_to_uom IS NULL THEN
+        RETURN p_qty;
+    END IF;
+    IF p_from_uom = p_to_uom THEN
+        RETURN p_qty;
+    END IF;
 
-    select max(case when uom_code = p_from_uom then uom_category end),
-           max(case when uom_code = p_to_uom   then uom_category end)
-      into v_from_cat, v_to_cat
-      from t_uom
-     where uom_code in (p_from_uom, p_to_uom);
+    SELECT MAX(CASE WHEN uom_code = p_from_uom THEN uom_category END),
+           MAX(CASE WHEN uom_code = p_to_uom   THEN uom_category END)
+      INTO v_from_cat, v_to_cat
+      FROM t_uom
+     WHERE uom_code IN (p_from_uom, p_to_uom);
 
-    if v_from_cat is null or v_to_cat is null or v_from_cat <> v_to_cat then
-        return null;
-    end if;
+    IF v_from_cat IS NULL OR v_to_cat IS NULL OR v_from_cat <> v_to_cat THEN
+        RETURN NULL;
+    END IF;
 
-    begin
-        select factor into v_factor
-          from t_uom_conversion
-         where from_uom = p_from_uom and to_uom = p_to_uom;
-    exception
-        when no_data_found then
-            return null;
-    end;
+    BEGIN
+        SELECT factor INTO v_factor
+          FROM t_uom_conversion
+         WHERE from_uom = p_from_uom AND to_uom = p_to_uom;
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+            RETURN NULL;
+    END;
 
-    return p_qty * v_factor;
-end fn_uom_convert;
+    RETURN p_qty * v_factor;
+END fn_uom_convert;
 /

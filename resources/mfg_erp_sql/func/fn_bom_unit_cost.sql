@@ -5,46 +5,46 @@
 -- install 时本函数在包之后加载，故包体不依赖它(包内自带等价递归)，避免编译顺序问题
 -- 含损耗用量 = qty_per / (1 - scrap_rate)，与 t_bom_comp_obj.effective_qty 一致
 
-create or replace function fn_bom_unit_cost(
-    p_item_id in number,
-    p_as_of   in date default null
-) return number is
-    v_dt       date := nvl(p_as_of, sysdate);
-    v_bom_id   number;
-    v_base_qty number;
-    v_total    number := 0;
-begin
-    begin
-        select bom_id, base_qty
-          into v_bom_id, v_base_qty
-          from (
-                select bom_id, base_qty
-                  from t_bom_header
-                 where item_id = p_item_id
-                   and status  = 'ACTIVE'
-                   and is_default = 'Y'
-                   and effective_from <= v_dt
-                   and (effective_to is null or effective_to >= v_dt)
-                 order by effective_from desc
+CREATE OR REPLACE FUNCTION fn_bom_unit_cost(
+    p_item_id IN NUMBER,
+    p_as_of   IN DATE DEFAULT NULL
+) RETURN NUMBER IS
+    v_dt       DATE := NVL(p_as_of, SYSDATE);
+    v_bom_id   NUMBER;
+    v_base_qty NUMBER;
+    v_total    NUMBER := 0;
+BEGIN
+    BEGIN
+        SELECT bom_id, base_qty
+          INTO v_bom_id, v_base_qty
+          FROM (
+                SELECT bom_id, base_qty
+                  FROM t_bom_header
+                 WHERE item_id = p_item_id
+                   AND status  = 'ACTIVE'
+                   AND is_default = 'Y'
+                   AND effective_from <= v_dt
+                   AND (effective_to IS NULL OR effective_to >= v_dt)
+                 ORDER BY effective_from DESC
                )
-         where rownum = 1;
-    exception
-        when no_data_found then
+         WHERE ROWNUM = 1;
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
             -- 叶子: 没有生效 BOM，单位成本就是它自己的标准成本
-            select std_cost into v_total from t_item where item_id = p_item_id;
-            return v_total;
-    end;
+            SELECT std_cost INTO v_total FROM t_item WHERE item_id = p_item_id;
+            RETURN v_total;
+    END;
 
-    for c in (
-        select component_item_id, qty_per, scrap_rate
-          from t_bom_line
-         where bom_id = v_bom_id
-    ) loop
+    FOR c IN (
+        SELECT component_item_id, qty_per, scrap_rate
+          FROM t_bom_line
+         WHERE bom_id = v_bom_id
+    ) LOOP
         v_total := v_total
                  + fn_bom_unit_cost(c.component_item_id, v_dt)
-                   * (c.qty_per / (1 - nvl(c.scrap_rate, 0)));
-    end loop;
+                   * (c.qty_per / (1 - NVL(c.scrap_rate, 0)));
+    END LOOP;
 
-    return round(v_total / nullif(v_base_qty, 0), 6);
-end fn_bom_unit_cost;
+    RETURN ROUND(v_total / NULLIF(v_base_qty, 0), 6);
+END fn_bom_unit_cost;
 /

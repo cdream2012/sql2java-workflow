@@ -62,8 +62,9 @@ describe("SQL2JAVA_WORKFLOW phases", () => {
 
   it("needsCrossSchemaValidation 的阶段正确", () => {
     const crossSchemaPhases = phases.filter(p => p.needsCrossSchemaValidation).map(p => p.name)
+    // inventory：analysis.json（含 callGraph）由 inventory 阶段代码产出，需校验 refName 合法性 + 包名一致
     // translate 完成时所有包 translation.json 已齐，即时校验 subprogramMethods 给 translator 反馈
-    expect(crossSchemaPhases.sort()).toEqual(["analyze", "dedup", "plan", "translate"])
+    expect(crossSchemaPhases.sort()).toEqual(["analyze", "dedup", "inventory", "plan", "translate"])
   })
 })
 
@@ -159,6 +160,33 @@ describe("UPSTREAM_ARTIFACTS", () => {
   it("upstream 值都是非空数组", () => {
     for (const [phase, artifacts] of Object.entries(UPSTREAM_ARTIFACTS)) {
       expect(Array.isArray(artifacts), `${phase} upstream should be array`).toBe(true)
+    }
+  })
+
+  it("analyze 不注入 inventory-index.json（避免分片 worker 拿到全量包源码路径）", () => {
+    // inventory-index.json 含所有包的 specFile/bodyFile；analyze 分片 worker 只该从本包
+    // inventory-packages/{PKG}.json 取源码路径，否则会读其他包源码、写出其他包的 FSD。
+    expect(UPSTREAM_ARTIFACTS.analyze).not.toContain("inventory-index.json")
+    // 本包源码路径来源仍在
+    expect(UPSTREAM_ARTIFACTS.analyze).toContain("inventory-packages/*.json")
+  })
+
+  it("translate 不注入 inventory-index.json（同 analyze 理由）", () => {
+    expect(UPSTREAM_ARTIFACTS.translate).not.toContain("inventory-index.json")
+    expect(UPSTREAM_ARTIFACTS.translate).toContain("inventory-packages/*.json")
+    // fsd/*/*.md 在分片模式下由 narrowUpstreamForShard 收窄到 fsd/{pkg}/*.md
+    expect(UPSTREAM_ARTIFACTS.translate).toContain("fsd/*/*.md")
+  })
+
+  it("inventory-index.json 仅 inventory 阶段注入；其余下游阶段都不读它", () => {
+    // inventory-index 是预扫描源，仅 inventory 阶段代码生成 + 边界校验消费；下游 worker
+    // 读精炼后的 inventory.json / inventory-packages / analysis.json 即可。
+    for (const [phase, artifacts] of Object.entries(UPSTREAM_ARTIFACTS)) {
+      if (phase === "inventory") {
+        expect(artifacts, "inventory 阶段读 inventory-index.json").toContain("inventory-index.json")
+      } else {
+        expect(artifacts, `${phase} 不应注入 inventory-index.json`).not.toContain("inventory-index.json")
+      }
     }
   })
 })

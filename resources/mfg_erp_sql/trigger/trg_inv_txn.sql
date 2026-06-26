@@ -4,46 +4,46 @@
 -- 余额维护由 inventory_pkg 自己 merge，触发器刻意不碰 t_inventory_balance，避免双重记账
 -- after each row 里累加到包级关联数组，after statement 再统一落审计——这也是规避变异表的经典写法
 
-create or replace trigger trg_inv_txn
-for insert on t_inventory_txn
-compound trigger
+CREATE OR REPLACE TRIGGER trg_inv_txn
+FOR INSERT ON t_inventory_txn
+COMPOUND TRIGGER
 
-    type t_net_map is table of number index by varchar2(64);
+    TYPE t_net_map IS TABLE OF NUMBER INDEX BY VARCHAR2(64);
     g_net      t_net_map;
-    g_row_cnt  number;
+    g_row_cnt  NUMBER;
 
-    before statement is
-    begin
-        g_net.delete;
+    BEFORE STATEMENT IS
+    BEGIN
+        g_net.DELETE;
         g_row_cnt := 0;
-    end before statement;
+    END BEFORE STATEMENT;
 
-    after each row is
-        v_key varchar2(64);
-        v_signed number;
-    begin
-        v_key    := :new.item_id || '-' || :new.warehouse_id;
-        v_signed := case :new.direction when 'I' then :new.quantity else -:new.quantity end;
-        g_net(v_key) := nvl(g_net(v_key), 0) + v_signed;
+    AFTER EACH ROW IS
+        v_key VARCHAR2(64);
+        v_signed NUMBER;
+    BEGIN
+        v_key    := :NEW.item_id || '-' || :NEW.warehouse_id;
+        v_signed := CASE :NEW.direction WHEN 'I' THEN :NEW.quantity ELSE -:NEW.quantity END;
+        g_net(v_key) := NVL(g_net(v_key), 0) + v_signed;
         g_row_cnt    := g_row_cnt + 1;
-    end after each row;
+    END AFTER EACH ROW;
 
-    after statement is
-        v_key varchar2(64);
-    begin
-        v_key := g_net.first;
-        while v_key is not null loop
-            insert into t_audit_log(
+    AFTER STATEMENT IS
+        v_key VARCHAR2(64);
+    BEGIN
+        v_key := g_net.FIRST;
+        WHILE v_key IS NOT NULL LOOP
+            INSERT INTO t_audit_log(
                 audit_id, table_name, action_type, biz_key,
                 new_value, operator, operated_at
-            ) values (
-                seq_audit_log_id.nextval, 't_inventory_txn', 'BATCH_NET', v_key,
+            ) VALUES (
+                seq_audit_log_id.NEXTVAL, 't_inventory_txn', 'BATCH_NET', v_key,
                 '{"net_qty":' || g_net(v_key) || ',"rows_in_stmt":' || g_row_cnt || '}',
-                nvl(sys_context('userenv','session_user'), 'SYSTEM'), current_timestamp
+                NVL(SYS_CONTEXT('userenv','session_user'), 'SYSTEM'), CURRENT_TIMESTAMP
             );
-            v_key := g_net.next(v_key);
-        end loop;
-    end after statement;
+            v_key := g_net.NEXT(v_key);
+        END LOOP;
+    END AFTER STATEMENT;
 
-end trg_inv_txn;
+END trg_inv_txn;
 /

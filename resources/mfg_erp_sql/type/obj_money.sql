@@ -3,65 +3,65 @@
 -- 把"金额 + 币种"绑成一个对象，加总走 plus() 强制同币种校验
 -- map 方法让 t_money 能直接进 order by / 集合排序(只比金额，跨币种比较无意义，调用方自行折算)
 
-create or replace type t_money force as object (
-    amount         number(20,4),
-    currency_code  varchar2(8),
+CREATE OR REPLACE TYPE t_money FORCE AS OBJECT (
+    amount         NUMBER(20,4),
+    currency_code  VARCHAR2(8),
 
-    member function plus(p_other in t_money) return t_money,
-    member function minus(p_other in t_money) return t_money,
-    member function scale_by(p_factor in number) return t_money,
-    member function is_zero return varchar2,
-    member function abs_value return t_money,
-    member function to_display return varchar2,
+    MEMBER FUNCTION plus(p_other IN t_money) RETURN t_money,
+    MEMBER FUNCTION minus(p_other IN t_money) RETURN t_money,
+    MEMBER FUNCTION scale_by(p_factor IN NUMBER) RETURN t_money,
+    MEMBER FUNCTION is_zero RETURN VARCHAR2,
+    MEMBER FUNCTION abs_value RETURN t_money,
+    MEMBER FUNCTION to_display RETURN VARCHAR2,
 
     -- 排序键：仅取金额，币种维度由业务层折算后再比
-    map member function sort_key return number
+    MAP MEMBER FUNCTION sort_key RETURN NUMBER
 );
 /
 
-create or replace type body t_money as
+CREATE OR REPLACE TYPE BODY t_money AS
 
-    member function plus(p_other in t_money) return t_money is
-    begin
-        if p_other is null then
-            return self;
-        end if;
-        if self.currency_code <> p_other.currency_code then
-            raise_application_error(-20900,
-                '金额相加币种不一致: ' || self.currency_code || ' vs ' || p_other.currency_code);
-        end if;
-        return t_money(self.amount + p_other.amount, self.currency_code);
-    end plus;
+    MEMBER FUNCTION plus(p_other IN t_money) RETURN t_money IS
+    BEGIN
+        IF p_other IS NULL THEN
+            RETURN SELF;
+        END IF;
+        IF SELF.currency_code <> p_other.currency_code THEN
+            RAISE_APPLICATION_ERROR(-20900,
+                '金额相加币种不一致: ' || SELF.currency_code || ' vs ' || p_other.currency_code);
+        END IF;
+        RETURN t_money(SELF.amount + p_other.amount, SELF.currency_code);
+    END plus;
 
-    member function minus(p_other in t_money) return t_money is
-    begin
-        return self.plus(t_money(-p_other.amount, p_other.currency_code));
-    end minus;
+    MEMBER FUNCTION minus(p_other IN t_money) RETURN t_money IS
+    BEGIN
+        RETURN SELF.plus(t_money(-p_other.amount, p_other.currency_code));
+    END minus;
 
-    member function scale_by(p_factor in number) return t_money is
-    begin
-        return t_money(round(self.amount * nvl(p_factor, 0), 4), self.currency_code);
-    end scale_by;
+    MEMBER FUNCTION scale_by(p_factor IN NUMBER) RETURN t_money IS
+    BEGIN
+        RETURN t_money(ROUND(SELF.amount * NVL(p_factor, 0), 4), SELF.currency_code);
+    END scale_by;
 
-    member function is_zero return varchar2 is
-    begin
-        return case when nvl(self.amount, 0) = 0 then 'Y' else 'N' end;
-    end is_zero;
+    MEMBER FUNCTION is_zero RETURN VARCHAR2 IS
+    BEGIN
+        RETURN CASE WHEN NVL(SELF.amount, 0) = 0 THEN 'Y' ELSE 'N' END;
+    END is_zero;
 
-    member function abs_value return t_money is
-    begin
-        return t_money(abs(self.amount), self.currency_code);
-    end abs_value;
+    MEMBER FUNCTION abs_value RETURN t_money IS
+    BEGIN
+        RETURN t_money(ABS(SELF.amount), SELF.currency_code);
+    END abs_value;
 
-    member function to_display return varchar2 is
-    begin
-        return to_char(self.amount, 'FM999,999,999,990.0000') || ' ' || self.currency_code;
-    end to_display;
+    MEMBER FUNCTION to_display RETURN VARCHAR2 IS
+    BEGIN
+        RETURN TO_CHAR(SELF.amount, 'FM999,999,999,990.0000') || ' ' || SELF.currency_code;
+    END to_display;
 
-    map member function sort_key return number is
-    begin
-        return nvl(self.amount, 0);
-    end sort_key;
+    MAP MEMBER FUNCTION sort_key RETURN NUMBER IS
+    BEGIN
+        RETURN NVL(SELF.amount, 0);
+    END sort_key;
 
-end;
+END;
 /
