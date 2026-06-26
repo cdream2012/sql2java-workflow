@@ -20,15 +20,19 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
       agentFile: "agent/sql-analyst.md",
       temperature: 0.1,
       maxRetries: 2,
+      // analysis.json（含 callGraph）现由 inventory 阶段代码产出，需在 inventory advance
+      // 时运行 validateCrossSchema：校验 analysis↔inventory 包名一致 + callGraph refName 合法性。
+      needsCrossSchemaValidation: true,
       tools: ["read", "bash", "write", "workflow"],
     },
     {
       name: "analyze",
-      description: "依赖分析 + 子程序结构解析 + FSD 生成",
+      description: "子程序结构解析 + FSD 生成（分片 map；依赖图 meta 已由 inventory 代码产出）",
       agentFile: "agent/sql-analyst.md",
       temperature: 0.1,
       maxRetries: 2,
       needsCrossSchemaValidation: true,
+      maxPackagesPerShard: 1,
       tools: ["read", "bash", "write", "workflow"],
     },
     {
@@ -55,6 +59,7 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
       temperature: 0.1,
       maxRetries: 3,
       needsCrossSchemaValidation: true,
+      maxPackagesPerShard: 1,
       tools: ["read", "bash", "write", "edit", "workflow"],
     },
     {
@@ -68,10 +73,11 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
     },
     {
       name: "review",
-      description: "翻译质量审查",
+      description: "翻译质量审查（按包分片，每分片 1 包；summary 由 generateReviewSummary 代码聚合）",
       agentFile: "agent/reviewer.md",
       temperature: 0.1,
       maxRetries: 1,
+      maxPackagesPerShard: 1,
       tools: ["read", "bash", "write", "workflow"],
     },
     {
@@ -117,7 +123,10 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
 // ============================================================================
 
 // 共享 artifact 路径常量，避免跨阶段重复声明时遗漏
-const _INV_BASE = ["inventory-index.json", "inventory.json", "inventory-packages/*.json"] as const
+// inventory-index.json 是预扫描源，仅 inventory 阶段代码生成（generateInventory/
+// generateAnalysis）+ 边界校验消费，不注入任何下游 worker（其内容已精炼到
+// inventory.json / inventory-packages / analysis.json，下游读那些即可）。
+const _INV_BASE = ["inventory.json", "inventory-packages/*.json"] as const
 const _ANALYSIS = ["analysis.json", "analysis-packages/*.json"] as const
 const _PLAN = ["plan.json"] as const
 const _SCAFFOLD = ["scaffold.json"] as const
@@ -128,10 +137,14 @@ const _FSD = ["fsd/*/*.md"] as const
 /** 每个 phase 需要读取的上游 artifact 路径模板 */
 export const UPSTREAM_ARTIFACTS: Record<string, string[]> = {
   inventory: ["inventory-index.json"],
-  analyze: [..._INV_BASE],
+  // analyze 不注入 inventory-index.json：本包源码路径从 inventory-packages/{PKG}.json 的
+  // specFile/bodyFile 取（已收窄到本分片）；表结构从 inventory.json，callGraph 从 analysis.json。
+  analyze: ["inventory.json", "inventory-packages/*.json", "analysis.json"],
   plan: [..._INV_BASE, ..._ANALYSIS, ..._FSD],
   scaffold: [..._PLAN, ..._INV_BASE],
-  translate: [..._INV_BASE, ..._PLAN, ..._ANALYSIS, ..._SCAFFOLD, ..._FSD],
+  // translate 同样不注入 inventory-index.json（同 analyze 理由：避免全量包源码路径泄漏）。
+  // fsd/*/*.md 会在分片模式下被 narrowUpstreamForShard 收窄到 fsd/{pkg}/*.md（本包 FSD）。
+  translate: ["inventory.json", "inventory-packages/*.json", ..._PLAN, ..._ANALYSIS, ..._SCAFFOLD, ..._FSD],
   dedup: [..._PLAN, ..._SCAFFOLD, ..._INV_BASE, ..._ANALYSIS, ..._TRANSLATIONS],
   // TODO (F9): translations/*/translation.json 在 dedup/review/verify 三阶段重复读取，
   // artifactCache 每次 advance 清空导致无法跨阶段缓存。考虑支持只读 artifact 的跨阶段缓存。
@@ -158,7 +171,7 @@ export type PrerequisiteItem = string | string[]
 
 /** 目标阶段 → 必须存在的 artifact 文件名（string=必须，string[]=OR组） */
 export const PHASE_PREREQUISITES: Record<string, PrerequisiteItem[]> = {
-  analyze: ["inventory-index.json", "inventory.json", "inventory-packages"],
+  analyze: ["inventory-index.json", "inventory.json", "inventory-packages", "analysis.json"],
   plan: ["inventory-index.json", "inventory.json", "inventory-packages", "analysis.json", "analysis-packages"],
   scaffold: ["plan.json", "inventory-index.json", "inventory.json", "inventory-packages"],
   translate: ["inventory-index.json", "inventory.json", "inventory-packages", "analysis.json", "analysis-packages", "plan.json", "scaffold.json"],

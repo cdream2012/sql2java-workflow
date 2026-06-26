@@ -1,0 +1,44 @@
+# sql2java 数据库配置样例（PostgreSQL / GaussDB）
+#
+# 用法：将本文件复制为 db.properties 放到源码目录下（自动发现），
+#       或通过 --db_conf /path/to/db.properties 显式指定。
+# 建议：将 db.properties 加入 .gitignore，避免密码泄露。
+
+# 数据库驱动程序类名（pg 驱动不需要 JDBC driver class，可省略；非 PG 驱动仅告警）
+db.driver=org.postgresql.Driver
+
+# JDBC 连接 URL
+#   PostgreSQL : jdbc:postgresql://主机名:端口号/数据库名
+#   GaussDB    : jdbc:opengauss://主机名:端口号/数据库名  (或 jdbc:gaussdb://...)
+# 可追加 ?sslmode=require/disable/verify-full 等查询参数
+db.url=jdbc:postgresql://localhost:5432/my_database
+
+# 数据库登录用户名（也接受 db.user 别名）
+db.username=postgres
+
+# 数据库登录密码（明文，或用 env:VAR_NAME 引用环境变量）
+db.password=secret_password
+# db.password=env:PG_PASSWORD
+
+# --- 可选的高级参数配置 ---
+# 建立连接的超时时间（秒）→ connectionTimeoutMillis
+db.connectTimeout=10
+# 语句执行超时时间（秒）→ 连接后 SET statement_timeout
+db.socketTimeout=30
+
+# 要拉取的 schema（默认 public）
+# db.schema=public
+
+# --- 可选的名称过滤（SQL LIKE 语法，仅拉取匹配对象）---
+# db.tableFilter=t_%
+# db.viewFilter=v_%
+# db.sequenceFilter=seq_%
+# db.triggerFilter=trg_%
+# db.typeFilter=t_%
+
+# --- 可选的拉取开关（默认均为 true，设为 false 跳过）---
+# db.fetchTables=true
+# db.fetchTriggers=true
+# db.fetchViews=true
+# db.fetchSequences=true
+# db.fetchObjectTypes=true

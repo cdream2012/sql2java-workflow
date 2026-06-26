@@ -3,21 +3,21 @@
 -- actual_qty 是事后回填的实际出货，与 forecast_qty 比对算预测准确率
 -- period_date 统一取月度首日(每月 1 号)，时间桶按月
 
-create table t_demand_forecast (
-    forecast_id     number(18)     not null,
-    item_id         number(18)     not null,
-    warehouse_id    number(18),
-    period_date     date           not null,
-    forecast_qty    number(18,4)   default 0 not null,
-    actual_qty      number(18,4),
-    method          varchar2(16)   default 'MA3' not null,
-    run_id          number(18),
-    created_at      timestamp      default current_timestamp not null,
-    constraint pk_demand_forecast primary key (forecast_id),
-    constraint uk_forecast unique (item_id, warehouse_id, period_date, method),
-    constraint fk_forecast_item foreign key (item_id)      references t_item(item_id),
-    constraint fk_forecast_wh   foreign key (warehouse_id) references t_warehouse(warehouse_id),
-    constraint ck_forecast_method check (method in ('MA3','MA6','TREND','MANUAL'))
+CREATE TABLE t_demand_forecast (
+    forecast_id     NUMBER(18)     NOT NULL,
+    item_id         NUMBER(18)     NOT NULL,
+    warehouse_id    NUMBER(18),
+    period_date     DATE           NOT NULL,
+    forecast_qty    NUMBER(18,4)   DEFAULT 0 NOT NULL,
+    actual_qty      NUMBER(18,4),
+    method          VARCHAR2(16)   DEFAULT 'MA3' NOT NULL,
+    run_id          NUMBER(18),
+    created_at      TIMESTAMP      DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT pk_demand_forecast PRIMARY KEY (forecast_id),
+    CONSTRAINT uk_forecast UNIQUE (item_id, warehouse_id, period_date, method),
+    CONSTRAINT fk_forecast_item FOREIGN KEY (item_id)      REFERENCES t_item(item_id),
+    CONSTRAINT fk_forecast_wh   FOREIGN KEY (warehouse_id) REFERENCES t_warehouse(warehouse_id),
+    CONSTRAINT ck_forecast_method CHECK (method IN ('MA3','MA6','TREND','MANUAL'))
 );
 
-comment on column t_demand_forecast.method is 'MA3/MA6 三/六期移动平均 / TREND 线性趋势 / MANUAL 人工录入';
+COMMENT ON COLUMN t_demand_forecast.method IS 'MA3/MA6 三/六期移动平均 / TREND 线性趋势 / MANUAL 人工录入';

@@ -5,6 +5,9 @@
     "zod": "4.1.8"
   },
   "optionalDependencies": {
-    "oracledb": "^7.0.0"
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.0"
   }
 }

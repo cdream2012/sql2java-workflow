@@ -15,8 +15,8 @@
                    │
                    ▼
 ┌──────────────────────────────────────────────────┐
-│  Schema 预获取（可选，有 db.xml 时触发）            │
-│  schema-fetcher.ts → oracledb 7.x thin mode       │
+│  Schema 预获取（可选，有 db.properties 时触发）      │
+│  schema-fetcher.ts → pg 驱动（PostgreSQL/GaussDB） │
 │  产出：ddl-output/ + DDL 文件                      │
 └──────────────────┬───────────────────────────────┘
                    │
@@ -37,7 +37,7 @@
                                                 └───────┘             └→ fix → review（增量回到触发阶段）
 ```
 
-**单流水线**：8 个阶段 + 1 个条件分支阶段（fix），一个 runId，无条件前进 + review/verify 失败时进入 fix 循环（增量重做）。fix 完成后直接回到 review 审查，dedup 只在主线 translate 后执行一次。启动前可选执行 Schema 预获取（发现 `db.xml` 时自动连接数据库拉取 DDL）。
+**单流水线**：8 个阶段 + 1 个条件分支阶段（fix），一个 runId，无条件前进 + review/verify 失败时进入 fix 循环（增量重做）。fix 完成后直接回到 review 审查，dedup 只在主线 translate 后执行一次。启动前可选执行 Schema 预获取（发现 `db.properties` 时自动连接 PostgreSQL/GaussDB 拉取 DDL）。
 
 ## 项目结构
 
@@ -58,7 +58,7 @@ sql2java-workflow/
 │   │   ├── workflow-definitions.ts   # 工作流定义 + TransitionRule + PHASE_PREREQUISITES
 │   │   ├── artifact-schemas.ts       # Artifact Zod Schemas + getArtifactFilename + getPerPackageSchema
 │   │   ├── plsql-scanner.ts          # PL/SQL AST/regex 预扫描器
-│   │   ├── schema-fetcher.ts         # 数据库 Schema 自动获取（db.xml → ddl-output/）
+│   │   ├── schema-fetcher.ts         # 数据库 Schema 自动获取（db.properties → ddl-output/，PG/GaussDB）
 │   │   ├── refname.ts                # refName 重载规范（生成/解析/校验限定名）
 │   │   ├── rejection-guidance.ts     # PHASE_REJECTION_GUIDANCE + enhanceRejection
 │   │   ├── cross-platform.ts         # 跨平台文件操作（atomicRename/safeRm/safeWriteFile）
@@ -72,7 +72,7 @@ sql2java-workflow/
 │   │   └── type-mappings.ts          # Oracle → Java/JDBC 类型映射表
 │   ├── plugins/
 │   │   └── workflow-engine.ts        # 插件入口（workflow 工具 + hooks + artifact 校验）
-│   └── package.json                  # 依赖：@opencode-ai/plugin, zod, ts-plsql-parser, oracledb(optional)
+│   └── package.json                  # 依赖：@opencode-ai/plugin, zod, ts-plsql-parser, pg(optional)
 ├── resources/
 │   ├── mfg_erp_sql/                  # 完整示例 PL/SQL 输入（schema/pkg/func/trigger/type）
 │   ├── mfg_erp_sql_mini/             # 中等规模示例（子集）
@@ -126,13 +126,17 @@ sql2java-workflow/
 - **fix 循环**：review/verify failed → fix → review → verify（fix 修改翻译后直接回到 review 审查）
 - **exhausted 策略**：globalMax=5, phaseMax=5, 任一达限 → `completed_with_issues`
 
+### 分片
+
+analyze / translate / review 按 package 分片（`maxPackagesPerShard=1`，每分片 1 包），基于 `analysis.json.translationOrder`（Tarjan SCC 拓扑序）。analyze/review 拍平 SCC 每包独立分片；translate 保留 SCC 组共处（互依赖包同 session 拿到对方 Java 签名）。分片模式下上游 artifact 收窄到本分片包（`narrowUpstreamForShard`），review 阶段 `translations/*` 收窄到 targetPackages（本分片包），避免 worker 读到全部包越界处理。
+
 ## 设计决策
 
 | ID | 决策 | 说明 |
 |----|------|------|
 | D1 | advance condition | LLM 传入 result，引擎匹配 TransitionRule |
 | D2 | fix exhausted | 双层策略：globalMax=5, phaseMax=5 |
-| D3 | fix 增量重做 | fix 后只重审修改过的包；fix 失败未 exhausted 返回 fixFailed=true（区别于 rejected），LLM 调 retry 重试 |
+| D3 | fix 增量重做 | fix 后只重审修改过的包；fix 失败未 exhausted 返回 fixFailed=true（区别于 rejected），LLM 调 retry 重试。fix→review 增量回环注入 previousFindings（上次 mustFix），reviewer 先逐项核对旧问题是否修复，未修复的须再次列入 mustFix |
 | D4 | confirm 时序 | waitingForConfirmation=true 时不激活 agent |
 | D5 | artifact 写入 | agent 自己写 artifact，advance 时从磁盘做 Zod 校验；fix-failed 时跳过 Zod 校验 |
 | D6 | 持久化 | run.json 全量单文件存储 |
@@ -147,24 +151,51 @@ sql2java-workflow/
 | D15 | OR 前置语义 | PHASE_PREREQUISITES 支持 string[] 数组组（如 fix 的 summary 文件二选一） |
 | D16 | fix retry 清理 | retry 时清理残留 fix.json，重置 entry status + completedAt |
 | D17 | artifact 缓存 | 单次 advance 内缓存磁盘读取，advance 结束后清除 |
-| D18 | Schema 预获取 | 发现 db.xml 时自动连接 Oracle 拉取 DDL 到 ddl-output/，纯 JS thin mode，不侵入 phase 链 |
+| D18 | Schema 预获取 | 发现 db.properties 时自动连接 PostgreSQL/GaussDB 拉取 DDL 到 ddl-output/，pg 驱动，不侵入 phase 链 |
 | D19 | Java 代码规约注入 | docs/java-code-spec.md 统一规约自动注入 java-architect / translator / reviewer 三个 agent |
 | D20 | dedup 公共模块抽取 | translate 完成后扫描所有包，检测跨包重复代码（DTO/工具方法/常量/异常类/MyBatis 片段），抽取为共享模块并更新引用；不修改 Service 接口和 SQL 内容 |
 | D21 | L3 质量门控 | 确定性数值门控：G1 翻译完成率≥0.8 / G3 review 分数≥70 / G6 测试通过率≥0.7 |
 | D22 | rejection guidance | 每阶段的拒绝引导，鼓励重做而非修补 JSON |
 | D23 | 跨平台文件操作 | atomicRename/safeRm/safeWriteFile 处理 Windows 文件锁定 |
 | D24 | 用户自定义规约 | `--spec` 参数指定 Markdown 规约文件，按 `##` 章节覆盖内置 java-code-spec.md 同名章节，独有章节追加；目录结构从"工程结构"章节提取 |
+| D25 | 自然语言参数解析 + run-context | `/sql2java` 支持自然语言输入，先提取 CLI flag（--db_conf/--spec/--mainEntry）再对剩余文本做字段抽取（path/dbConf/specConf/mainEntry/phases）；start 时把输入参数 + runId + 目录写入 `run-context.json` 作为稳固快照，resume 时兜底恢复 metadata。mainEntry（翻译起点/对外门面包）当前只采集+存储+注入 runtime context，plan/scaffold 消费留后续 |
 
 ## 命令用法
 
+支持**自然语言**或 **CLI flag** 两种输入风格。解析器先提取 flag，剩余文本做自然语言参数提取，抽不全的必填字段（源码目录）会追问用户。
+
+### 自然语言（推荐）
+
+```
+/sql2java 帮我把 /path/sql 下的存储过程转成 java，配置在 db.properties，主入口是 ORDER_PKG
+/sql2java /path/sql                          # 纯路径 → 端到端全流程
+/sql2java 看下状态                            # → status
+/sql2java 继续上次                            # → resume
+```
+
+### CLI flag（兼容老语法）
+
 ```
 /sql2java <path>                              # 端到端全流程
-/sql2java --db_conf db.xml <path>             # 指定数据库配置文件
+/sql2java --db_conf db.properties <path>      # 指定数据库配置文件
 /sql2java --spec project-spec.md <path>       # 指定用户自定义代码规约文件
-/sql2java --status                            # 查看工作流状态
-/sql2java --resume                            # 断点续传
+/sql2java --mainEntry ORDER_PKG <path>        # 指定翻译起点/对外门面包
+/sql2java status                              # 查看工作流状态
+/sql2java resume                              # 断点续传
 /sql2java --phases plan,scaffold <path>       # 指定阶段执行
 ```
+
+### 可提取参数
+
+| 字段 | 必填 | 缺省规则 |
+|------|------|----------|
+| `path`（PL/SQL 源码目录） | 是 | 抽不出则追问用户，不自行编造 |
+| `dbConf`（db.properties 路径） | 否 | 在 `path` 下自动查找 `db.properties` |
+| `specConf`（规约文件） | 否 | 在 `path` 下找 `project-spec.md`；没有用内置默认规约 |
+| `mainEntry`（翻译起点/对外门面包名） | 否 | 缺省不填，由 inventory/analyze 推断或后续补充 |
+| `phases` / `mode` | 否 | `status` / `resume` / 指定阶段 / 端到端全流程 |
+
+解析结果连同用户原始输入写入 `.workflow-artifacts/{runId}/run-context.json`，`resume` 时作为输入参数的兜底事实源。
 
 ## 后台运行长程任务
 
@@ -173,7 +204,7 @@ sql2java 工作流涉及多个阶段，完整转译耗时较长。可通过 open
 ### 前置条件
 
 - 使用 `--dangerously-skip-permissions` 自动批准权限（包括 plan 阶段的 confirm）
-- 配合 `--resume` 可在 LLM 上下文溢出或中断后断点续传
+- 配合 `resume` 可在 LLM 上下文溢出或中断后断点续传
 
 ### 方案一：nohup 后台直接运行
 
@@ -202,7 +233,7 @@ opencode run "/sql2java /path/to/plsql" \
 ### 方案三：断点续传（中断后恢复）
 
 ```bash
-nohup opencode run "/sql2java --resume" \
+nohup opencode run "/sql2java resume" \
   --dangerously-skip-permissions \
   --format json \
   -m zai-coding-plan/glm-5.1 \
@@ -231,10 +262,12 @@ opencode models zai-coding-plan  # 只看 z.ai 模型
 ```
 .workflow-artifacts/{runId}/
 ├── run.json                             # WorkflowRun 持久化
+├── run-context.json                     # 输入参数 + 目录稳固快照（start 时写一次，resume 兜底）
 ├── inventory-index.json                 # 预扫描索引（machine-generated，start 时生成）
 ├── inventory-packages/                  # 逐包 inventory（LLM enriched）
 │   ├── PKG_ORDER.json
-│   └── PKG_UTIL.json
+│   ├── PKG_UTIL.json
+│   └── __STANDALONE_FN_ABC_CLASS__.json # standalone 过程虚拟包
 ├── inventory.json                       # 索引 + DDL 数据（tables/triggers/views/sequences）
 ├── analysis-packages/                   # 逐包子程序结构
 │   ├── exc_pkg.json
@@ -253,7 +286,7 @@ opencode models zai-coding-plan  # 只看 z.ai 模型
 ├── verify-summary.json
 └── _events.log
 
-源码目录下（有 db.xml 时自动生成）：
+源码目录下（有 db.properties 时自动生成）：
 {sourcePath}/
 ├── db.xml                               # 数据库配置（用户放置）
 └── ddl-output/                          # Schema 预获取产出
@@ -279,11 +312,17 @@ opencode models zai-coding-plan  # 只看 z.ai 模型
 | **AST** | `@griffithswaite/ts-plsql-parser`（ANTLR4） | parser 安装成功 |
 | **Regex 降级** | Node.js fs + 正则 + 行号追踪 | parser 安装失败 |
 
-**提取内容**：Package spec/body 结构、procedure/function 签名、DDL 对象（table/trigger/view/sequence）、调用关系图（PKG.PROC 模式）。
+**提取内容**：Package spec/body 结构、procedure/function 签名、DDL 对象（table/trigger/view/sequence）、调用关系图（PKG.PROC 模式）、standalone 过程（独立 CREATE PROCEDURE/FUNCTION）。
+
+**standalone 虚拟包**：独立存储过程/函数（不属于任何 package）注入为 `__STANDALONE_{NAME}__` 虚拟包加入 packages，复用 per-package 流水线全链路处理（每过程一包规避爆上下文，不引入通用包拆分）。`standaloneProcedures` 字段保留作 metrics。Java 包名映射归入 `standalone` 子包。
 
 **Regex 模式已知处理**：
 - BEGIN/END 深度追踪排除 `END IF` / `END LOOP` / `END CASE`
 - 支持无参过程检测（`PROCEDURE init IS`）
+- 多 CREATE 语句 matchAll 全量提取（一个 .sql 多个 standalone）
+- 跨行块注释 `/* */` 剥离，避免污染 BEGIN/END 深度计数
+- 过程嵌套栈：局部过程不截断外层 lineRange
+- 超长参数列表过程识别（不设行数上限）
 
 ## Schema 预获取
 
@@ -342,7 +381,7 @@ src/main/java/{packageBase}/service
 - 用户未覆盖的内置章节 → 保留默认
 - `## 工程结构` 等目录结构章节 → 自动提取路径列表
 
-**文件发现优先级**：`--spec <path>` → `<sourcePath>/project-spec.md` → `<sourcePath>/project-structure.md`（旧格式，仅目录结构）
+**文件发现优先级**：`--spec <path>` → `<sourcePath>/project-spec.md`
 
 ## Workflow Engine 核心方法
 

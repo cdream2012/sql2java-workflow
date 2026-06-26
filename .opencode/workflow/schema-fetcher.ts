@@ -1,18 +1,19 @@
 /**
- * Schema Fetcher — 数据库 Schema 自动获取
+ * Schema Fetcher — 数据库 Schema 自动获取（PostgreSQL / GaussDB）
  *
- * 在工作流启动前的预检步骤：当发现 db.xml 数据库配置时，
- * 连接 Oracle 数据库提取 schema 元数据，生成 DDL 文件。
+ * 在工作流启动前的预检步骤：当发现 db.properties 数据库配置时，
+ * 连接 PostgreSQL/GaussDB 数据库提取 schema 元数据，生成 DDL 文件。
  *
- * 触发条件：sourcePath 下存在 db.xml 或通过 --db_conf 指定配置文件。
+ * 触发条件：sourcePath 下存在 db.properties 或通过 --db_conf 指定配置文件。
  * 无论是否已有 PL/SQL 文件，只要找到配置就会拉取 schema。
  *
  * 设计原则：
  * - 纯前置步骤，不侵入 workflow phase 链
- * - 动态 import，不使用时不加载 oracledb
- * - 使用 oracledb 7.x thin mode（纯 JS，无需 Oracle Instant Client）
- * - 生成的 DDL 格式与现有资源文件一致，scanner 无需改动
- * - 配置文件使用 Oracle JDBC 连接描述符 XML 格式（db.xml）
+ * - 动态 import，不使用时不加载 pg
+ * - 通过 pg 驱动（libpq wire protocol）连接，兼容 PostgreSQL 与 GaussDB(openGauss)
+ * - 生成的 DDL 为 PostgreSQL 语法；视图/触发器用 pg_get_*def 原样返回
+ *   （GaussDB Oracle 兼容模式下天然为 PL/SQL 语法）
+ * - 配置文件使用 properties 格式（db.properties）
  */
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from "node:fs"
@@ -21,23 +22,19 @@ import { atomicRename, safeRm } from "./cross-platform"
 import { GENERATED_OUTPUT_DIR, GENERATED_MARKER, GENERATED_MARKER_ID } from "./constants"
 import { getLogger } from "./workflow-logger"
 
-// ── oracledb 常量 ──────────────────────────────────────────────────────────
-// 从 oracledb 库动态获取，通过 OraCtx 注入各 fetch 函数，避免模块级可变状态。
-
-/** oracledb 常量上下文，由 fetchSchemaIfNeeded 创建并注入各 fetch 函数 */
-interface OraCtx {
-  outFormatObject: number   // oracledb.OUT_FORMAT_OBJECT
-  stringType: any           // oracledb.STRING（DbType 对象）
-}
-
 // ── 内部配置类型 ──────────────────────────────────────────────────────────
 
-/** 从 db.xml 解析后的内部配置结构 */
+/** 从 db.properties 解析后的内部配置结构 */
 interface DbConfig {
-  connectString: string
+  host: string
+  port: number
+  database: string
   user: string
   password: string
-  schema?: string
+  schema: string                 // 默认 "public"
+  ssl?: boolean                  // 由 url ?sslmode= 推导
+  connectionTimeoutMillis?: number
+  statementTimeoutMillis?: number
   fetchTables?: boolean
   fetchTriggers?: boolean
   fetchViews?: boolean
@@ -52,71 +49,78 @@ interface DbConfig {
 
 // ── 元数据类型 ──────────────────────────────────────────────────────────────
 
-interface OracleColumn {
+interface PgColumn {
   tableName: string
   columnName: string
-  dataType: string
-  dataLength: number | null
-  dataPrecision: number | null
-  dataScale: number | null
-  nullable: string   // "Y" | "N"
-  dataDefault: string | null
-  charLength: number | null
-  charUsed: string | null   // "C" = char, "B" = byte
-  columnId: number
+  dataType: string               // information_schema.data_type（如 "character varying"）
+  udtName: string                // 实际类型名（如 "varchar"、枚举/复合类型名、"_int4" 数组）
+  charMaxLength: number | null
+  numericPrecision: number | null
+  numericScale: number | null
+  datetimePrecision: number | null
+  nullable: string               // "YES" | "NO"
+  columnDefault: string | null
+  ordinalPosition: number
+  identityGeneration: string | null  // "ALWAYS" | "BY DEFAULT" | null（非 identity 列）
 }
 
-interface OracleConstraint {
-  constraintName: string
-  constraintType: string    // P=PK, U=Unique, R=FK, C=Check
+interface PgConstraint {
+  conname: string
+  contype: string                // p=PK, u=Unique, f=FK, c=Check
   tableName: string
-  columns: string[]
-  searchCondition: string | null
-  refTableName: string | null
-  refColumns: string[]
-  deleteRule: string | null
-  status: string
+  definition: string             // pg_get_constraintdef 返回的定义文本
 }
 
-interface OracleTrigger {
+interface PgTrigger {
   triggerName: string
-  tableName: string
-  triggeringEvent: string
-  triggerType: string
-  whenClause: string | null
-  triggerBody: string
-  status: string
+  definition: string             // pg_get_triggerdef 返回的完整 CREATE TRIGGER 文本
 }
 
-interface OracleView {
+interface PgView {
   viewName: string
-  text: string
+  definition: string             // pg_views.definition（SELECT 体）
 }
 
-interface OracleSequence {
+interface PgSequence {
   sequenceName: string
-  minValue: number | null
-  maxValue: number | null
-  incrementBy: number
-  cacheSize: number | null
-  cycleFlag: string    // "Y" | "N"
-  orderFlag: string
-  lastNumber: number
+  dataType: string
+  startValue: string | null
+  minValue: string | null
+  maxValue: string | null
+  increment: string | null
+  cycleOption: string            // "YES" | "NO"
+  cacheSize: number | null       // pg_sequences.cache_size；回退路径下为 null
 }
 
-interface OracleObjectType {
+interface PgEnumValue {
+  label: string
+}
+
+interface PgCompositeField {
+  attname: string
+  dataType: string
+}
+
+interface PgObjectType {
   typeName: string
-  typeCode: string     // "OBJECT", "COLLECTION", etc.
-  source: string       // 重建的 CREATE OR REPLACE TYPE DDL
-  bodySource: string | null  // TYPE BODY 源码（如有）
+  typtype: string                // c=composite, e=enum, d=domain
+  // enum
+  enumLabels?: PgEnumValue[]
+  // composite
+  compositeFields?: PgCompositeField[]
+  // domain
+  baseType?: string | null
+  notNull?: boolean
+  defaultExpr?: string | null
+  checkConstraints?: string[]    // pg_get_constraintdef 文本
 }
 
-interface OracleTableComment {
+interface PgTableComment {
   tableName: string
   comments: string
 }
 
-interface OracleColumnComment {
+interface PgColumnComment {
   tableName: string
   columnName: string
   comments: string
@@ -131,150 +135,180 @@ export interface SchemaFetchResult {
   outputDir: string
 }
 
-// ── 配置加载（db.xml — Oracle JDBC 连接描述符格式）──────────────────────
+// ── 配置加载（db.properties — properties 格式）──────────────────────────────
 
 /**
- * 从 XML 文本中提取指定标签的文本内容。
+ * 解析 properties 文本为键值 Map。
  *
- * 使用字符串定位代替正则，正确处理值中含 '<' 等特殊字符的情况
- * （如密码 `<p@ss<w0rd`）。不依赖 XML 解析库。
- *
- * 适用于 db.xml 这类简单结构（无 CDATA、无同名嵌套标签）。
+ * 规则：
+ * - `#` 或 `!` 开头为注释，跳过
+ * - 空行跳过
+ * - 以第一个 `=` 切分 key/value（key 不含 `=`）
+ * - key/value 均 trim，值不去引号
  */
-function extractXmlTag(xml: string, tagName: string): string | null {
-  // 构建不区分大小写的开标签：用正则仅匹配开标签位置
-  const openRe = new RegExp(`<${tagName}(?:\\s[^>]*)?\\s*>`, "i")
-  const openMatch = xml.match(openRe)
-  if (!openMatch) return null
-
-  const contentStart = openMatch.index! + openMatch[0].length
-  const closeTag = `</${tagName}>`
-
-  // 转义 regex 元字符，防止 tagName 中含 . + [ 等字符时匹配错误
-  const escapedCloseTag = closeTag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  const rest = xml.slice(contentStart)
-  const closeIdx = rest.search(new RegExp(escapedCloseTag, "i"))
-  if (closeIdx < 0) return null
-
-  return rest.slice(0, closeIdx).trim() || null
+function parseProperties(text: string): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (line === "" || line.startsWith("#") || line.startsWith("!")) continue
+    const eq = line.indexOf("=")
+    if (eq < 0) continue
+    const key = line.slice(0, eq).trim()
+    const value = line.slice(eq + 1).trim()
+    if (key === "") continue
+    map.set(key, value)
+  }
+  return map
 }
 
 /**
- * 解析 JDBC URL 为 Oracle 连接参数。
+ * 解析 PostgreSQL/GaussDB JDBC URL 为连接参数。
  *
- * 支持三种格式：
- *   jdbc:oracle:thin:@host:port/SERVICE_NAME   （推荐）
- *   jdbc:oracle:thin:@host:port:SID            （旧式）
- *   jdbc:oracle:thin:@(description=...)         （TNS 描述符）
+ * 支持前缀：jdbc:postgresql://、jdbc:opengauss://、jdbc:gaussdb://
+ * 格式：jdbc:<dialect>://host[:port]/database[?sslmode=...]
  *
- * 返回可直接作为 oracledb.getConnection 参数的 connectString。
+ * 返回 host/port/database 以及可选的 sslmode。
  */
-function parseJdbcUrl(jdbcUrl: string): string {
-  // 去掉 jdbc:oracle:thin:@ 前缀
-  const thinPrefix = "jdbc:oracle:thin:@"
-  const idx = jdbcUrl.toLowerCase().indexOf(thinPrefix)
-  if (idx < 0) {
-    throw new Error(`无效的 JDBC URL（缺少 ${thinPrefix} 前缀）: ${jdbcUrl}`)
+export function parsePgJdbcUrl(jdbcUrl: string): {
+  host: string
+  port: number
+  database: string
+  sslmode?: string
+} {
+  const m = jdbcUrl.match(/^jdbc:(?:postgresql|opengauss|gaussdb):\/\/([^/?]+)/i)
+  if (!m) {
+    throw new Error(
+      `无效的 JDBC URL（需 jdbc:postgresql://host:port/db 或 jdbc:opengauss://...）: ${jdbcUrl}`,
+    )
   }
-  const connPart = jdbcUrl.slice(idx + thinPrefix.length)
-
-  // TNS 描述符格式：直接透传
-  if (connPart.startsWith("(")) {
-    return connPart
+  const authority = m[1]
+  const slash = jdbcUrl.indexOf("/", m[0].length)
+  const database = slash >= 0 ? jdbcUrl.slice(slash + 1) : ""
+  const queryIdx = database.indexOf("?")
+  let sslmode: string | undefined
+  let db = database
+  if (queryIdx >= 0) {
+    db = database.slice(0, queryIdx)
+    const qs = database.slice(queryIdx + 1)
+    for (const pair of qs.split("&")) {
+      const [k, v] = pair.split("=", 2)
+      if (k === "sslmode") sslmode = v
+    }
   }
 
-  // Easy Connect 格式：host:port/SERVICE_NAME 或 host:port:SID
-  return connPart
+  let host = authority
+  let port = 5432
+  const colon = authority.lastIndexOf(":")
+  // 注意排除 IPv6 字面量 [::1] —— 此处用 lastIndexOf(':') 并校验冒号后为纯数字端口
+  if (colon > 0 && /^\d+$/.test(authority.slice(colon + 1))) {
+    host = authority.slice(0, colon)
+    port = parseInt(authority.slice(colon + 1), 10)
+  }
+  // 去除 IPv6 方括号
+  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1)
+
+  if (!db) {
+    throw new Error(`JDBC URL 缺少数据库名: ${jdbcUrl}`)
+  }
+  return { host, port, database: db, sslmode }
+}
+
+/** 布尔解析：仅 "false"（不区分大小写）为 false，其余/缺省为 fallback */
+function parseBool(val: string | undefined, fallback: boolean): boolean {
+  if (val == null || val === "") return fallback
+  return val.toLowerCase() !== "false"
 }
 
 /**
- * 从 db.xml（Oracle JDBC 连接描述符格式）解析配置。
+ * 从 db.properties 文本解析配置。
  *
- * 支持的 XML 结构：
- * ```xml
- * <database>
- *   <url>jdbc:oracle:thin:@host:1521/ORCLCDB</url>
- *   <user>schema_reader</user>
- *   <password>tiger</password>
- *   <schema>ERP_OWNER</schema>               <!-- 可选 -->
- *   <tableFilter>T_%</tableFilter>            <!-- 可选，SQL LIKE 语法 -->
- *   <triggerFilter>TRG_%</triggerFilter>      <!-- 可选 -->
- *   <viewFilter>V_%</viewFilter>              <!-- 可选 -->
- *   <sequenceFilter>SEQ_%</sequenceFilter>    <!-- 可选 -->
- *   <typeFilter>T_%</typeFilter>              <!-- 可选 -->
- *   <fetchTables>true</fetchTables>            <!-- 可选，默认 true -->
- *   <fetchTriggers>true</fetchTriggers>       <!-- 可选，默认 true -->
- *   <fetchViews>true</fetchViews>             <!-- 可选，默认 true -->
- *   <fetchSequences>true</fetchSequences>     <!-- 可选，默认 true -->
- *   <fetchObjectTypes>true</fetchObjectTypes> <!-- 可选，默认 true -->
- * </database>
- * ```
+ * 必填：db.url、db.username（或 db.user）、db.password
+ * 可选：db.driver（忽略，非 postgres 驱动仅 warning）、db.connectTimeout（秒）、
+ *      db.socketTimeout（秒）、db.schema（默认 public）、
+ *      db.tableFilter/viewFilter/sequenceFilter/triggerFilter/typeFilter（SQL LIKE）、
+ *      db.fetchTables/fetchTriggers/fetchViews/fetchSequences/fetchObjectTypes（默认 true）
  */
-function parseDbXml(xmlContent: string, filePath: string): DbConfig {
-  const url = extractXmlTag(xmlContent, "url")
+function parseDbProperties(text: string, filePath: string): DbConfig {
+  const props = parseProperties(text)
+
+  const url = props.get("db.url")
   if (!url) {
-    throw new Error(`db.xml 缺少 <url> 标签: ${filePath}`)
+    throw new Error(`db.properties 缺少 db.url: ${filePath}`)
   }
-
-  const user = extractXmlTag(xmlContent, "user")
+  const user = props.get("db.username") ?? props.get("db.user")
   if (!user) {
-    throw new Error(`db.xml 缺少 <user> 标签: ${filePath}`)
+    throw new Error(`db.properties 缺少 db.username: ${filePath}`)
+  }
+  const password = props.get("db.password")
+  if (password == null) {
+    throw new Error(`db.properties 缺少 db.password: ${filePath}`)
   }
 
-  const password = extractXmlTag(xmlContent, "password")
-  if (!password) {
-    throw new Error(`db.xml 缺少 <password> 标签: ${filePath}`)
+  const driver = props.get("db.driver")
+  if (driver && !/postgres/i.test(driver)) {
+    getLogger().warn(
+      "[schema-fetcher]",
+      `db.driver=${driver} 非 PostgreSQL 驱动，将忽略（pg 驱动不需要 JDBC driver class）`,
+    )
   }
 
-  const connectString = parseJdbcUrl(url)
+  const parsed = parsePgJdbcUrl(url)
 
   const config: DbConfig = {
-    connectString,
+    host: parsed.host,
+    port: parsed.port,
+    database: parsed.database,
     user,
     password,
+    schema: props.get("db.schema") || "public",
   }
 
-  // 可选字段
-  const schema = extractXmlTag(xmlContent, "schema")
-  if (schema) config.schema = schema
+  if (parsed.sslmode) {
+    // require/prefer/verify-ca/verify-full 需要 SSL；disable/allow 不强制
+    config.ssl = parsed.sslmode !== "disable" && parsed.sslmode !== "allow"
+  }
+
+  const connectTimeout = props.get("db.connectTimeout")
+  if (connectTimeout) {
+    const secs = Number(connectTimeout)
+    if (Number.isFinite(secs) && secs > 0) config.connectionTimeoutMillis = secs * 1000
+  }
+
+  const socketTimeout = props.get("db.socketTimeout")
+  if (socketTimeout) {
+    const secs = Number(socketTimeout)
+    if (Number.isFinite(secs) && secs > 0) config.statementTimeoutMillis = secs * 1000
+  }
 
   // 名称过滤
-  const tableFilter = extractXmlTag(xmlContent, "tableFilter")
-  if (tableFilter) config.tableFilter = tableFilter
-
-  const triggerFilter = extractXmlTag(xmlContent, "triggerFilter")
-  if (triggerFilter) config.triggerFilter = triggerFilter
-
-  const viewFilter = extractXmlTag(xmlContent, "viewFilter")
-  if (viewFilter) config.viewFilter = viewFilter
-
-  const sequenceFilter = extractXmlTag(xmlContent, "sequenceFilter")
-  if (sequenceFilter) config.sequenceFilter = sequenceFilter
-
-  const typeFilter = extractXmlTag(xmlContent, "typeFilter")
-  if (typeFilter) config.typeFilter = typeFilter
-
-  // 对象类型开关
-  const parseBool = (val: string | null, fallback: boolean): boolean => {
-    if (val === null) return fallback
-    return val.toLowerCase() !== "false"
+  const filters: Array<[keyof DbConfig, string]> = [
+    ["tableFilter", "db.tableFilter"],
+    ["triggerFilter", "db.triggerFilter"],
+    ["viewFilter", "db.viewFilter"],
+    ["sequenceFilter", "db.sequenceFilter"],
+    ["typeFilter", "db.typeFilter"],
+  ]
+  for (const [field, key] of filters) {
+    const v = props.get(key)
+    if (v) (config as Record<string, unknown>)[field as string] = v
   }
 
-  config.fetchTables = parseBool(extractXmlTag(xmlContent, "fetchTables"), true)
-  config.fetchTriggers = parseBool(extractXmlTag(xmlContent, "fetchTriggers"), true)
-  config.fetchViews = parseBool(extractXmlTag(xmlContent, "fetchViews"), true)
-  config.fetchSequences = parseBool(extractXmlTag(xmlContent, "fetchSequences"), true)
-  config.fetchObjectTypes = parseBool(extractXmlTag(xmlContent, "fetchObjectTypes"), true)
+  // 拉取开关
+  config.fetchTables = parseBool(props.get("db.fetchTables"), true)
+  config.fetchTriggers = parseBool(props.get("db.fetchTriggers"), true)
+  config.fetchViews = parseBool(props.get("db.fetchViews"), true)
+  config.fetchSequences = parseBool(props.get("db.fetchSequences"), true)
+  config.fetchObjectTypes = parseBool(props.get("db.fetchObjectTypes"), true)
 
   return config
 }
 
 /**
- * 加载 db.xml 数据库配置。
+ * 加载 db.properties 数据库配置。
  *
  * 发现顺序（优先级从高到低）：
  * 1. dbConfPath 参数（来自 --db_conf 命令行参数）— 不存在时报错
- * 2. sourcePath/db.xml（项目根目录自动发现）
+ * 2. sourcePath/db.properties（项目根目录自动发现）
  *
  * 返回 null 表示无配置文件（DDL-only 模式）。
  */
@@ -288,22 +322,22 @@ export function loadDbConfig(dbConfPath?: string, sourcePath?: string): DbConfig
     try {
       raw = readFileSync(dbConfPath, "utf-8")
     } catch (e: any) {
-      throw new Error(`无法读取 db.xml: ${e.message}`)
+      throw new Error(`无法读取 db.properties: ${e.message}`)
     }
-    return parseDbXml(raw, dbConfPath)
+    return parseDbProperties(raw, dbConfPath)
   }
 
   // 自动发现
   if (sourcePath) {
-    const autoPath = join(sourcePath, "db.xml")
+    const autoPath = join(sourcePath, "db.properties")
     if (!existsSync(autoPath)) return null
     let raw: string
     try {
       raw = readFileSync(autoPath, "utf-8")
     } catch (e: any) {
-      throw new Error(`无法读取 db.xml: ${e.message}`)
+      throw new Error(`无法读取 db.properties: ${e.message}`)
     }
-    return parseDbXml(raw, autoPath)
+    return parseDbProperties(raw, autoPath)
   }
 
   return null
@@ -319,417 +353,342 @@ function resolvePassword(password: string): string {
     const envVar = password.slice(4)
     const value = process.env[envVar]
     if (!value) {
-      throw new Error(`环境变量 ${envVar} 未设置（db.xml password 引用）`)
+      throw new Error(`环境变量 ${envVar} 未设置（db.properties password 引用）`)
     }
     return value
   }
   return password
 }
 
-/**
- * 从配置构建 oracledb 连接参数
- */
-function buildConnectionParams(config: DbConfig): Record<string, unknown> {
-  return {
-    user: config.user,
-    password: resolvePassword(config.password),
-    connectString: config.connectString,
-  }
-}
+// ── PostgreSQL 元数据查询 ──────────────────────────────────────────────────
 
-// ── Oracle 元数据查询 ────────────────────────────────────────────────────
-
+// pg.Client 动态加载，宽松类型（避免对可选依赖做强类型耦合）
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type OracledbConnection = any  // oracledb.Connection，动态加载
+type PgClient = any
 
 /**
  * 查询表列定义
  */
 async function fetchColumns(
-  conn: OracledbConnection,
-  owner: string,
+  client: PgClient,
+  schema: string,
   tableFilter: string | undefined,
-  ctx: OraCtx,
-): Promise<OracleColumn[]> {
+): Promise<PgColumn[]> {
   const sql = `
-    SELECT table_name, column_name, data_type, data_length, data_precision, data_scale,
-           nullable, data_default, char_length, char_used, column_id
-      FROM all_tab_columns
-     WHERE owner = :schema
-       AND table_name NOT LIKE 'BIN$%'
-       AND table_name NOT IN (SELECT view_name FROM all_views WHERE owner = :schema)
-       ${tableFilter ? "AND table_name LIKE :table_filter" : ""}
-     ORDER BY table_name, column_id`
+    SELECT c.table_name, c.column_name, c.data_type, c.udt_name,
+           c.character_maximum_length, c.numeric_precision, c.numeric_scale,
+           c.datetime_precision, c.is_nullable, c.column_default, c.ordinal_position,
+           c.identity_generation
+      FROM information_schema.columns c
+      JOIN information_schema.tables t
+        ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+     WHERE c.table_schema = $1
+       AND t.table_type = 'BASE TABLE'
+       ${tableFilter ? "AND c.table_name LIKE $2" : ""}
+     ORDER BY c.table_name, c.ordinal_position`
 
-  const binds: Record<string, unknown> = { schema: owner }
-  if (tableFilter) binds.table_filter = tableFilter
-
-  const result = await conn.execute(sql, binds, { outFormat: ctx.outFormatObject })
+  const params = tableFilter ? [schema, tableFilter] : [schema]
+  const result = await client.query(sql, params)
   return result.rows.map((r: Record<string, unknown>) => ({
-    tableName: r.TABLE_NAME as string,
-    columnName: r.COLUMN_NAME as string,
-    dataType: r.DATA_TYPE as string,
-    dataLength: r.DATA_LENGTH as number | null,
-    dataPrecision: r.DATA_PRECISION as number | null,
-    dataScale: r.DATA_SCALE as number | null,
-    nullable: r.NULLABLE as string,
-    dataDefault: r.DATA_DEFAULT as string | null,
-    charLength: r.CHAR_LENGTH as number | null,
-    charUsed: r.CHAR_USED as string | null,
-    columnId: r.COLUMN_ID as number,
+    tableName: r.table_name as string,
+    columnName: r.column_name as string,
+    dataType: r.data_type as string,
+    udtName: r.udt_name as string,
+    charMaxLength: r.character_maximum_length as number | null,
+    numericPrecision: r.numeric_precision as number | null,
+    numericScale: r.numeric_scale as number | null,
+    datetimePrecision: r.datetime_precision as number | null,
+    nullable: r.is_nullable as string,
+    columnDefault: r.column_default as string | null,
+    ordinalPosition: r.ordinal_position as number,
+    identityGeneration: (r.identity_generation as string | null) ?? null,
   }))
 }
 
 /**
  * 查询约束（PK/UK/FK/CHECK）
- * 返回按 constraint_name 聚合后的约束列表
+ * 使用 pg_get_constraintdef 直接获取定义文本，无需列级重建。
  */
 async function fetchConstraints(
-  conn: OracledbConnection,
-  owner: string,
+  client: PgClient,
+  schema: string,
   tableFilter: string | undefined,
-  ctx: OraCtx,
-): Promise<OracleConstraint[]> {
-  const filterClause = tableFilter
-    ? "AND c.table_name LIKE :table_filter"
-    : ""
-  const binds: Record<string, unknown> = { schema: owner }
-  if (tableFilter) binds.table_filter = tableFilter
-
-  // Oracle 12c+ 有 GENERATED 列，11g 没有（ORA-00904）
-  // 用模板拼接 SQL，通过 generatedClause 控制是否包含 GENERATED 过滤
-  const generatedClause = "AND c.generated = 'N'"
-  const buildConstraintSql = (includeGenerated: boolean) => `
-    SELECT c.constraint_name, c.constraint_type, c.table_name,
-           c.search_condition, c.r_constraint_name, c.delete_rule, c.status,
-           cc.column_name, cc.position,
-           r.table_name AS ref_table_name,
-           rcc.column_name AS ref_column_name, rcc.position AS ref_position
-      FROM all_constraints c
-      LEFT JOIN all_cons_columns cc
-        ON cc.owner = c.owner AND cc.constraint_name = c.constraint_name
-      LEFT JOIN all_constraints r
-        ON r.owner = c.r_owner AND r.constraint_name = c.r_constraint_name
-      LEFT JOIN all_cons_columns rcc
-        ON rcc.owner = r.owner AND rcc.constraint_name = r.constraint_name
-     WHERE c.owner = :schema
-       AND c.constraint_type IN ('P', 'U', 'R', 'C')
-       ${includeGenerated ? generatedClause : ""}
-       ${filterClause}
-     ORDER BY c.table_name, c.constraint_type, c.constraint_name, cc.position, rcc.position`
-
-  let result
-  try {
-    result = await conn.execute(buildConstraintSql(true), binds, { outFormat: ctx.outFormatObject })
-  } catch (e: any) {
-    if (e.message?.includes("ORA-00904")) {
-      getLogger().warn("[schema-fetcher]", "Oracle 版本不支持 GENERATED 列，回退到不带过滤的查询")
-      result = await conn.execute(buildConstraintSql(false), binds, { outFormat: ctx.outFormatObject })
-    } else {
-      throw e
-    }
-  }
-
-  // 按 constraint_name 聚合
-  const constraintMap = new Map<string, OracleConstraint>()
-  // 位置映射：用 Map<number, string> 替代 Set<string>，确保 columns/refColumns 按 position 排序
-  const colPosMap = new Map<string, Map<number, string>>()
-  const refColPosMap = new Map<string, Map<number, string>>()
-
-  for (const row of result.rows as Record<string, unknown>[]) {
-    const cName = row.CONSTRAINT_NAME as string
-    const cType = row.CONSTRAINT_TYPE as string
-
-    if (!constraintMap.has(cName)) {
-      constraintMap.set(cName, {
-        constraintName: cName,
-        constraintType: cType,
-        tableName: row.TABLE_NAME as string,
-        columns: [],
-        searchCondition: row.SEARCH_CONDITION as string | null,
-        refTableName: row.REF_TABLE_NAME as string | null,
-        refColumns: [],
-        deleteRule: row.DELETE_RULE as string | null,
-        status: row.STATUS as string,
-      })
-      colPosMap.set(cName, new Map())
-      refColPosMap.set(cName, new Map())
-    }
-
-    const colPos = colPosMap.get(cName)!
-    const refColPos = refColPosMap.get(cName)!
-
-    // 使用 position 索引，避免依赖 ORDER BY 保证的行顺序
-    const colName = row.COLUMN_NAME as string | null
-    const position = row.POSITION as number | null
-    if (colName && position != null && !colPos.has(position)) {
-      colPos.set(position, colName)
-    }
-
-    const refCol = row.REF_COLUMN_NAME as string | null
-    const refPosition = row.REF_POSITION as number | null
-    if (refCol && refPosition != null && !refColPos.has(refPosition)) {
-      refColPos.set(refPosition, refCol)
-    }
-  }
-
-  // 按 position 排序后填充 columns 和 refColumns
-  for (const [cName, constraint] of constraintMap) {
-    const colPos = colPosMap.get(cName)!
-    const refColPos = refColPosMap.get(cName)!
-    constraint.columns = Array.from(colPos.entries())
-      .sort(([a], [b]) => a - b)
-      .map(([, v]) => v)
-    constraint.refColumns = Array.from(refColPos.entries())
-      .sort(([a], [b]) => a - b)
-      .map(([, v]) => v)
-  }
-
-  return Array.from(constraintMap.values())
-}
-
-/**
- * 查询触发器
- */
-async function fetchTriggers(
-  conn: OracledbConnection,
-  owner: string,
-  triggerFilter: string | undefined,
-  ctx: OraCtx,
-): Promise<OracleTrigger[]> {
+): Promise<PgConstraint[]> {
   const sql = `
-    SELECT trigger_name, table_name, triggering_event, trigger_type,
-           when_clause, trigger_body, status
-      FROM all_triggers
-     WHERE owner = :schema
-       ${triggerFilter ? "AND trigger_name LIKE :trigger_filter" : ""}
-     ORDER BY trigger_name`
+    SELECT c.conname, c.contype, t.relname AS table_name,
+           pg_get_constraintdef(c.oid) AS definition
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+     WHERE n.nspname = $1
+       AND c.contype IN ('p', 'u', 'f', 'c')
+       ${tableFilter ? "AND t.relname LIKE $2" : ""}
+     ORDER BY t.relname, c.contype, c.conname`
 
-  const binds: Record<string, unknown> = { schema: owner }
-  if (triggerFilter) binds.trigger_filter = triggerFilter
-
-  const result = await conn.execute(sql, binds, {
-    outFormat: ctx.outFormatObject,
-    fetchInfo: { TRIGGER_BODY: { type: ctx.stringType } },
-  })
-
-  return result.rows
-    .map((r: Record<string, unknown>) => ({
-      triggerName: r.TRIGGER_NAME as string,
-      tableName: r.TABLE_NAME as string,
-      triggeringEvent: r.TRIGGERING_EVENT as string,
-      triggerType: r.TRIGGER_TYPE as string,
-      whenClause: r.WHEN_CLAUSE as string | null,
-      triggerBody: r.TRIGGER_BODY as string,
-      status: r.STATUS as string,
-    }))
-    // 过滤 DDL/事件触发器：它们的 triggerType 含 'EVENT'，
-    // 需要 ON DATABASE / ON SCHEMA 而非 ON table_name，当前不支持
-    .filter(t => !t.triggerType.toUpperCase().includes("EVENT"))
-}
-
-/**
- * 查询视图
- */
-async function fetchViews(
-  conn: OracledbConnection,
-  owner: string,
-  viewFilter: string | undefined,
-  ctx: OraCtx,
-): Promise<OracleView[]> {
-  const sql = `
-    SELECT view_name, text
-      FROM all_views
-     WHERE owner = :schema
-       ${viewFilter ? "AND view_name LIKE :view_filter" : ""}
-     ORDER BY view_name`
-
-  const binds: Record<string, unknown> = { schema: owner }
-  if (viewFilter) binds.view_filter = viewFilter
-
-  const result = await conn.execute(sql, binds, {
-    outFormat: ctx.outFormatObject,
-    fetchInfo: { TEXT: { type: ctx.stringType } },
-  })
-
+  const params = tableFilter ? [schema, tableFilter] : [schema]
+  const result = await client.query(sql, params)
   return result.rows.map((r: Record<string, unknown>) => ({
-    viewName: r.VIEW_NAME as string,
-    text: r.TEXT as string,
+    conname: r.conname as string,
+    contype: r.contype as string,
+    tableName: r.table_name as string,
+    definition: r.definition as string,
   }))
-}
-
-/**
- * 查询序列
- */
-async function fetchSequences(
-  conn: OracledbConnection,
-  owner: string,
-  sequenceFilter: string | undefined,
-  ctx: OraCtx,
-): Promise<OracleSequence[]> {
-  const sql = `
-    SELECT sequence_name, min_value, max_value, increment_by,
-           cache_size, cycle_flag, order_flag, last_number
-      FROM all_sequences
-     WHERE sequence_owner = :schema
-       ${sequenceFilter ? "AND sequence_name LIKE :seq_filter" : ""}
-     ORDER BY sequence_name`
-
-  const binds: Record<string, unknown> = { schema: owner }
-  if (sequenceFilter) binds.seq_filter = sequenceFilter
-
-  const result = await conn.execute(sql, binds, { outFormat: ctx.outFormatObject })
-  return result.rows.map((r: Record<string, unknown>) => ({
-    sequenceName: r.SEQUENCE_NAME as string,
-    minValue: r.MIN_VALUE as number | null,
-    maxValue: r.MAX_VALUE as number | null,
-    incrementBy: r.INCREMENT_BY as number,
-    cacheSize: r.CACHE_SIZE as number | null,
-    cycleFlag: r.CYCLE_FLAG as string,
-    orderFlag: r.ORDER_FLAG as string,
-    lastNumber: r.LAST_NUMBER as number,
-  }))
-}
-
-/**
- * 查询对象类型（OBJECT + COLLECTION）
- * 使用 all_source 重建完整 DDL
- */
-async function fetchObjectTypes(
-  conn: OracledbConnection,
-  owner: string,
-  typeFilter: string | undefined,
-  ctx: OraCtx,
-): Promise<OracleObjectType[]> {
-  // 查询类型列表
-  const typeListSql = `
-    SELECT type_name, typecode
-      FROM all_types
-     WHERE owner = :schema
-       ${typeFilter ? "AND type_name LIKE :type_filter" : ""}
-     ORDER BY type_name`
-
-  const binds: Record<string, unknown> = { schema: owner }
-  if (typeFilter) binds.type_filter = typeFilter
-
-  const typeListResult = await conn.execute(typeListSql, binds, { outFormat: ctx.outFormatObject })
-
-  if (typeListResult.rows.length === 0) return []
-
-  const typeNames = typeListResult.rows.map((r: Record<string, unknown>) => r.TYPE_NAME as string)
-
-  // 分批查询 all_source（Oracle IN 子句限制 1000 项）
-  const BATCH_SIZE = 999
-  const allSourceRows: Record<string, unknown>[] = []
-
-  for (let batchStart = 0; batchStart < typeNames.length; batchStart += BATCH_SIZE) {
-    const batch = typeNames.slice(batchStart, batchStart + BATCH_SIZE)
-    const sourceSql = `
-      SELECT name, type, line, text
-        FROM all_source
-       WHERE owner = :schema
-         AND name IN (${batch.map((_, i) => `:name_${i}`).join(", ")})
-         AND type IN ('TYPE', 'TYPE BODY')
-       ORDER BY name, type, line`
-
-    const sourceBinds: Record<string, unknown> = { schema: owner }
-    batch.forEach((name, i) => { sourceBinds[`name_${i}`] = name })
-
-    const batchResult = await conn.execute(sourceSql, sourceBinds, { outFormat: ctx.outFormatObject })
-    allSourceRows.push(...(batchResult.rows as Record<string, unknown>[]))
-  }
-
-  const sourceResult = { rows: allSourceRows }
-
-  // 按 name + type 聚合源码行
-  const sourceMap = new Map<string, Map<string, string[]>>()
-  for (const row of sourceResult.rows as Record<string, unknown>[]) {
-    const name = row.NAME as string
-    const type = row.TYPE as string
-    const text = row.TEXT as string
-
-    if (!sourceMap.has(name)) sourceMap.set(name, new Map())
-    const typeMap = sourceMap.get(name)!
-    if (!typeMap.has(type)) typeMap.set(type, [])
-    typeMap.get(type)!.push(text)
-  }
-
-  // 组装结果
-  return typeListResult.rows.map((r: Record<string, unknown>) => {
-    const typeName = r.TYPE_NAME as string
-    const typeMap = sourceMap.get(typeName)
-
-    let source = ""
-    let bodySource: string | null = null
-
-    if (typeMap?.has("TYPE")) {
-      source = typeMap.get("TYPE")!.join("")
-    } else {
-      // all_source 无结果时生成基础声明
-      source = `create or replace type ${typeName};\n/\n`
-    }
-
-    if (typeMap?.has("TYPE BODY")) {
-      bodySource = typeMap.get("TYPE BODY")!.join("")
-    }
-
-    return {
-      typeName,
-      typeCode: r.TYPECODE as string,
-      source,
-      bodySource,
-    }
-  })
 }
 
 /**
  * 查询表和列注释
  */
 async function fetchComments(
-  conn: OracledbConnection,
-  owner: string,
+  client: PgClient,
+  schema: string,
   tableFilter: string | undefined,
-  ctx: OraCtx,
-): Promise<{
-  tableComments: OracleTableComment[]
-  columnComments: OracleColumnComment[]
-}> {
-  const filterClause = tableFilter
-    ? "AND table_name LIKE :table_filter"
-    : ""
-  const binds: Record<string, unknown> = { schema: owner }
-  if (tableFilter) binds.table_filter = tableFilter
+): Promise<{ tableComments: PgTableComment[]; columnComments: PgColumnComment[] }> {
+  const filter = tableFilter ? "AND c.relname LIKE $2" : ""
+  const params = tableFilter ? [schema, tableFilter] : [schema]
 
   const tableCommentSql = `
-    SELECT table_name, comments
-      FROM all_tab_comments
-     WHERE owner = :schema
-       AND comments IS NOT NULL
-       AND table_type = 'TABLE'
-       ${filterClause}`
+    SELECT c.relname AS table_name, d.description
+      FROM pg_description d
+      JOIN pg_class c ON c.oid = d.objoid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = $1 AND d.objsubid = 0
+       AND d.classoid = 'pg_class'::regclass
+       AND c.relkind IN ('r', 'p')
+       ${filter}`
 
   const colCommentSql = `
-    SELECT table_name, column_name, comments
-      FROM all_col_comments
-     WHERE owner = :schema
-       AND comments IS NOT NULL
-       ${filterClause}`
+    SELECT c.relname AS table_name, a.attname AS column_name, d.description
+      FROM pg_description d
+      JOIN pg_class c ON c.oid = d.objoid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = d.objsubid
+     WHERE n.nspname = $1 AND d.objsubid > 0
+       AND d.classoid = 'pg_class'::regclass
+       AND c.relkind IN ('r', 'p')
+       AND NOT a.attisdropped
+       ${filter}`
 
-  // 顺序执行：oracledb 建议单连接上避免并发查询
-  const tcResult = await conn.execute(tableCommentSql, { ...binds }, { outFormat: ctx.outFormatObject })
-  const ccResult = await conn.execute(colCommentSql, { ...binds }, { outFormat: ctx.outFormatObject })
+  // 顺序执行：单连接上避免并发查询
+  const tcResult = await client.query(tableCommentSql, params)
+  const ccResult = await client.query(colCommentSql, params)
 
   return {
     tableComments: tcResult.rows.map((r: Record<string, unknown>) => ({
-      tableName: r.TABLE_NAME as string,
-      comments: r.COMMENTS as string,
+      tableName: r.table_name as string,
+      comments: r.description as string,
     })),
     columnComments: ccResult.rows.map((r: Record<string, unknown>) => ({
-      tableName: r.TABLE_NAME as string,
-      columnName: r.COLUMN_NAME as string,
-      comments: r.COMMENTS as string,
+      tableName: r.table_name as string,
+      columnName: r.column_name as string,
+      comments: r.description as string,
     })),
   }
+}
+
+/**
+ * 查询视图（pg_views.definition 原样返回）
+ */
+async function fetchViews(
+  client: PgClient,
+  schema: string,
+  viewFilter: string | undefined,
+): Promise<PgView[]> {
+  const sql = `
+    SELECT viewname AS view_name, definition
+      FROM pg_views
+     WHERE schemaname = $1
+       ${viewFilter ? "AND viewname LIKE $2" : ""}
+     ORDER BY viewname`
+
+  const params = viewFilter ? [schema, viewFilter] : [schema]
+  const result = await client.query(sql, params)
+  return result.rows.map((r: Record<string, unknown>) => ({
+    viewName: r.view_name as string,
+    definition: (r.definition as string) || "",
+  }))
+}
+
+/**
+ * 查询序列
+ *
+ * 优先用 pg_sequences 视图（PG 10+，含 cache_size）；不可用时（如老版本/GaussDB 缺该视图）
+ * 回退 information_schema.sequences（无 cache_size，cacheSize 置 null）。
+ */
+async function fetchSequences(
+  client: PgClient,
+  schema: string,
+  sequenceFilter: string | undefined,
+): Promise<PgSequence[]> {
+  const params = sequenceFilter ? [schema, sequenceFilter] : [schema]
+
+  try {
+    const sql = `
+      SELECT sequencename AS sequence_name, data_type,
+             start_value, min_value, max_value, increment_by, cycle, cache_size
+        FROM pg_sequences
+       WHERE schemaname = $1
+         ${sequenceFilter ? "AND sequencename LIKE $2" : ""}
+       ORDER BY sequencename`
+    const result = await client.query(sql, params)
+    return result.rows.map((r: Record<string, unknown>) => ({
+      sequenceName: r.sequence_name as string,
+      dataType: r.data_type as string,
+      startValue: r.start_value != null ? String(r.start_value) : null,
+      minValue: r.min_value != null ? String(r.min_value) : null,
+      maxValue: r.max_value != null ? String(r.max_value) : null,
+      increment: r.increment_by != null ? String(r.increment_by) : null,
+      cycleOption: r.cycle ? "YES" : "NO",
+      cacheSize: (r.cache_size as number | null) ?? null,
+    }))
+  } catch (e: any) {
+    // pg_sequences 不可用（关系不存在等）→ 回退 information_schema
+    getLogger().warn(
+      "[schema-fetcher]",
+      `pg_sequences 不可用，回退 information_schema.sequences（序列 cache 将丢失）: ${e.message}`,
+    )
+    const sql = `
+      SELECT sequence_name, data_type, start_value, minimum_value,
+             maximum_value, increment, cycle_option
+        FROM information_schema.sequences
+       WHERE sequence_schema = $1
+         ${sequenceFilter ? "AND sequence_name LIKE $2" : ""}
+       ORDER BY sequence_name`
+    const result = await client.query(sql, params)
+    return result.rows.map((r: Record<string, unknown>) => ({
+      sequenceName: r.sequence_name as string,
+      dataType: r.data_type as string,
+      startValue: r.start_value != null ? String(r.start_value) : null,
+      minValue: r.minimum_value != null ? String(r.minimum_value) : null,
+      maxValue: r.maximum_value != null ? String(r.maximum_value) : null,
+      increment: r.increment != null ? String(r.increment) : null,
+      cycleOption: r.cycle_option === "YES" ? "YES" : "NO",
+      cacheSize: null,
+    }))
+  }
+}
+
+/**
+ * 查询触发器（pg_get_triggerdef 原样返回完整 CREATE TRIGGER 文本）
+ */
+async function fetchTriggers(
+  client: PgClient,
+  schema: string,
+  triggerFilter: string | undefined,
+): Promise<PgTrigger[]> {
+  const sql = `
+    SELECT t.tgname AS trigger_name, pg_get_triggerdef(t.oid, true) AS definition
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = $1
+       AND NOT t.tgisinternal
+       ${triggerFilter ? "AND t.tgname LIKE $2" : ""}
+     ORDER BY t.tgname`
+
+  const params = triggerFilter ? [schema, triggerFilter] : [schema]
+  const result = await client.query(sql, params)
+  return result.rows.map((r: Record<string, unknown>) => ({
+    triggerName: r.trigger_name as string,
+    definition: (r.definition as string) || "",
+  }))
+}
+
+/**
+ * 查询自定义类型（composite / enum / domain）
+ * PG 无存储源码，按 typtype 分支拉取结构后重建 DDL。
+ */
+async function fetchObjectTypes(
+  client: PgClient,
+  schema: string,
+  typeFilter: string | undefined,
+): Promise<PgObjectType[]> {
+  // 主查询：列出类型，过滤掉表行类型（typrelid 指向 relkind='r' 的是真实表，非独立复合类型）
+  const listSql = `
+    SELECT t.typname AS type_name, t.typtype,
+           format_type(t.typbasetype, t.typtypmod) AS base_type,
+           t.typnotnull, t.typdefault,
+           t.typrelid
+      FROM pg_type t
+      JOIN pg_namespace n ON n.oid = t.typnamespace
+      LEFT JOIN pg_class rc ON rc.oid = t.typrelid
+     WHERE n.nspname = $1
+       AND t.typtype IN ('c', 'e', 'd')
+       AND (t.typtype <> 'c' OR rc.relkind = 'c')
+       ${typeFilter ? "AND t.typname LIKE $2" : ""}
+     ORDER BY t.typname`
+
+  const listParams = typeFilter ? [schema, typeFilter] : [schema]
+  const listResult = await client.query(listSql, listParams)
+  if (listResult.rows.length === 0) return []
+
+  const out: PgObjectType[] = []
+  for (const r of listResult.rows as Record<string, unknown>[]) {
+    const typeName = r.type_name as string
+    const typtype = r.typtype as string
+    const typrelid = r.typrelid as number
+
+    const obj: PgObjectType = { typeName, typtype }
+
+    if (typtype === "e") {
+      // 枚举：按 typname + schema 拉取枚举值（listSql 未选 oid，避免依赖）
+      obj.enumLabels = await fetchEnumLabels(client, schema, typeName)
+    } else if (typtype === "c") {
+      // 复合类型：拉取字段
+      obj.compositeFields = await fetchCompositeFields(client, typrelid)
+    } else if (typtype === "d") {
+      // 域类型
+      obj.baseType = (r.base_type as string) || null
+      obj.notNull = r.typnotnull as boolean
+      obj.defaultExpr = (r.typdefault as string) ?? null
+      obj.checkConstraints = await fetchDomainChecks(client, schema, typeName)
+    }
+
+    out.push(obj)
+  }
+
+  return out
+}
+
+/** 拉取枚举类型的枚举值（按 typname + schema 定位，避免依赖 listSql 的 oid） */
+async function fetchEnumLabels(client: PgClient, schema: string, typeName: string): Promise<PgEnumValue[]> {
+  const res = await client.query(
+    `SELECT e.enumlabel
+        FROM pg_enum e
+        JOIN pg_type t ON t.oid = e.enumtypid
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+       WHERE n.nspname = $1 AND t.typname = $2
+       ORDER BY e.enumsortorder`,
+    [schema, typeName],
+  )
+  return res.rows.map((r: Record<string, unknown>) => ({ label: r.enumlabel as string }))
+}
+
+/** 拉取复合类型字段 */
+async function fetchCompositeFields(client: PgClient, typrelid: number): Promise<PgCompositeField[]> {
+  const res = await client.query(
+    `SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS data_type
+        FROM pg_attribute a
+       WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped
+       ORDER BY a.attnum`,
+    [typrelid],
+  )
+  return res.rows.map((r: Record<string, unknown>) => ({
+    attname: r.attname as string,
+    dataType: r.data_type as string,
+  }))
+}
+
+/** 拉取域类型的 CHECK 约束 */
+async function fetchDomainChecks(client: PgClient, schema: string, typeName: string): Promise<string[]> {
+  const res = await client.query(
+    `SELECT pg_get_constraintdef(c.oid) AS definition
+        FROM pg_constraint c
+        JOIN pg_type t ON t.oid = c.contypid
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+       WHERE n.nspname = $1 AND t.typname = $2`,
+    [schema, typeName],
+  )
+  return res.rows.map((r: Record<string, unknown>) => r.definition as string).filter(Boolean)
 }
 
 // ── DDL 生成 ──────────────────────────────────────────────────────────────
@@ -739,77 +698,96 @@ function lc(s: string): string {
   return s.toLowerCase()
 }
 
-/** Oracle 内置类型判断 */
-const BUILTIN_TYPES = new Set([
-  "VARCHAR2", "NVARCHAR2", "CHAR", "NCHAR", "CLOB", "NCLOB",
-  "NUMBER", "FLOAT", "BINARY_FLOAT", "BINARY_DOUBLE",
-  "DATE", "TIMESTAMP", "TIMESTAMP(6)", "TIMESTAMP(9)",
-  "TIMESTAMP WITH TIME ZONE", "TIMESTAMP(6) WITH TIME ZONE",
-  "RAW", "LONG RAW", "BLOB", "LONG",
-  "BOOLEAN", "SYS_REFCURSOR",
-  "XMLTYPE",
+/** PostgreSQL 内置类型判断（基于 information_schema.data_type） */
+const PG_BUILTIN_TYPES = new Set([
+  "character varying", "character", "text", "smallint", "integer", "bigint",
+  "numeric", "decimal", "real", "double precision", "boolean",
+  "timestamp without time zone", "timestamp with time zone",
+  "time without time zone", "time with time zone",
+  "date", "bytea", "json", "jsonb", "uuid", "interval", "bit", "bit varying",
+  "money", "oid", "inet", "cidr", "macaddr", "tsvector", "xml",
 ])
 
-function isBuiltInType(dataType: string): boolean {
-  const upper = dataType.toUpperCase()
-  if (BUILTIN_TYPES.has(upper)) return true
-  // TIMESTAMP(...) WITH [LOCAL] TIME ZONE — 但排除以 TIMESTAMP 开头的 UDT
-  // Oracle 允许 CREATE TYPE TIMESTAMP_REC（TIMESTAMP 是非保留关键字），
-  // 这类 UDT 不应被误判为内置类型
-  if (upper.startsWith("TIMESTAMP") && !upper.startsWith("TIMESTAMP_")) return true
-  return false
-}
-
 /**
- * 格式化列数据类型
+ * 格式化列数据类型为 PG DDL 类型串。
+ *
+ * 优先用 information_schema.data_type 做内置类型映射；
+ * 对 USER-DEFINED（枚举/复合）和 ARRAY 用 udt_name。
  */
-function formatDataType(col: OracleColumn): string {
-  const type = col.dataType.toUpperCase()
+function formatDataType(col: PgColumn): string {
+  const dt = col.dataType.toLowerCase()
 
-  if (!isBuiltInType(type)) {
-    // 用户自定义类型（如 T_DIMENSION, T_TAG_VARRAY）
-    return col.dataType
+  // 数组：udt_name 形如 "_int4" / "_varchar"，元素类型去前导下划线后加 []
+  if (dt === "array") {
+    const elem = col.udtName.startsWith("_") ? col.udtName.slice(1) : col.udtName
+    return `${mapUdtName(elem)}[]`
   }
 
-  switch (type) {
-    case "NUMBER": {
-      if (col.dataPrecision != null && col.dataScale != null && col.dataScale > 0) {
-        return `number(${col.dataPrecision},${col.dataScale})`
+  // 用户自定义类型（枚举/复合/域）：直接用 udt_name
+  if (dt === "user-defined") {
+    return col.udtName
+  }
+
+  if (!PG_BUILTIN_TYPES.has(dt)) {
+    // 未知类型回退到 udt_name
+    return col.udtName || col.dataType
+  }
+
+  switch (dt) {
+    case "character varying":
+      return col.charMaxLength != null ? `varchar(${col.charMaxLength})` : "varchar"
+    case "character":
+      return col.charMaxLength != null ? `char(${col.charMaxLength})` : "char"
+    case "bit":
+      return col.charMaxLength != null ? `bit(${col.charMaxLength})` : "bit"
+    case "bit varying":
+      return col.charMaxLength != null ? `bit varying(${col.charMaxLength})` : "bit varying"
+    case "numeric":
+    case "decimal": {
+      if (col.numericPrecision != null && col.numericScale != null && col.numericScale > 0) {
+        return `${dt}(${col.numericPrecision},${col.numericScale})`
       }
-      if (col.dataPrecision != null) return `number(${col.dataPrecision})`
-      return "number"
+      if (col.numericPrecision != null) return `${dt}(${col.numericPrecision})`
+      return dt
     }
-    case "FLOAT": {
-      // FLOAT(N) 使用二进制精度，与 NUMBER(N) 的十进制精度语义不同
-      // 保留 float 拼写以区分，下游 Java 映射可据此选择 Double/Float
-      if (col.dataPrecision != null) return `float(${col.dataPrecision})`
-      return "float"
-    }
-    case "VARCHAR2":
-    case "NVARCHAR2":
-    case "CHAR":
-    case "NCHAR": {
-      const len = col.charLength ?? col.dataLength ?? 1
-      const typeLower = type.toLowerCase()
-      return `${typeLower}(${len})`
-    }
-    case "TIMESTAMP(6)":
-    case "TIMESTAMP(9)":
-      return "timestamp"
-    case "TIMESTAMP(6) WITH TIME ZONE":
-    case "TIMESTAMP(9) WITH TIME ZONE":
-      return "timestamp with time zone"
+    case "timestamp without time zone":
+      return col.datetimePrecision != null ? `timestamp(${col.datetimePrecision})` : "timestamp"
+    case "timestamp with time zone":
+      return col.datetimePrecision != null
+        ? `timestamptz(${col.datetimePrecision})`
+        : "timestamptz"
+    case "time without time zone":
+      return col.datetimePrecision != null ? `time(${col.datetimePrecision})` : "time"
+    case "time with time zone":
+      return col.datetimePrecision != null ? `timetz(${col.datetimePrecision})` : "timetz"
+    case "interval":
+      return "interval"
     default:
-      return type.toLowerCase()
+      return dt
   }
 }
 
+/** udt_name（如 int4/int8/bool/timestamptz）→ 可读类型名映射 */
+function mapUdtName(udt: string): string {
+  const map: Record<string, string> = {
+    int2: "smallint", int4: "integer", int8: "bigint",
+    bool: "boolean", float4: "real", float8: "double precision",
+    timestamp: "timestamp", timestamptz: "timestamptz",
+    time: "time", timetz: "timetz", date: "date",
+    numeric: "numeric", varchar: "varchar", bpchar: "char",
+    text: "text", bytea: "bytea", json: "json", jsonb: "jsonb",
+    uuid: "uuid", money: "money", bit: "bit", varbit: "bit varying",
+  }
+  return map[udt] ?? udt
+}
+
 /**
- * 规范化 default 值（去除 Oracle 内部格式）
+ * 规范化 default 值。
+ * PG 的 column_default 已是可直接使用的表达式，仅 trim。
  */
 function normalizeDefault(val: string | null): string | null {
   if (val == null) return null
-  return val.trim()
+  return val.trim() || null
 }
 
 /**
@@ -820,18 +798,18 @@ function escapeSingleQuotes(s: string): string {
 }
 
 /**
- * 生成单个表的 CREATE TABLE DDL
+ * 生成单个表的 CREATE TABLE DDL（PG 语法）
  */
 function generateTableDdl(
   tableName: string,
-  columns: OracleColumn[],
-  constraints: OracleConstraint[],
+  columns: PgColumn[],
+  constraints: PgConstraint[],
   tableComment: string | undefined,
   columnComments: Map<string, string>,
 ): string {
   const lines: string[] = []
 
-  // 表注释
+  // 表注释（摘要行）
   if (tableComment) {
     lines.push(`-- ${tableComment}`)
   }
@@ -844,52 +822,41 @@ function generateTableDdl(
     const name = lc(col.columnName).padEnd(16)
     let def = `    ${name} ${formatDataType(col)}`
 
-    const dv = normalizeDefault(col.dataDefault)
-    if (dv) {
-      def += `   default ${dv}`
+    // IDENTITY 列：GENERATED {ALWAYS|BY DEFAULT} AS IDENTITY（column_default 为 NULL）
+    const idgen = col.identityGeneration
+    if (idgen === "ALWAYS" || idgen === "BY DEFAULT") {
+      def += ` generated ${idgen.toLowerCase()} as identity`
+    } else {
+      const dv = normalizeDefault(col.columnDefault)
+      if (dv) {
+        def += `   default ${dv}`
+      }
     }
 
-    def += col.nullable === "N" ? " not null" : ""
+    def += col.nullable === "NO" ? " not null" : ""
     colDefs.push(def)
   }
 
-  // 约束：按 P → U → R → C 排序
-  const pk = constraints.filter(c => c.constraintType === "P")
-  const uk = constraints.filter(c => c.constraintType === "U")
-  const fk = constraints.filter(c => c.constraintType === "R")
-  const ck = constraints.filter(c => c.constraintType === "C")
-
-  for (const c of pk) {
-    colDefs.push(
-      `    constraint ${lc(c.constraintName)} primary key (${c.columns.map(lc).join(", ")})`,
-    )
-  }
-  for (const c of uk) {
-    colDefs.push(
-      `    constraint ${lc(c.constraintName)} unique (${c.columns.map(lc).join(", ")})`,
-    )
-  }
-  for (const c of fk) {
-    let fkDef = `    constraint ${lc(c.constraintName)} foreign key (${c.columns.map(lc).join(", ")})`
-    if (c.refTableName) {
-      fkDef += ` references ${lc(c.refTableName)}(${c.refColumns.map(lc).join(", ")})`
-    }
-    if (c.deleteRule && c.deleteRule !== "NO ACTION") {
-      fkDef += ` on delete ${c.deleteRule}`
-    }
-    colDefs.push(fkDef)
-  }
-  for (const c of ck) {
-    if (c.searchCondition) {
-      colDefs.push(
-        `    constraint ${lc(c.constraintName)} check (${c.searchCondition})`,
-      )
-    }
+  // 约束：按 p(PK) → u(UK) → f(FK) → c(CHECK) 排序，定义文本来自 pg_get_constraintdef
+  const ordered = ["p", "u", "f", "c"]
+  const sorted = [...constraints].sort(
+    (a, b) => ordered.indexOf(a.contype) - ordered.indexOf(b.contype),
+  )
+  for (const c of sorted) {
+    // pg_get_constraintdef 返回 "PRIMARY KEY (...)" 等，前置 CONSTRAINT name
+    colDefs.push(`    constraint ${lc(c.conname)} ${c.definition}`)
   }
 
   lines.push(colDefs.join(",\n"))
   lines.push(");")
   lines.push("")
+
+  // 表注释（PG 语法）
+  if (tableComment) {
+    lines.push(
+      `comment on table ${lc(tableName)} is '${escapeSingleQuotes(tableComment)}';`,
+    )
+  }
 
   // 列注释
   if (columnComments.size > 0) {
@@ -905,76 +872,50 @@ function generateTableDdl(
 }
 
 /**
- * 生成触发器 DDL
+ * 生成触发器 DDL（pg_get_triggerdef 原样输出）
  */
-function generateTriggerDdl(trigger: OracleTrigger): string {
-  const lines: string[] = []
-
-  lines.push(`create or replace trigger ${lc(trigger.triggerName)}`)
-
-  // triggerType 格式: "BEFORE EACH ROW", "AFTER STATEMENT", "INSTEAD OF EACH ROW"
-  // triggeringEvent: "INSERT OR UPDATE OR DELETE"
-  // 提取 timing（BEFORE / AFTER / INSTEAD OF），去掉 level 部分（EACH ROW / STATEMENT）
-  const rawType = trigger.triggerType.toUpperCase()
-  const suffixes = ["EACH ROW", "STATEMENT"]
-  let timing = rawType
-  for (const suffix of suffixes) {
-    if (rawType.endsWith(suffix)) {
-      timing = rawType.slice(0, rawType.length - suffix.length).trim()
-      break
-    }
-  }
-  lines.push(`${timing} ${trigger.triggeringEvent} on ${lc(trigger.tableName)}`)
-
-  if (trigger.whenClause) {
-    lines.push(`when (${trigger.whenClause})`)
-  }
-
-  lines.push(trigger.triggerBody)
-  lines.push("/")
-  lines.push("")
-
-  return lines.join("\n")
+function generateTriggerDdl(trigger: PgTrigger): string {
+  const def = trigger.definition.trimEnd()
+  // pg_get_triggerdef 返回完整 CREATE TRIGGER 语句，补分号
+  return `${def}${def.endsWith(";") ? "" : ";"}\n\n`
 }
 
 /**
  * 生成视图 DDL
  */
-function generateViewDdl(view: OracleView): string {
+function generateViewDdl(view: PgView): string {
   const lines: string[] = []
-
   lines.push(`create or replace view ${lc(view.viewName)} as`)
-  lines.push(view.text.trimEnd())
-  lines.push("/")
+  lines.push(view.definition.trimEnd())
+  lines.push(";")
   lines.push("")
-
   return lines.join("\n")
 }
 
 /**
  * 生成所有序列 DDL（合并到一个文件）
  */
-function generateSequencesDdl(sequences: OracleSequence[]): string {
+function generateSequencesDdl(sequences: PgSequence[]): string {
   const lines: string[] = ["-- 序列（从数据库自动获取）\n"]
 
   for (const seq of sequences) {
     let ddl = `create sequence ${lc(seq.sequenceName)}`
-    // Oracle ALL_SEQUENCES.LAST_NUMBER 是上次持久化到磁盘的值，对 cached 序列会滞后。
-    // 使用 lastNumber + 1 作为 START WITH 以避免重新创建时发出已用过的值。
-    // 注意：这对 nocache 序列是精确的；对 cached 序列仍可能有少量间隙，
-    // 但不会产生重复值。
-    ddl += ` start with ${seq.lastNumber + 1}`
-    ddl += ` increment by ${seq.incrementBy}`
-
-    if (seq.cacheSize != null && seq.cacheSize > 0) {
-      ddl += ` cache ${seq.cacheSize}`
-    } else {
-      ddl += " nocache"
+    if (seq.dataType) {
+      // PG 允许 CREATE SEQUENCE ... AS smallint/integer/bigint
+      const asType = seq.dataType.toLowerCase() === "smallint"
+        ? "smallint"
+        : seq.dataType.toLowerCase() === "bigint"
+          ? "bigint"
+          : "integer"
+      ddl += ` as ${asType}`
     }
-
-    ddl += seq.cycleFlag === "Y" ? " cycle" : " nocycle"
+    if (seq.increment) ddl += ` increment by ${seq.increment}`
+    if (seq.minValue) ddl += ` minvalue ${seq.minValue}`
+    if (seq.maxValue) ddl += ` maxvalue ${seq.maxValue}`
+    if (seq.startValue) ddl += ` start with ${seq.startValue}`
+    if (seq.cacheSize != null) ddl += ` cache ${seq.cacheSize}`
+    ddl += seq.cycleOption === "YES" ? " cycle" : " no cycle"
     ddl += ";"
-
     lines.push(ddl)
   }
 
@@ -983,31 +924,37 @@ function generateSequencesDdl(sequences: OracleSequence[]): string {
 }
 
 /**
- * 生成对象类型 DDL
+ * 生成自定义类型 DDL（按 typtype 分支）
  */
-function generateObjectTypeDdl(objType: OracleObjectType): string {
+function generateObjectTypeDdl(objType: PgObjectType): string {
   const lines: string[] = []
+  const name = lc(objType.typeName)
 
-  // TYPE 规格源码（all_source 已包含完整 CREATE OR REPLACE TYPE ... ; 语句）
-  if (objType.source) {
-    const trimmedSource = objType.source.trimEnd()
-    lines.push(trimmedSource)
-    if (!trimmedSource.endsWith("/")) {
-      lines.push("/")
+  if (objType.typtype === "e" && objType.enumLabels) {
+    const vals = objType.enumLabels.map(v => `'${escapeSingleQuotes(v.label)}'`).join(", ")
+    lines.push(`create type ${name} as enum (${vals});`)
+  } else if (objType.typtype === "c" && objType.compositeFields) {
+    const fields = objType.compositeFields
+      .map(f => `    ${lc(f.attname)} ${f.dataType}`)
+      .join(",\n")
+    lines.push(`create type ${name} as (\n${fields}\n);`)
+  } else if (objType.typtype === "d") {
+    let ddl = `create domain ${name} as ${objType.baseType || "unknown"}`
+    if (objType.defaultExpr) ddl += ` default ${objType.defaultExpr}`
+    if (objType.notNull) ddl += ` not null`
+    if (objType.checkConstraints && objType.checkConstraints.length > 0) {
+      for (const ck of objType.checkConstraints) {
+        ddl += ` ${ck}`
+      }
     }
-    lines.push("")
+    ddl += ";"
+    lines.push(ddl)
+  } else {
+    // 兜底：基础声明
+    lines.push(`create type ${name};`)
   }
 
-  // TYPE BODY（如有）
-  if (objType.bodySource) {
-    const trimmedBody = objType.bodySource.trimEnd()
-    lines.push(trimmedBody)
-    if (!trimmedBody.endsWith("/")) {
-      lines.push("/")
-    }
-    lines.push("")
-  }
-
+  lines.push("")
   return lines.join("\n")
 }
 
@@ -1015,8 +962,7 @@ function generateObjectTypeDdl(objType: OracleObjectType): string {
 
 /**
  * 生成不重复的文件路径。
- * 当小写化后文件名冲突时（如 Oracle 中存在 ORDERS 表和 Orders 视图），
- * 追加数字后缀（orders.sql → orders_2.sql）避免覆盖。
+ * 当小写化后文件名冲突时，追加数字后缀（orders.sql → orders_2.sql）避免覆盖。
  */
 function dedupedFilePath(
   dir: string,
@@ -1044,14 +990,14 @@ function dedupedFilePath(
 function generateDdlFiles(
   sourcePath: string,
   data: {
-    columns: OracleColumn[]
-    constraints: OracleConstraint[]
-    triggers: OracleTrigger[]
-    views: OracleView[]
-    sequences: OracleSequence[]
-    objectTypes: OracleObjectType[]
-    tableComments: OracleTableComment[]
-    columnComments: OracleColumnComment[]
+    columns: PgColumn[]
+    constraints: PgConstraint[]
+    triggers: PgTrigger[]
+    views: PgView[]
+    sequences: PgSequence[]
+    objectTypes: PgObjectType[]
+    tableComments: PgTableComment[]
+    columnComments: PgColumnComment[]
   },
 ): SchemaFetchResult {
 
@@ -1076,13 +1022,13 @@ function generateDdlFiles(
   mkdirSync(stagingTypeDir, { recursive: true })
 
   // 构建索引
-  const columnsByTable = new Map<string, OracleColumn[]>()
+  const columnsByTable = new Map<string, PgColumn[]>()
   for (const col of data.columns) {
     if (!columnsByTable.has(col.tableName)) columnsByTable.set(col.tableName, [])
     columnsByTable.get(col.tableName)!.push(col)
   }
 
-  const constraintsByTable = new Map<string, OracleConstraint[]>()
+  const constraintsByTable = new Map<string, PgConstraint[]>()
   for (const c of data.constraints) {
     if (!constraintsByTable.has(c.tableName)) constraintsByTable.set(c.tableName, [])
     constraintsByTable.get(c.tableName)!.push(c)
@@ -1201,30 +1147,27 @@ function isOurGeneratedMarker(markerPath: string): boolean {
 
 /**
  * 清理 schema-fetcher 生成的 ddl-output 目录。
- * 仅在目录包含有效标记文件（generator 字段匹配）时删除，保护用户自有的同名目录。
+ * 仅当目录内的标记文件由本工具生成时才清理，避免误删用户自建的同名目录。
  */
 export function cleanupGeneratedDdl(sourcePath: string): void {
-  const ddlOutput = join(sourcePath, GENERATED_OUTPUT_DIR)
-  const markerPath = join(ddlOutput, GENERATED_MARKER)
-  if (existsSync(markerPath) && isOurGeneratedMarker(markerPath)) {
-    try { safeRm(ddlOutput) } catch { /* ignore */ }
+  const outputDir = join(sourcePath, GENERATED_OUTPUT_DIR)
+  if (!existsSync(outputDir)) return
+  const markerPath = join(outputDir, GENERATED_MARKER)
+  if (!existsSync(markerPath) || !isOurGeneratedMarker(markerPath)) return
+  try {
+    safeRm(outputDir)
+  } catch {
+    // best-effort：清理失败不阻断主流程
   }
 }
 
-// ── 主入口 ──────────────────────────────────────────────────────────────
-
 /**
- * 前置 schema 获取：发现 db.xml 配置时连接 Oracle 拉取 schema 并生成 DDL 文件。
+ * 前置 schema 获取：连接 PG/GaussDB 拉取 schema 并生成 DDL 文件。
  *
- * 在 plugins/workflow-engine.ts 的 start action 中，scanSource 之前调用。
- * 使用动态 import 加载 oracledb，不使用时不加载。
- *
- * 触发条件：dbConfPath 参数或 sourcePath/db.xml 存在。
- * 无论是否已有 PL/SQL 文件，只要找到配置就会拉取 schema。
- *
- * @param sourcePath 源码路径
- * @param dbConfPath 显式指定的 db.xml 路径（来自 --db_conf）
- * @returns fetched=true 表示已从数据库获取并生成 DDL 文件
+ * 返回：
+ * - { fetched: false }            无配置文件，DDL-only 模式（非错误）
+ * - { fetched: true, result }     成功拉取并生成 DDL
+ * - { fetched: false, error }     拉取失败
  */
 export async function fetchSchemaIfNeeded(
   sourcePath: string,
@@ -1241,7 +1184,7 @@ export async function fetchSchemaIfNeeded(
     }
   }
 
-  // 1. 加载配置（发现 db.xml → 拉取；无配置 → 静默跳过）
+  // 1. 加载配置（发现 db.properties → 拉取；无配置 → 静默跳过）
   let config: DbConfig
   try {
     const loaded = loadDbConfig(effectiveDbConfPath, sourcePath)
@@ -1254,76 +1197,87 @@ export async function fetchSchemaIfNeeded(
     return { fetched: false, error: e.message }
   }
 
-  // 2. 动态加载 oracledb（thin mode，纯 JS）
-  let oracledb: typeof import("oracledb")
-  let oraCtx: OraCtx
+  // 2. 动态加载 pg 驱动
+  let pg: typeof import("pg")
   try {
-    oracledb = await import("oracledb")
-    // 从库中获取常量，注入各 fetch 函数（避免模块级可变状态）
-    oraCtx = {
-      outFormatObject: oracledb.OUT_FORMAT_OBJECT,
-      stringType: oracledb.STRING,
-    }
+    pg = await import("pg")
   } catch {
     return {
       fetched: false,
       error:
-        "无法加载 oracledb 模块。请确认依赖已安装：\n" +
+        "无法加载 pg 模块。请确认依赖已安装：\n" +
         "  cd .opencode && npm install",
     }
   }
 
   // 3. 连接数据库并拉取 schema
-  const owner = (config.schema || config.user).toUpperCase()
-  let connection: OracledbConnection | null = null
+  const schema = config.schema
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let client: any = null
 
   try {
-    const connParams = buildConnectionParams(config)
-    connection = await oracledb.getConnection(connParams)
-    getLogger().warn("[schema-fetcher]", `已连接 Oracle，正在获取 schema: ${owner}`)
+    client = new pg.Client({
+      host: config.host,
+      port: config.port,
+      database: config.database,
+      user: config.user,
+      password: resolvePassword(config.password),
+      ssl: config.ssl,
+      connectionTimeoutMillis: config.connectionTimeoutMillis,
+    })
+    await client.connect()
 
-    // 顺序查询各类型元数据（oracledb 建议单连接上避免并发查询）
+    if (config.statementTimeoutMillis) {
+      await client.query(`SET statement_timeout = ${config.statementTimeoutMillis}`)
+    }
+
+    getLogger().warn("[schema-fetcher]", `已连接 PostgreSQL/GaussDB，正在获取 schema: ${schema}`)
+
+    // 顺序查询各类型元数据（单连接上避免并发查询）
     const tableFilter = config.tableFilter
 
-    let columns: OracleColumn[] = []
-    let constraints: OracleConstraint[] = []
-    let triggers: OracleTrigger[] = []
-    let views: OracleView[] = []
-    let sequences: OracleSequence[] = []
-    let objectTypes: OracleObjectType[] = []
-    let tableComments: OracleTableComment[] = []
-    let columnComments: OracleColumnComment[] = []
+    let columns: PgColumn[] = []
+    let constraints: PgConstraint[] = []
+    let triggers: PgTrigger[] = []
+    let views: PgView[] = []
+    let sequences: PgSequence[] = []
+    let objectTypes: PgObjectType[] = []
+    let tableComments: PgTableComment[] = []
+    let columnComments: PgColumnComment[] = []
 
     // 表列 + 约束 + 注释（有表过滤时一起查）
     if (config.fetchTables) {
-      columns = await fetchColumns(connection, owner, tableFilter, oraCtx)
-      constraints = await fetchConstraints(connection, owner, tableFilter, oraCtx)
-      const commentsResult = await fetchComments(connection, owner, tableFilter, oraCtx)
+      columns = await fetchColumns(client, schema, tableFilter)
+      constraints = await fetchConstraints(client, schema, tableFilter)
+      const commentsResult = await fetchComments(client, schema, tableFilter)
       tableComments = commentsResult.tableComments
       columnComments = commentsResult.columnComments
     }
 
     if (config.fetchTriggers) {
-      triggers = await fetchTriggers(connection, owner, config.triggerFilter, oraCtx)
+      triggers = await fetchTriggers(client, schema, config.triggerFilter)
     }
 
     if (config.fetchViews) {
-      views = await fetchViews(connection, owner, config.viewFilter, oraCtx)
+      views = await fetchViews(client, schema, config.viewFilter)
     }
 
     if (config.fetchSequences) {
-      sequences = await fetchSequences(connection, owner, config.sequenceFilter, oraCtx)
+      sequences = await fetchSequences(client, schema, config.sequenceFilter)
     }
 
     if (config.fetchObjectTypes) {
-      objectTypes = await fetchObjectTypes(connection, owner, config.typeFilter, oraCtx)
+      objectTypes = await fetchObjectTypes(client, schema, config.typeFilter)
     }
 
     // 4. 检查是否有数据
     const totalCount = columns.length + triggers.length + views.length
       + sequences.length + objectTypes.length
     if (totalCount === 0) {
-      getLogger().warn("[schema-fetcher]", `Oracle schema "${owner}" 未找到任何对象（可能由过滤条件导致）。继续使用已有 PL/SQL 文件。`)
+      getLogger().warn(
+        "[schema-fetcher]",
+        `schema "${schema}" 未找到任何对象（可能由过滤条件导致）。继续使用已有 PL/SQL 文件。`,
+      )
       // 不阻断工作流：生成空的 ddl-output 目录，让 scanSource 继续处理本地文件
     }
 
@@ -1347,30 +1301,38 @@ export async function fetchSchemaIfNeeded(
 
     return { fetched: true, result }
   } catch (e: any) {
-    // 识别常见 Oracle 错误码
+    // 识别常见 PG 错误
     const msg = e.message || String(e)
-    if (msg.includes("ORA-12154") || msg.includes("ORA-12541") || msg.includes("NJS-500")) {
+    const code = e.code as string | undefined
+
+    if (code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "ETIMEDOUT") {
       return {
         fetched: false,
-        error: `无法连接 Oracle: ${msg}\n请检查 connectString / host / port 和网络连通性。`,
+        error: `无法连接 PostgreSQL/GaussDB: ${msg}\n请检查 db.url 中的 host/port 和网络连通性。`,
       }
     }
-    if (msg.includes("ORA-01017")) {
+    if (code === "28P01" || code === "28000") {
       return {
         fetched: false,
-        error: `Oracle 认证失败。请检查 db.xml 中的 user/password。`,
+        error: `数据库认证失败。请检查 db.properties 中的 db.username/db.password。`,
       }
     }
-    if (msg.includes("ORA-00942")) {
+    if (code === "3D000") {
       return {
         fetched: false,
-        error: `无权限访问 Oracle 数据字典视图。请确认用户有 SELECT ANY DICTIONARY 权限或 DBA 角色。`,
+        error: `数据库不存在: ${config.database}。请检查 db.url 中的数据库名。`,
+      }
+    }
+    if (code === "42501") {
+      return {
+        fetched: false,
+        error: `无权限访问系统目录。请确认用户对 schema "${schema}" 有读取权限。`,
       }
     }
     return { fetched: false, error: `Schema 获取失败: ${msg}` }
   } finally {
-    if (connection) {
-      try { await connection.close() } catch { /* ignore */ }
+    if (client) {
+      try { await client.end() } catch { /* ignore */ }
     }
   }
 }

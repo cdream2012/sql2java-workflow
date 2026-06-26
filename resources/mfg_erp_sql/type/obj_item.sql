@@ -6,126 +6,126 @@
 -- valuation_method / is_stockable / lead_time_days 三个方法是上层(costing/mrp)的多态入口
 -- 真实库里这些料号在 t_item 表里用 item_type 区分，对象层是给 PL/SQL 内部按多态处理用的
 
-create or replace type t_item_obj force as object (
-    item_id     number(18),
-    item_code   varchar2(40),
-    item_name   varchar2(200),
-    base_uom    varchar2(8),
-    std_cost    number(20,6),
+CREATE OR REPLACE TYPE t_item_obj FORCE AS OBJECT (
+    item_id     NUMBER(18),
+    item_code   VARCHAR2(40),
+    item_name   VARCHAR2(200),
+    base_uom    VARCHAR2(8),
+    std_cost    NUMBER(20,6),
 
-    not instantiable member function valuation_method return varchar2,
-    not instantiable member function is_stockable return varchar2,
-    member function lead_time_days return number,
-    member function describe return varchar2
-) not instantiable not final;
+    NOT INSTANTIABLE MEMBER FUNCTION valuation_method RETURN VARCHAR2,
+    NOT INSTANTIABLE MEMBER FUNCTION is_stockable RETURN VARCHAR2,
+    MEMBER FUNCTION lead_time_days RETURN NUMBER,
+    MEMBER FUNCTION describe RETURN VARCHAR2
+) NOT INSTANTIABLE NOT FINAL;
 /
 
-create or replace type body t_item_obj as
+CREATE OR REPLACE TYPE BODY t_item_obj AS
 
     -- 默认提前期 0，子类按自身补货特性覆写
-    member function lead_time_days return number is
-    begin
-        return 0;
-    end lead_time_days;
+    MEMBER FUNCTION lead_time_days RETURN NUMBER IS
+    BEGIN
+        RETURN 0;
+    END lead_time_days;
 
-    member function describe return varchar2 is
-    begin
-        return self.item_code || ' ' || self.item_name
-            || ' [' || self.valuation_method || '/'
-            || case self.is_stockable when 'Y' then '可库存' else '不可库存' end || ']';
-    end describe;
+    MEMBER FUNCTION describe RETURN VARCHAR2 IS
+    BEGIN
+        RETURN SELF.item_code || ' ' || SELF.item_name
+            || ' [' || SELF.valuation_method || '/'
+            || CASE SELF.is_stockable WHEN 'Y' THEN '可库存' ELSE '不可库存' END || ']';
+    END describe;
 
-end;
+END;
 /
 
 
-create or replace type t_raw_material_obj force under t_item_obj (
-    supplier_id      number(18),
-    shelf_life_days  number,
-    reorder_point    number(18,4),
+CREATE OR REPLACE TYPE t_raw_material_obj FORCE UNDER t_item_obj (
+    supplier_id      NUMBER(18),
+    shelf_life_days  NUMBER,
+    reorder_point    NUMBER(18,4),
 
-    overriding member function valuation_method return varchar2,
-    overriding member function is_stockable return varchar2,
-    overriding member function lead_time_days return number,
-    member function needs_reorder(p_on_hand in number) return varchar2
+    OVERRIDING MEMBER FUNCTION valuation_method RETURN VARCHAR2,
+    OVERRIDING MEMBER FUNCTION is_stockable RETURN VARCHAR2,
+    OVERRIDING MEMBER FUNCTION lead_time_days RETURN NUMBER,
+    MEMBER FUNCTION needs_reorder(p_on_hand IN NUMBER) RETURN VARCHAR2
 );
 /
 
-create or replace type body t_raw_material_obj as
+CREATE OR REPLACE TYPE BODY t_raw_material_obj AS
 
-    overriding member function valuation_method return varchar2 is
-    begin
-        return 'FIFO';
-    end valuation_method;
+    OVERRIDING MEMBER FUNCTION valuation_method RETURN VARCHAR2 IS
+    BEGIN
+        RETURN 'FIFO';
+    END valuation_method;
 
-    overriding member function is_stockable return varchar2 is
-    begin
-        return 'Y';
-    end is_stockable;
+    OVERRIDING MEMBER FUNCTION is_stockable RETURN VARCHAR2 IS
+    BEGIN
+        RETURN 'Y';
+    END is_stockable;
 
     -- 原材料提前期取供应商档案，缺省 7 天(后面 mrp_pkg 会用实际供应商提前期覆盖)
-    overriding member function lead_time_days return number is
-    begin
-        return 7;
-    end lead_time_days;
+    OVERRIDING MEMBER FUNCTION lead_time_days RETURN NUMBER IS
+    BEGIN
+        RETURN 7;
+    END lead_time_days;
 
-    member function needs_reorder(p_on_hand in number) return varchar2 is
-    begin
-        return case when nvl(p_on_hand, 0) <= nvl(self.reorder_point, 0) then 'Y' else 'N' end;
-    end needs_reorder;
+    MEMBER FUNCTION needs_reorder(p_on_hand IN NUMBER) RETURN VARCHAR2 IS
+    BEGIN
+        RETURN CASE WHEN NVL(p_on_hand, 0) <= NVL(SELF.reorder_point, 0) THEN 'Y' ELSE 'N' END;
+    END needs_reorder;
 
-end;
+END;
 /
 
 
-create or replace type t_finished_good_obj force under t_item_obj (
-    bom_id           number(18),
-    make_lead_days   number,
+CREATE OR REPLACE TYPE t_finished_good_obj FORCE UNDER t_item_obj (
+    bom_id           NUMBER(18),
+    make_lead_days   NUMBER,
 
-    overriding member function valuation_method return varchar2,
-    overriding member function is_stockable return varchar2,
-    overriding member function lead_time_days return number
+    OVERRIDING MEMBER FUNCTION valuation_method RETURN VARCHAR2,
+    OVERRIDING MEMBER FUNCTION is_stockable RETURN VARCHAR2,
+    OVERRIDING MEMBER FUNCTION lead_time_days RETURN NUMBER
 );
 /
 
-create or replace type body t_finished_good_obj as
+CREATE OR REPLACE TYPE BODY t_finished_good_obj AS
 
-    overriding member function valuation_method return varchar2 is
-    begin
-        return 'STD';
-    end valuation_method;
+    OVERRIDING MEMBER FUNCTION valuation_method RETURN VARCHAR2 IS
+    BEGIN
+        RETURN 'STD';
+    END valuation_method;
 
-    overriding member function is_stockable return varchar2 is
-    begin
-        return 'Y';
-    end is_stockable;
+    OVERRIDING MEMBER FUNCTION is_stockable RETURN VARCHAR2 IS
+    BEGIN
+        RETURN 'Y';
+    END is_stockable;
 
-    overriding member function lead_time_days return number is
-    begin
-        return nvl(self.make_lead_days, 1);
-    end lead_time_days;
+    OVERRIDING MEMBER FUNCTION lead_time_days RETURN NUMBER IS
+    BEGIN
+        RETURN NVL(SELF.make_lead_days, 1);
+    END lead_time_days;
 
-end;
+END;
 /
 
 
-create or replace type t_service_item_obj force under t_item_obj (
-    overriding member function valuation_method return varchar2,
-    overriding member function is_stockable return varchar2
+CREATE OR REPLACE TYPE t_service_item_obj FORCE UNDER t_item_obj (
+    OVERRIDING MEMBER FUNCTION valuation_method RETURN VARCHAR2,
+    OVERRIDING MEMBER FUNCTION is_stockable RETURN VARCHAR2
 );
 /
 
-create or replace type body t_service_item_obj as
+CREATE OR REPLACE TYPE BODY t_service_item_obj AS
 
-    overriding member function valuation_method return varchar2 is
-    begin
-        return 'NONE';
-    end valuation_method;
+    OVERRIDING MEMBER FUNCTION valuation_method RETURN VARCHAR2 IS
+    BEGIN
+        RETURN 'NONE';
+    END valuation_method;
 
-    overriding member function is_stockable return varchar2 is
-    begin
-        return 'N';
-    end is_stockable;
+    OVERRIDING MEMBER FUNCTION is_stockable RETURN VARCHAR2 IS
+    BEGIN
+        RETURN 'N';
+    END is_stockable;
 
-end;
+END;
 /
