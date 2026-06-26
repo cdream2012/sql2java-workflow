@@ -27,7 +27,7 @@
 - per-unit 结构：`analysis-packages/{pkg}/{ref}.json`（符合 UnitAnalysisSchema；本 unit 根 + cargo FUNCTION 的子程序结构）
 - FSD 文档：`fsd/{pkg}/{ref}.md`（根 + 每个 cargo FUNCTION 各一份）
 - 聚合 `analysis-packages/{pkg}.json` 由 engine 在分片 advance 后自动 merge，**agent 不直接写**
-- Worker Status：`{{artifactsDir}}/status/analyze.json`
+- Worker Status：`{{artifactsDir}}/status/analyze.json`（**最后一步写**，须含 `shardIndex` = Runtime Context shardIndex —— advance 完成门控，未写/不匹配则 advance 被拒）
 
 ## 硬约束
 

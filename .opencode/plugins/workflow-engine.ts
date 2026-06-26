@@ -933,11 +933,12 @@ function buildSharedInstructions(run: WorkflowRun): string {
 
 ### Worker Status 写入
 
-完成阶段工作后，将 Worker Status 写入 \`\${artifactsDir}/status/\${currentPhase}.json\`：
+完成阶段工作后，将 Worker Status 写入 \`\${artifactsDir}/status/\${currentPhase}.json\`（**本阶段最后一步**——它是 advance 的完成门控，未写则 advance 被拒）：
 
 \`\`\`json
 {
   "phase": "{currentPhase}",
+  "shardIndex": <Runtime Context 的 shardIndex>,
   "status": "completed",
   "startedAt": "...",
   "completedAt": "...",
@@ -945,6 +946,8 @@ function buildSharedInstructions(run: WorkflowRun): string {
   "metrics": { "completedSubprograms": N, "totalSubprograms": N }
 }
 \`\`\`
+
+**分片阶段（analyze/translate）必填 \`shardIndex\`**（取 Runtime Context 的 \`shardIndex\`），advance 据此确认当前分片 Worker 已完成；shardIndex 缺失或不匹配当前分片 → advance 拒绝。非分片阶段省略 \`shardIndex\`。
 
 ### 阶段小结
 
@@ -1344,11 +1347,34 @@ export function mergeUnitAnalysis(artifactsDir: string, pkgName: string): string
  * D5: advance 时从磁盘读取 artifact 并做 Zod 校验
  * 返回 null 表示校验通过，否则返回错误信息
  */
-export function validateArtifactOnDisk(run: WorkflowRun): string | null {
+export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): string | null {
   const phase = run.currentPhase
   if (!phase) return null
 
   const artifactsDir = join(ARTIFACT_DIR, run.runId)
+
+  // ── 串行硬锁（sharded 阶段）：Worker 完成信号门控 ──
+  // analyze/translate 等分片阶段 advance 前，要求 Worker 已写 status/{phase}.json 且 shardIndex 匹配
+  // 当前分片。status 文件是 Worker 的【最后一步】，存在即证明 Worker 真正完成——防止编排者在 Worker
+  // 未完成时 advance 推进到下一分片（跨分片并行 → translate 层级依赖竞态丢方法、依赖签名失效、产物冲突）。
+  // 缺失/shardIndex 不匹配（上一分片残留）→ 拒绝 advance，等 Worker 写完 status 再来。非分片阶段跳过。
+  // 仅 advance 调用（checkStatus=true）；dispatch/resume 调用传 false（worker 尚未跑/刚恢复，status 缺失正常）。
+  const shardPlan = (checkStatus && run.metadata) ? engine.getShardPlan(run) : null
+  if (shardPlan) {
+    const currentShardIndex = engine.findCurrentEntry(run)?.incrementalContext?.shardIndex ?? 0
+    const statusPath = join(artifactsDir, "status", `${phase}.json`)
+    if (!existsSync(statusPath)) {
+      return `Worker 尚未完成：status/${phase}.json 缺失。Worker 须在最后一步写 status 文件（含 shardIndex=${currentShardIndex}）后才能 advance；等 Worker 输出 WORKER_SUMMARY 后再 advance。⛔ 串行：translate 有层级依赖，分片必须按序完成。`
+    }
+    try {
+      const statusJson = JSON.parse(readFileSync(statusPath, "utf-8"))
+      if (statusJson?.shardIndex !== currentShardIndex) {
+        return `Worker 尚未完成：status/${phase}.json 的 shardIndex=${statusJson?.shardIndex} 不匹配当前分片 ${currentShardIndex}（可能是上一分片残留）。等当前分片 Worker 写完 status（shardIndex=${currentShardIndex}）后再 advance。`
+      }
+    } catch {
+      return `Worker 尚未完成：status/${phase}.json 解析失败。Worker 须重写合法 status 文件（含 shardIndex=${currentShardIndex}）后再 advance。`
+    }
+  }
 
   // analyze 阶段：analysis.json 已归 inventory 产出（不在此校验），只验逐包 analysis-packages + FSD。
   // PROCEDURE 级（unit 模式，procedureOrder 存在）：agent 写 per-procedure analysis-packages/{pkg}/{ref}.json
@@ -3772,8 +3798,8 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                 }
               }
 
-              // 校验 artifact 完整性决定策略
-              const validationError = validateArtifactOnDisk(run)
+              // 校验 artifact 完整性决定策略（不查 status 门控：resume 时 worker 尚未跑，status 缺失正常）
+              const validationError = validateArtifactOnDisk(run, false)
               const strategy = validationError ? "restart_phase" : "continue_phase"
 
               return {
@@ -3981,7 +4007,8 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
 
             // 检测当前阶段是否有 artifact 校验错误（advance rejected 后重新 dispatch 的场景）
             // 重新执行 Zod 校验，如果有错误则注入到 workOrder 让 Worker 修正
-            const artifactValidationError = validateArtifactOnDisk(run)
+            // 不查 status 门控（checkStatus=false）：dispatch 时 worker 尚未跑/刚跑完，status 缺失不应当作 artifact 错误注入
+            const artifactValidationError = validateArtifactOnDisk(run, false)
 
             // activeShardPlan 在分支前计算，供 workOrder 构造 + 返回块 shardLine 共用
             const activeShardPlan = engine.getShardPlan(run)
@@ -4267,6 +4294,12 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             )
 
             workOrder = workOrderParts.join("\n")
+            // 非分片阶段同样落盘 workOrder，供 system.transform 注入 worker 系统提示（编排者不再中转全文）
+            try {
+              persistWorkOrder(artifactsDir, run.currentPhase, undefined, workOrder)
+            } catch (e: any) {
+              getLogger().warn("[dispatch]", `persistWorkOrder 失败（不阻断）: ${e.message}`)
+            }
             } // end else（非 analyze/translate 走 workOrderParts）
 
             const banner = formatPhaseStartBanner(run.currentPhase)
@@ -4289,41 +4322,19 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               ? `\n⚠️ dedup 已跳过（PMD CPD 不可用）：${dedupScanSkipped.skipReason}\n   引擎已写占位 dedup.json（skipped:true），pipeline 继续——dedup 是优化项，不影响 verify 正确性验证。`
               : ""
 
-            // analyze/translate 分片：workOrder 已注入 worker 系统提示（system.transform），编排者无需中转
-            // workOrder 全文——发最小 subtask 即可。避免编排者 cat dispatch-logs/workOrder 文件污染主上下文。
-            // 其他阶段：workOrder 仅在 metadata（worker 系统提示只有 runtimeContext），编排者须逐字透传。
-            if (isShardedWorkerPhase) {
-              // 静态 subtask 触发器（.md 模板，非运行时拼接）。所有分片细节在 worker 系统提示的 workOrder 里。
-              const minimalPrompt = getSubtaskTriggerPrompt()
-              return {
-                title: `Dispatch: ${run.currentPhase}`,
-                output: `${banner}📋 调度 ${agentName} 执行 ${run.currentPhase} 阶段${shardLine}\n✅ workOrder 已由引擎注入 worker 系统提示。发起 SubtaskPartInput 时 prompt 用**静态触发器**（metadata.minimalSubtaskPrompt，勿含 workOrder 全文）：\n  "${minimalPrompt}"\n⛔ 禁止 cat/Read dispatch-logs/ 下任何 workOrder 文件，禁止把 workOrder 全文塞进 subtask.prompt——worker 已从系统提示拿到完整任务，中转会污染你的主上下文。\n⛔ **串行调度：本 turn 只发这一个 subtask，等 Worker WORKER_SUMMARY + advance（非 rejected）后再 dispatch 下一分片；禁止并行/批量发 subtask（translate 层级依赖，并行竞态丢方法）。**\n📌 调用 todowrite 更新进度（${run.currentPhase}=in_progress，priority 保持原值）${dedupSkipNotice}`,
-                metadata: {
-                  runId: run.runId,
-                  phase: run.currentPhase,
-                  agent: agentName,
-                  description: phaseConfig.description ?? run.currentPhase,
-                  workOrder: `(已注入 worker 系统提示；完整内容落盘 dispatch-logs/，编排者无需读取)`,
-                  minimalSubtaskPrompt: minimalPrompt,
-                  shardIndex: si,
-                  totalShards: ts,
-                  targetUnits: ic?.targetUnits,
-                  targetPackages: ic?.targetPackages,
-                  dispatch: true,
-                  nextAction: "dispatch",
-                },
-              }
-            }
-
+            // 所有阶段：workOrder 已由引擎注入 worker 系统提示（system.transform 读 dispatch-logs/ 持久化文件），
+            // 编排者无需中转 workOrder 全文——发最小 subtask 触发器即可。避免 workOrder 堆积污染主上下文。
+            const minimalPrompt = getSubtaskTriggerPrompt()
             return {
               title: `Dispatch: ${run.currentPhase}`,
-              output: `${banner}📋 调度 ${agentName} 执行 ${run.currentPhase} 阶段${shardLine}\n⛔ 发起 SubtaskPartInput 时 prompt 必须【逐字】= metadata.workOrder（它是完整任务**字符串**，已含分片硬约束 + 切片读取清单 + 输出路径，非文件路径）。直接放进 subtask.prompt，禁止改写/摘要/自撰任务描述，禁止让 Worker 去 Read 任何 workOrder 文件——否则 Worker 会越界处理所有 unit。\n⛔ **串行调度：本 turn 只发这一个 subtask，等 Worker WORKER_SUMMARY + advance（非 rejected）后再 dispatch 下一分片；禁止并行/批量发 subtask。**\n📌 调用 todowrite 更新进度（${run.currentPhase}=in_progress，priority 保持原值）${dedupSkipNotice}`,
+              output: `${banner}📋 调度 ${agentName} 执行 ${run.currentPhase} 阶段${shardLine}\n✅ workOrder 已由引擎注入 worker 系统提示（落盘 dispatch-logs/）。发起 SubtaskPartInput 时 prompt 用**静态触发器**（metadata.minimalSubtaskPrompt，勿含 workOrder 全文）：\n  "${minimalPrompt}"\n⛔ 禁止 cat/Read dispatch-logs/ 下任何 workOrder 文件，禁止把 workOrder 全文塞进 subtask.prompt——worker 已从系统提示拿到完整任务，中转会污染你的主上下文。\n⛔ **串行调度：本 turn 只发这一个 subtask，等 Worker WORKER_SUMMARY + advance（非 rejected）后再 dispatch 下一阶段/分片；禁止并行/批量发 subtask。**\n📌 调用 todowrite 更新进度（${run.currentPhase}=in_progress，priority 保持原值）${dedupSkipNotice}`,
               metadata: {
                 runId: run.runId,
                 phase: run.currentPhase,
                 agent: agentName,
                 description: phaseConfig.description ?? run.currentPhase,
-                workOrder,
+                workOrder: `(已注入 worker 系统提示；完整内容落盘 dispatch-logs/，编排者无需读取)`,
+                minimalSubtaskPrompt: minimalPrompt,
                 shardIndex: si,
                 totalShards: ts,
                 targetUnits: ic?.targetUnits,
@@ -4629,12 +4640,12 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
         // D13 已迁至 dispatch workOrder — schema hint 不再注入 system prompt（单一来源原则）
         // 分片硬约束 banner 置于系统提示最前（确定性兜底，压过编排者自撰的通用任务提示）
         const shardBanner = run ? buildShardScopeBanner(run) : ""
-        // analyze/translate：注入 dispatch 持久化的 .md workOrder 作权威任务（确定性，不依赖编排者透传）。
-        // workOrder 已含 scopeBanner + Runtime Context + 切片读取清单 + 依赖签名，故替代单独的 shardBanner
-        // + runtimeContext（避免重复）。缺失（dispatch 未落盘 / 旧 run）则回退 shardBanner + runtimeContext。
+        // 所有阶段：注入 dispatch 持久化的 workOrder 作权威任务（确定性，不依赖编排者透传）。
+        // workOrder 自包含 Runtime Context 实际值 + 任务范围 + schema hint + 路径规则（分片阶段另含 scopeBanner
+        // + 切片读取清单 + 依赖签名），故替代单独的 shardBanner + runtimeContext（避免重复）。缺失
+        //（dispatch 未落盘 / 旧 run）则回退 shardBanner + runtimeContext。
         let persistedWorkOrder: string | null = null
-        const isShardedWorkerPhase = currentWorkflowContext.phase === "analyze" || currentWorkflowContext.phase === "translate"
-        if (isShardedWorkerPhase && run) {
+        if (run) {
           try {
             const ce = engine.findCurrentEntry(run)
             const si = ce?.incrementalContext?.shardIndex as number | undefined
