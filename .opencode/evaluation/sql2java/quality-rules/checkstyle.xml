@@ -225,6 +225,25 @@
         <!-- 此项难以用 Checkstyle 精确检查，留给 review 阶段 -->
 
         <!-- ═══════════════════════════════════════════════════ -->
+        <!-- (五扩展) 方法质量 — 对应评审反馈 #4                    -->
+        <!-- ═══════════════════════════════════════════════════ -->
+
+        <!-- 3.11 单方法不超过 80 行 -->
+        <module name="MethodLength">
+            <property name="max" value="80"/>
+            <property name="countEmpty" value="false"/>
+            <message key="maxLen.method"
+                     value="方法超过 80 行，应拆分（java-code-spec 三.11）"/>
+        </module>
+
+        <!-- 方法圈复杂度不超过 10 -->
+        <module name="CyclomaticComplexity">
+            <property name="max" value="10"/>
+            <message key="cyclomaticComplexity.tooHigh"
+                     value="圈复杂度超过 10，应拆分简化（java-code-spec 方法质量）"/>
+        </module>
+
+        <!-- ═══════════════════════════════════════════════════ -->
         <!-- Java 8 合规检查（禁止 Java 9+ 语法和 API）           -->
         <!-- ═══════════════════════════════════════════════════ -->
 

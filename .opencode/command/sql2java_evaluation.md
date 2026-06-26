@@ -175,7 +175,7 @@ mkdir -p "$REPORT_DIR"
   ReportDir: .opencode/evaluation/sql2java/baselines/run-20260612-143022/
   执行模式: L1串行 → L2+L3并行 → L4串行 → 汇总
 
-  L1 转译效率度量      ✅ 完成    firstPassRate: 100%
+  L1 转译效率度量      ✅ 完成    firstPassRate: 100% | 耗时: 8m | Tokens: 308K
   L2 代码质量度量      ✅ 完成    总分: 92.3 (A)
   L3 语义分析度量      ⏳ 中断    已完成: sqlCoverage + tableCoverage
   L4 行为等价度量      ⬚ 未开始
@@ -368,7 +368,14 @@ L1 完成后，主 Agent 使用 `Agent` 工具同时启动两个 Subagent 处理
      {outputDir}/src/main/java
    写入 {reportDir}/l2-checkstyle.log
    统计违规总数 → details.checkstyleViolations
-   按类别分类：ByName / ByFormat / ByOop / ByException / java8Violations
+   按类别分类：ByName / ByFormat / ByOop / ByException / java8Violations / ByMethodComplexity
+   分类规则：
+   - 包含 Name/name/命名 → ByName
+   - 包含 Indent/Line/length/行宽/缩进 → ByFormat
+   - 包含 Override/Final/BigDecimal → ByOop
+   - 包含 Catch/Empty/空 catch → ByException
+   - 包含 Java8/Java 9~15 → java8Violations
+   - 包含 方法超过/圈复杂度/复杂度超过 → ByMethodComplexity
    score.style = max(0, (1 - checkstyleViolations / javaLoc) * 100)
 
 4. 综合评分：
@@ -416,7 +423,9 @@ L1 完成后，主 Agent 使用 `Agent` 工具同时启动两个 Subagent 处理
    - grep -rcn "catch\s*(" {outputDir}/src/main/java → javaCatches
    - grep -rcn "RAISE_APPLICATION_ERROR" {sourceDir} → plsqlRaises
    - grep -rcn "throw new" {outputDir}/src/main/java → javaThrows
-   - ratio = javaCatches / plsqlExceptions
+   - grep -rn "catch\s*\([^)]+\)\s*\{\s*\}" {outputDir}/src/main/java --include="*.java" | wc -l → emptyCatchCount（近似值，仅单行形式）
+   - effectiveCatchCount = javaCatches - emptyCatchCount
+   - ratio = effectiveCatchCount / plsqlExceptions（空catch不算有效映射）
    - score.exceptionMapping = max(0, round((1 - |ratio - 1|) * 100))
 
 5. 控制流结构匹配：
@@ -517,68 +526,153 @@ L1 数据由 `/sql2java` 工作流在执行过程中**自动采集**，无需手
 ### 执行步骤
 
 1. **读取** `run-metrics.json`（bash `cat` + 解析 JSON）
-2. **提取直接指标**：
+
+2. **提取摘要组** `summary`：
 
 ```
-totalCost           ← .totalCost
-totalDurationMs     ← .totalWallDurationMs
-totalApiCalls       ← .totalApiCallCount
-totalTokens         ← .totalTokens { input, output, cacheRead }
-oraclePackages      ← .business.oraclePackageCount
-oracleProcedures    ← .business.oracleProcedureCount
-javaFiles           ← .business.javaFileCount
-testFiles           ← .business.testFileCount
-reviewAvgScore      ← .business.reviewAverageScore
-reviewPassRate      ← .business.reviewPassedRate
-compilationSuccess  ← .business.compilationSuccess
-todosRemaining      ← .business.totalTodosRemaining
-fixCycles           ← .business.fixCyclesCount
+firstPassRate      ← .business.reviewPassedRate
+fixCycles          ← .business.fixCyclesCount
+fixCostRatio       ← sum(phases[phase="fix"].totalCost) / totalCost（totalCost>0 时计算，否则 0）
+totalDurationMs    ← .totalWallDurationMs
+totalApiCalls      ← .totalApiCallCount
+totalToolCalls     ← .totalToolCallCount
 ```
 
-3. **计算派生指标**：
+3. **提取 token 使用量** `tokens` — 确定性数据，始终有值：
 
 ```
-costPerSubprogram   = totalCost / oracleProcedures（除零则 null）
-throughputPerHour   = oracleProcedures / (totalDurationMs / 3600000)（除零则 null）
-fixCostRatio        = sum(phases[phase="fix"].totalCost) / totalCost
+input / output / cacheRead / cacheWrite / reasoning ← .totalTokens 各字段
+total ← input + output + cacheRead + cacheWrite + reasoning
 ```
 
-4. **写入** `{reportDir}/l1-metrics.json`
+4. **条件提取费用组** `cost` — 仅 `totalCost > 0` 时写入：
+
+```
+totalCost          ← .totalCost（>0 才写入 cost 组，0 或 null 时整组省略）
+costPerSubprogram  ← totalCost / oracleProcedures（oracleProcedures>0 时才写入）
+```
+
+5. **提取吞吐量组** `throughput`：
+
+```
+oracleProcedures      ← .business.oracleProcedureCount
+throughputPerHour     ← oracleProcedures / (totalDurationMs / 3600000)（totalDurationMs>0 且 oracleProcedures>0 时）
+durationPerPhase      ← 遍历 .phases 数组，提取 { phase名: wallDurationMs }
+```
+
+6. **提取产出组** `output`：
+
+```
+oraclePackages        ← .business.oraclePackageCount
+oracleProcedures      ← .business.oracleProcedureCount
+javaFiles             ← .business.javaFileCount
+testFiles             ← .business.testFileCount
+todosRemaining        ← .business.totalTodosRemaining
+compilationSuccess    ← .business.compilationSuccess
+reviewAverageScore    ← .business.reviewAverageScore
+```
+
+7. **提取逐阶段明细** `phaseBreakdown`：
+
+```
+遍历 .phases 数组，每阶段提取:
+  { phase, durationMs ← wallDurationMs, apiCalls ← apiCallCount, tokens: { input, output } }
+```
+
+8. **组装并写入** `{reportDir}/l1-metrics.json`（cost 组为空时不写入该字段）
 
 ### 输出
+
+写入 `{reportDir}/l1-metrics.json`。
+
+采用**分组结构**替代原扁平结构：确定性数据（tokens、耗时、产出）分组优先展示，费用组仅在数据可用时写入（`totalCost > 0`），否则整组省略。
 
 ```json
 {
   "runId": "run-20260612-143022",
   "status": "completed",
   "datasetLevel": "tiny",
-  "totalCost": 0.85,
-  "costPerSubprogram": 0.0567,
-  "totalDurationMs": 480000,
-  "throughputPerHour": 56.3,
-  "totalApiCalls": 42,
-  "totalTokens": { "input": 185000, "output": 28000, "cacheRead": 95000 },
-  "firstPassRate": 100,
-  "fixCycles": 0,
-  "fixCostRatio": 0.0,
-  "oraclePackages": 2,
-  "oracleProcedures": 15,
-  "javaFiles": 18,
-  "testFiles": 4,
-  "reviewAverageScore": 88,
-  "compilationSuccess": true,
-  "todosRemaining": 1
+
+  "summary": {
+    "firstPassRate": 100,
+    "fixCycles": 0,
+    "fixCostRatio": 0.0,
+    "totalDurationMs": 480000,
+    "totalApiCalls": 42,
+    "totalToolCalls": 68
+  },
+
+  "tokens": {
+    "input": 185000,
+    "output": 28000,
+    "cacheRead": 95000,
+    "cacheWrite": 0,
+    "reasoning": 12000,
+    "total": 308000
+  },
+
+  "cost": {
+    "totalCost": 0.85,
+    "costPerSubprogram": 0.0567
+  },
+
+  "throughput": {
+    "oracleProcedures": 15,
+    "throughputPerHour": 56.3,
+    "durationPerPhase": {
+      "inventory": 12000,
+      "analyze": 45000,
+      "plan": 35000,
+      "scaffold": 28000,
+      "translate": 180000,
+      "dedup": 60000,
+      "review": 75000,
+      "verify": 40000
+    }
+  },
+
+  "output": {
+    "oraclePackages": 2,
+    "oracleProcedures": 15,
+    "javaFiles": 18,
+    "testFiles": 4,
+    "todosRemaining": 1,
+    "compilationSuccess": true,
+    "reviewAverageScore": 88
+  },
+
+  "phaseBreakdown": [
+    { "phase": "inventory",  "durationMs": 12000, "apiCalls": 5,  "tokens": { "input": 12000, "output": 3000 } },
+    { "phase": "analyze",    "durationMs": 45000, "apiCalls": 8,  "tokens": { "input": 35000, "output": 8000 } },
+    { "phase": "plan",       "durationMs": 35000, "apiCalls": 6,  "tokens": { "input": 28000, "output": 5000 } },
+    { "phase": "scaffold",   "durationMs": 28000, "apiCalls": 7,  "tokens": { "input": 22000, "output": 4000 } },
+    { "phase": "translate",  "durationMs": 180000,"apiCalls": 12, "tokens": { "input": 85000, "output": 6000 } },
+    { "phase": "dedup",      "durationMs": 60000, "apiCalls": 3,  "tokens": { "input": 8000, "output": 2000 } },
+    { "phase": "review",     "durationMs": 75000, "apiCalls": 6,  "tokens": { "input": 20000, "output": 4000 } },
+    { "phase": "verify",     "durationMs": 40000, "apiCalls": 3,  "tokens": { "input": 3000, "output": 2000 } }
+  ]
 }
 ```
+
+#### 条件省略规则
+
+| 分组 | 省略条件 | 说明 |
+|------|---------|------|
+| `cost` | `totalCost === 0` 或 `totalCost === null` | 很多模型不提供费用数据，0 值或 null 时整个 cost 组不写入 JSON |
+| `cost.costPerSubprogram` | `oracleProcedures === 0` | 除零保护，不写 null |
+| `throughput.throughputPerHour` | `totalDurationMs === 0` 或 `oracleProcedures === 0` | 除零保护 |
+| `tokens` | 永不省略 | token 数据始终有值（PhaseMetricsCollector 确定性采集） |
+| `phaseBreakdown` | 永不省略 | phases 数组始终存在 |
 
 ### 指标健康基准
 
 | 指标 | 健康 | 告警 | 说明 |
 |------|------|------|------|
-| costPerSubprogram | $0.03~$0.10 | >$0.20 | 超过说明 LLM 调用冗余或 fix 循环多 |
-| fixCostRatio | <15% | >30% | 超过说明翻译质量差 |
-| firstPassRate | >80% | <50% | 低于说明 translator prompt 需优化 |
-| throughputPerHour | >40 | <20 | 低于说明响应慢或工具调用过多 |
+| firstPassRate | >80% | <50% | review 首轮通过率，低于说明 translator prompt 需优化 |
+| throughputPerHour | >40 | <20 | 每小时翻译子程序数，低于说明响应慢或工具调用过多 |
+| fixCycles | 0~1 | >3 | fix 循环次数，过多说明翻译质量差 |
+| fixCostRatio | <15% | >30% | fix 成本占总成本比例（仅费用可用时评估） |
+| costPerSubprogram | $0.03~$0.10 | >$0.20 | 单子程序费用（仅费用可用时评估） |
 
 ---
 
@@ -648,6 +742,7 @@ java -jar .opencode/evaluation/sql2java/tools/checkstyle-10.12.5-all.jar \
 - 包含 `Override` / `Final` / `BigDecimal` → `checkstyleByOop`（OOP 类）
 - 包含 `Catch` / `Empty` / `空 catch` → `checkstyleByException`（异常类）
 - 包含 `Java8` / `Java 9` / `Java 10` / `Java 11` / `Java 12` / `Java 13` / `Java 14` / `Java 15` → `java8Violations`（Java 8 合规类）
+- 包含 `方法超过` / `圈复杂度` / `复杂度超过` → `checkstyleByMethodComplexity`（方法质量类）
 
 `score.style = max(0, (1 - checkstyleViolations / javaLoc) * 100)`
 
@@ -685,7 +780,8 @@ L2 总分 = score.todo     × 0.30
     "checkstyleByFormat": 2,
     "checkstyleByOop": 0,
     "checkstyleByException": 1,
-    "java8Violations": 0
+    "java8Violations": 0,
+    "checkstyleByMethodComplexity": 0
   }
 }
 ```
@@ -769,9 +865,11 @@ grep -rcn "EXCEPTION\s\+WHEN"      {sourceDir} → plsqlExceptions
 grep -rcn "catch\s*("              {outputDir}/src/main/java → javaCatches
 grep -rcn "RAISE_APPLICATION_ERROR" {sourceDir} → plsqlRaises
 grep -rcn "throw new"              {outputDir}/src/main/java → javaThrows
+grep -rn "catch\s*\([^)]+\)\s*\{\s*\}" {outputDir}/src/main/java --include="*.java" | wc -l → emptyCatchCount（近似值，仅单行形式）
 ```
 
-`ratio = javaCatches / plsqlExceptions`
+`effectiveCatchCount = javaCatches - emptyCatchCount`（空catch不算有效映射）
+`ratio = effectiveCatchCount / plsqlExceptions`
 `score.exceptionMapping = max(0, round((1 - |ratio - 1|) * 100))`（比率越接近 1.0 越好）
 
 #### Step 5: 控制流结构匹配
@@ -988,6 +1086,8 @@ L3 总分 = score.sqlCoverage        × 0.25
     "javaCatches": 7,
     "plsqlRaises": 4,
     "javaThrows": 5,
+    "emptyCatchCount": 1,
+    "effectiveCatchCount": 6,
     "controlFlowVectors": {
       "plsql": { "if": 18, "loop": 4, "return": 8 },
       "java":  { "if": 20, "loop": 3, "return": 9 },
@@ -1399,13 +1499,40 @@ totalScore = sum(各层得分 × 权重) / sum(已执行权重)
 
 ## L1 转译效率度量
 
+### 产出概览
+
+| 指标 | 值 |
+|------|-----|
+| Oracle 包/子程序 | 2 包 / 15 子程序 |
+| Java 文件产出 | 18 源文件 + 4 测试文件 |
+| 编译成功 | ✅ |
+| 首次通过率 | 100%（review 首轮无 must-fix） |
+| Fix 循环 | 0 次 |
+| TODO 残留 | 1 |
+| review 平均分 | 88 |
+
+### 资源消耗
+
+| 指标 | 值 | 说明 |
+|------|-----|------|
+| 总耗时 | 8 分钟 | 各阶段: inventory 12s → analyze 45s → plan 35s → scaffold 28s → translate 3m → dedup 1m → review 1m15s → verify 40s |
+| API 调用 | 42 次 | 工具调用 68 次 |
+| Token 使用 | 308K | input 185K / output 28K / cache 95K |
+
+### 效率指标
+
 | 指标 | 值 | 健康范围 |
 |------|-----|---------|
-| 总费用 | $0.85 | — |
+| 吞吐量 | 56 子程序/小时 | >40 ✅ |
+
+### 费用明细
+
+> ⚠️ 费用数据仅在 API 返回 cost 信息时可用。当前 run 费用为 $0.85。
+
+| 指标 | 值 | 健康范围 |
+|------|-----|---------|
 | 单子程序成本 | $0.057 | $0.03~$0.10 ✅ |
-| 吞吐量 | 56.3 子程序/小时 | >40 ✅ |
-| 首次通过率 | 100% | >80% ✅ |
-| Fix 循环 | 0 次 | — |
+| Fix 成本占比 | 0% | <15% ✅ |
 
 ## L2 代码质量度量 (评级: A)
 
@@ -1421,7 +1548,7 @@ totalScore = sum(各层得分 × 权重) / sum(已执行权重)
 | SQL 覆盖率 | 87/100 | MyBatis 26/31 |
 | 表覆盖率 | 95/100 | 未覆盖: t_uom_conversion |
 | 子程序映射 | 93/100 | 未映射: archive_before |
-| 异常映射 | 89/100 | catch 7 vs EXCEPTION 8 |
+| 异常映射 | 89/100 | 有效 catch 6 vs EXCEPTION 8（空catch 1 不计入） |
 | 控制流 | 91/100 | 余弦相似度 0.987 |
 
 ## L4 行为等价度量 (降级模式: H2)

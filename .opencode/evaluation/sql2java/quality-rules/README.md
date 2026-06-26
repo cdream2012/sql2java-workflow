@@ -61,6 +61,13 @@
 |------|------|----------------|---------|------|
 | 五.异常 | 禁止空 catch 块 | `EmptyCatchBlock` | warning | 允许变量名为 `expected`/`ignore`/`ignored` |
 
+### (五扩展) 方法质量
+
+| 条款 | 规则 | Checkstyle 模块 | 严重级别 | 说明 |
+|------|------|----------------|---------|------|
+| 三.11 | 单方法不超过 80 行 | `MethodLength` | warning | max=80, countEmpty=false |
+| 方法质量 | 圈复杂度不超过 10 | `CyclomaticComplexity` | warning | max=10 |
+
 ### Java 8 合规检查
 
 对应 java-code-spec 中"禁止的 Java 9+ 语法和 API"段落的 12 条规则。
@@ -92,7 +99,6 @@
 | 一.10 | 避免父子类同名变量 | 需要跨类分析 |
 | 一.11 | 杜绝不规范缩写 | 需要语义理解 |
 | 二.1 | 禁止魔法值 | 需要上下文判断（`0`、`1` 等是否属于魔法值） |
-| 三.11 | 单方法不超过 80 行 | 可用 MethodLength 模块补充，当前未启用 |
 | 四.14 | 构造方法禁止业务逻辑 | 需要语义理解 |
 | 五.集合 | entrySet 遍历（非 keySet） | 需要数据流分析 |
 | 八.注释 | @author/@date 格式 | 可用 JavadocMethod 模块补充，当前未启用 |
@@ -108,6 +114,11 @@ score.style = max(0, (1 - violations / javaLoc) * 100)
 - `violations`：Checkstyle 输出的 `[WARN]` + `[ERROR]` 总行数
 - `javaLoc`：Java 源码总行数
 - 违规率越低，得分越接近 100
+
+### 违规分类新增
+
+L2 评估中 `checkstyleByMethodComplexity` 分类：
+- 包含 `方法超过` / `圈复杂度` / `复杂度超过` → `checkstyleByMethodComplexity`（方法质量类）
 
 ## 自定义与扩展
 
