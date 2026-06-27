@@ -715,7 +715,10 @@ function buildRuntimeContext(run: WorkflowRun): string {
       lines.push(`  targetPackages: ${JSON.stringify(currentEntry.incrementalContext.targetPackages)}`)
     }
     if (currentEntry.incrementalContext.shardIndex !== undefined) {
-      lines.push(`  shardIndex: ${currentEntry.incrementalContext.shardIndex}`)
+      // Runtime Context 注入 1-based 分片号（= 内部 field + 1），与「分片 N/M」显示一致——
+      // worker 据此写 status.shardIndex。内部 incrementalContext.shardIndex 仍 0-based（completedShards
+      // 数组下标依赖它，见 engine-core advance）。避免 worker 看到 0/1 两套数字写错值。
+      lines.push(`  shardIndex: ${currentEntry.incrementalContext.shardIndex + 1}`)
       lines.push(`  totalShards: ${currentEntry.incrementalContext.totalShards ?? "?"}`)
     }
     const pf = currentEntry.incrementalContext.previousFindings
@@ -1372,7 +1375,8 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
   // 仅 advance 调用（checkStatus=true）；dispatch/resume 调用传 false（worker 尚未跑/刚恢复，status 缺失正常）。
   const shardPlan = (checkStatus && run.metadata) ? engine.getShardPlan(run) : null
   if (shardPlan) {
-    const currentShardIndex = engine.findCurrentEntry(run)?.incrementalContext?.shardIndex ?? 0
+    // 1-based（= 内部 field + 1），与 Runtime Context 注入给 worker 的值一致（worker 按该值写 status）
+    const currentShardIndex = (engine.findCurrentEntry(run)?.incrementalContext?.shardIndex ?? 0) + 1
     const statusPath = join(artifactsDir, "status", `${phase}.json`)
     if (!existsSync(statusPath)) {
       return `Worker 尚未完成：status/${phase}.json 缺失。Worker 须在最后一步写 status 文件（含 shardIndex=${currentShardIndex}）后才能 advance；等 Worker 输出 TASK_STATUS 后再 advance。⛔ 串行：translate 有层级依赖，分片必须按序完成。`
@@ -4689,7 +4693,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             const dumpDir = join(ARTIFACT_DIR, currentWorkflowContext.runId, "system-prompt-dumps")
             if (!existsSync(dumpDir)) mkdirSync(dumpDir, { recursive: true })
             const sidShort = sidKey ? sidKey.slice(0, 8) : "nosid"
-            const name = `${currentWorkflowContext.phase}-shard${si ?? "x"}-${sidShort}.md`
+            const name = `${currentWorkflowContext.phase}-shard${si !== undefined ? si + 1 : "x"}-${sidShort}.md`
             writeFileSync(join(dumpDir, name), finalSystem, "utf-8")
           }
         } catch (e: any) {

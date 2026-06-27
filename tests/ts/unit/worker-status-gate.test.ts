@@ -70,22 +70,24 @@ describe("status 文件门控（sharded 阶段串行硬锁）", () => {
   })
 
   it("status shardIndex 不匹配当前分片 → 拒绝（上一分片残留）", () => {
-    writeStatus("translate", 0) // 残留 shard 0 的 status
-    const err = validateArtifactOnDisk(makeShardedRun("translate", 1)) // 当前是 shard 1
+    // status 用 1-based（= field + 1，worker 按 Runtime Context 写）。当前 field=1 → 期望 2；
+    // 残留写 1（上一分片 field 0 的 1-based）→ 不匹配 → 拒绝。
+    writeStatus("translate", 1)
+    const err = validateArtifactOnDisk(makeShardedRun("translate", 1)) // 当前 field 1（0-based 第二分片）
     expect(err).toMatch(/尚未完成/)
     expect(err).toMatch(/shardIndex/)
-    expect(err).toContain("0") // 残留的 shardIndex
+    expect(err).toContain("1") // 残留的 1-based shardIndex
   })
 
   it("status shardIndex 匹配当前分片 → 不因 status 门控拒绝（放行到后续校验）", () => {
-    writeStatus("translate", 1) // 匹配当前 shard 1
+    writeStatus("translate", 2) // 匹配当前 field 1 → currentShardIndex 2（1-based）
     const err = validateArtifactOnDisk(makeShardedRun("translate", 1))
     // 门控通过：错误（若有）不应是 status 门控的 "尚未完成"
     expect(err === null || !/尚未完成/.test(err)).toBe(true)
   })
 
   it("analyze 阶段同样走 status 门控", () => {
-    writeStatus("analyze", 0)
+    writeStatus("analyze", 1) // 匹配当前 field 0 → currentShardIndex 1（1-based）
     const err = validateArtifactOnDisk(makeShardedRun("analyze", 0))
     expect(err === null || !/尚未完成/.test(err)).toBe(true)
   })
