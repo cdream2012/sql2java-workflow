@@ -28,6 +28,10 @@ import { refNamesForPackage, pkgOf, refOf } from "../workflow/refname"
 import { parseInventoryPackage, parseAnalysisPackage, type InventoryPackageParsed } from "../workflow/package-parser"
 import { buildInventoryFromIndex } from "../workflow/inventory-builder"
 import { buildAnalysisFromIndex } from "../workflow/analysis-builder"
+import {
+  parseMainEntry, resolveEntry, computeClosure, readScope, constOnlyScopePkgs,
+  type RunScope, type InventoryPackageLike,
+} from "../workflow/scope-computer"
 import { renderWorkerPrompt, persistWorkOrder, readPersistedWorkOrder, getSubtaskTriggerPrompt } from "../workflow/prompt-renderer"
 import { buildReviewSummary } from "../workflow/review-summary-builder"
 import { buildVerifySummary } from "../workflow/verify-summary-builder"
@@ -795,6 +799,105 @@ export function healShardIncrementalContext(
 }
 
 /**
+ * 大小写不敏感读取入口包的 inventory-packages/{pkg}.json（Oracle 标识符大小写不敏感，
+ * 用户给的 mainEntry 包名大小写可能与磁盘文件名不一致）。
+ * 返回 InventoryPackageLike（packageName/specFile/bodyFile/procedures）或 null。
+ */
+function loadEntryPkgRaw(artifactsDir: string, pkg: string): InventoryPackageLike | null {
+  const pkgDir = join(artifactsDir, "inventory-packages")
+  // 1) 精确名
+  const exact = join(pkgDir, `${pkg}.json`)
+  if (existsSync(exact)) {
+    try {
+      const inv = JSON.parse(readFileSync(exact, "utf-8"))
+      return {
+        packageName: inv.packageName ?? pkg,
+        specFile: inv.specFile ?? null,
+        bodyFile: inv.bodyFile ?? null,
+        procedures: Array.isArray(inv.procedures) ? inv.procedures : [],
+      }
+    } catch { /* fall through to case-insensitive */ }
+  }
+  // 2) 大小写不敏感兜底
+  let entries: string[] = []
+  try { entries = readdirSync(pkgDir) } catch { return null }
+  const wantUpper = pkg.toUpperCase()
+  const match = entries.find(f => f.endsWith(".json") && f.slice(0, -5).toUpperCase() === wantUpper)
+  if (!match) return null
+  try {
+    const inv = JSON.parse(readFileSync(join(pkgDir, match), "utf-8"))
+    return {
+      packageName: inv.packageName ?? pkg,
+      specFile: inv.specFile ?? null,
+      bodyFile: inv.bodyFile ?? null,
+      procedures: Array.isArray(inv.procedures) ? inv.procedures : [],
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 计算并持久化过程级入口闭包 scope（feat/proc-entry-scope）。
+ *
+ * 仅当 `run.metadata.mainEntry` 为过程级（`[subdir/]PKG.refName`）且 scope 尚未计算时执行。
+ * 从入口子程序沿 callGraph / packageDependency 算闭包，写入 run.metadata.scopeUnits/
+ * scopePackages/entryUnit 并 persist。
+ *
+ * 返回判别联合：
+ *   - `{ok:true, scope}`  ：scope 已激活（本次计算或命中缓存）。
+ *   - `{ok:false, error}` ：mainEntry 为过程级但入口不可解析 / 闭包计算异常 → **硬失败**，
+ *                          调用方（inventory advance 校验）应据此拒绝 advance，防静默回退全量翻译。
+ *   - `null`              ：mainEntry 非过程级 / 未指定 / analysis 暂不可用 → 全量翻译（合法）。
+ *
+ * @param analysis 已加载的 analysis.json（调用方已 loadArtifactJson，复用避免双读）
+ */
+export type ScopeOutcome = { ok: true; scope: RunScope } | { ok: false; error: string }
+export function ensureRunScope(run: WorkflowRun, analysis: any, artifactsDir: string): ScopeOutcome | null {
+  const md = run.metadata as Record<string, unknown> | undefined
+  if (!md) return null // 无 metadata（测试边缘路径）→ 无 mainEntry → 全量翻译
+  // 已计算则直接返回
+  const existing = readScope(md)
+  if (existing) return { ok: true, scope: existing }
+
+  const mainEntry = md.mainEntry
+  const parsed = parseMainEntry(mainEntry)
+  if (!parsed) return null // 非过程级 mainEntry（或无 mainEntry）→ 全量翻译
+
+  if (!analysis) {
+    // mainEntry 为过程级但 analysis.json 暂不可用（理论上 inventory advance 校验时已就绪）。
+    // 不硬失败（可能是 dispatch 早于 analysis 就绪的瞬态），留空 scope 让后续重试。
+    getLogger().warn("[scope]", `mainEntry 为过程级（${mainEntry}）但 analysis.json 不可用，scope 暂未计算`)
+    return null
+  }
+
+  const entryPkg = loadEntryPkgRaw(artifactsDir, parsed.pkg)
+  const res = resolveEntry(entryPkg ?? undefined, parsed)
+  if (!res.ok) {
+    // 入口不可解析 → 硬失败（拼写错/子程序已改名/subdir 不匹配），不静默回退全量
+    return { ok: false, error: (res as { error: string }).error }
+  }
+
+  let closure
+  try {
+    closure = computeClosure(analysis, res.entrySubprogram)
+  } catch (e: any) {
+    return { ok: false, error: `闭包计算异常: ${e?.message ?? e}` }
+  }
+  md.scopeUnits = closure.scopeUnits
+  md.scopePackages = closure.scopePackages
+  md.entryUnit = closure.entryUnit
+  md.entrySubprogram = res.entrySubprogram
+  engine.persist(run)
+  getLogger().info(
+    "[scope]",
+    `过程级入口 ${res.entrySubprogram} 闭包：${closure.scopeUnits.length} unit / ${closure.scopePackages.length} 包` +
+    (closure.warnings.length ? `（${closure.warnings.join("; ")}）` : ""),
+  )
+  return { ok: true, scope: { scopeUnits: closure.scopeUnits, scopePackages: closure.scopePackages, entryUnit: closure.entryUnit } }
+}
+
+/**
  * 分片范围硬约束 banner（系统提示级，置于 worker system prompt 最前）。
  *
  * 确定性兜底：编排者 LLM 可能不逐字透传 workOrder，自撰通用任务提示（"对每个包的每个子程序生成 FSD"），
@@ -824,6 +927,28 @@ export function buildShardScopeBanner(run: WorkflowRun): string {
       ? `- 源码读 shard-inputs/{pkg}/{ref}/ 切片（引擎已预切），⛔ 禁止 read 整包 body/spec 或 inventory-packages/{pkg}.json。`
       : `- 仅处理以上 ${label}，其他由别的分片处理。`,
     `⛔⛔⛔ 违反 = 越界 + 产物冲突 + 后续分片退化审核 ⛔⛔⛔`,
+    ``,
+  ].join("\n")
+}
+
+/**
+ * 过程级入口闭包 scope 的 workOrder 指令块（feat/proc-entry-scope）。
+ *
+ * mainEntry 为过程级且 scope 已计算时，向所有阶段 workOrder 注入闭包范围说明：
+ * scopeUnits（analyze/translate 只译这些 unit）+ scopePackages（plan/scaffold/review/dedup/verify
+ * 只处理这些包）。无 scope（未指定 mainEntry / 未计算）返回空串，不影响全量翻译。
+ */
+export function buildScopeBanner(run: WorkflowRun): string {
+  const scope = readScope(run.metadata as Record<string, unknown>)
+  if (!scope) return ""
+  const mainEntry = (run.metadata as Record<string, unknown>).mainEntry
+  return [
+    `## 翻译闭包 scope（过程级入口 ${mainEntry}）`,
+    `- 入口 unit: \`${scope.entryUnit}\``,
+    `- scopeUnits（analyze/translate 只处理这些 unit）: ${scope.scopeUnits.join(", ") || "（无）"}`,
+    `- scopePackages（plan/scaffold/review/dedup/verify 只处理这些包）: ${scope.scopePackages.join(", ") || "（无）"}`,
+    `- **仅处理以上闭包范围内的 unit/包；闭包外的不译/不规划/不审/不验证。**`,
+    `- 仅常量/类型被引用的包（在 scopePackages 但其 unit 不在 scopeUnits）只出 scaffold 空壳，不译方法体。`,
     ``,
   ].join("\n")
 }
@@ -886,6 +1011,7 @@ export function buildShardedWorkerOrder(
     upstream = narrowUpstreamForShard(upstream, phase, shardTargetPkgs, completedUnitIds, {
       targetUnits: shardTargetUnits,
       functionOwnership,
+      scopeConstOnlyPkgs: constOnlyScopePkgs(readScope(run.metadata as Record<string, unknown>), shardTargetUnits),
     })
   }
 
@@ -949,6 +1075,7 @@ export function buildShardedWorkerOrder(
   const ctx = {
     shardLabelSuffix,
     scopeBanner,
+    scopeLine: buildScopeBanner(run),
     runId: run.runId,
     sourcePath: sourcePath || "unknown",
     artifactsDir,
@@ -987,7 +1114,7 @@ function buildSharedInstructions(run: WorkflowRun): string {
 | \`artifactsDir\` | artifact 输出目录 | 读取上游 artifact / 写入产出 |
 | \`upstreamArtifacts\` | 上游 artifact 路径列表 | 当前阶段需要读取的文件 |
 | \`incrementalContext\` | 增量模式上下文（可选） | 分片/增量处理范围：analyze/translate 级用 targetUnits（PROCEDURE 单元），包级用 targetPackages；分片模式含 shardIndex/totalShards |
-| \`mainEntry\` | 翻译起点/对外门面包名（可选，由用户输入提取） | 标识对外门面包，后续 plan/scaffold 阶段消费 |
+| \`mainEntry\` | 翻译入口（可选）。过程级 \`subdir/PKG.refName\` 时触发闭包 scope 模式（仅译入口及其调用闭包，见 \`scopeLine\`）；缺省/纯包名时全量翻译 | 标识对外入口，plan/scaffold 消费 |
 | \`projectStructure\` | 自定义目录结构路径列表（可选，由 --spec 提取） | scaffold 阶段使用自定义目录布局替代默认模板 |
 | \`projectRoot\` | Java 项目输出根目录（绝对路径，scaffold 及之后阶段，可选） | scaffold 写入 Java 文件到此目录，后续阶段从此目录读取 |
 
@@ -1465,8 +1592,9 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
     const procedureOrder = (analysis?.procedureOrder as string[][] | undefined) ?? []
     if (procedureOrder.length > 0) {
       const targetUnits = currentEntry?.incrementalContext?.targetUnits
-      // 增量分片：本分片 targetUnits；全量单分片：procedureOrder 全部 unit
-      const units = targetUnits && targetUnits.length > 0 ? targetUnits : procedureOrder.flat()
+      const scope = readScope(run.metadata as Record<string, unknown>)
+      // 增量分片：本分片 targetUnits；scope 单分片：scopeUnits；否则全量 procedureOrder 全部 unit
+      const units = targetUnits && targetUnits.length > 0 ? targetUnits : (scope?.scopeUnits ?? procedureOrder.flat())
       const ownership = (analysis?.functionOwnership as Record<string, string> | undefined) ?? {}
 
       // merge 本分片 unit 所属包的聚合 analysis-packages/{pkg}.json
@@ -1521,8 +1649,9 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
     if (procedureOrder.length > 0) {
       const currentEntry = engine.findCurrentEntry(run)
       const targetUnits = currentEntry?.incrementalContext?.targetUnits
-      // 增量分片：本分片 targetUnits；全量单分片：procedureOrder 全部 unit
-      const units = targetUnits && targetUnits.length > 0 ? targetUnits : procedureOrder.flat()
+      const scope = readScope(run.metadata as Record<string, unknown>)
+      // 增量分片：本分片 targetUnits；scope 单分片：scopeUnits；否则全量 procedureOrder 全部 unit
+      const units = targetUnits && targetUnits.length > 0 ? targetUnits : (scope?.scopeUnits ?? procedureOrder.flat())
       const touchedPkgs = [...new Set(units.map(pkgOf))]
       for (const pkg of touchedPkgs) {
         const err = mergeUnitTranslations(artifactsDir, pkg)
@@ -1540,9 +1669,12 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
       // 空包兜底：无 unit 的包（spec-only/类型包，procedureOrder 无其 unit）不会被任何分片触及，
       // 需确保它们也有聚合 translation.json（completed 空 stub），否则下游 review/verify 读不到。
       // mergeUnitTranslations 对空包写 stub；这里只对尚无 translation.json 的空包调用，避免重复写。
-      const unitPkgs = new Set(procedureOrder.flat().map(pkgOf))
+      const unitPkgs = new Set((scope?.scopeUnits ?? procedureOrder.flat()).map(pkgOf))
       const inventory = engine.loadArtifactJson(artifactsDir, "inventory")
-      const allPkgs = inventory ? Array.from(engine.extractPackageNames(inventory)) : []
+      // scope 激活时只为本闭包 scopePackages 内的空包写 stub，不为 out-of-scope 包写（避免污染 review/verify）
+      const allPkgs = scope
+        ? scope.scopePackages
+        : (inventory ? Array.from(engine.extractPackageNames(inventory)) : [])
       for (const pkg of allPkgs) {
         if (unitPkgs.has(pkg)) continue // 非空包，由其 unit 分片 merge
         const aggFile = join(artifactsDir, "translations", pkg, "translation.json")
@@ -1632,15 +1764,23 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
           }
         }
         // 复验（含兜底生成的）：Zod 校验
+        let aParsed: any
         try {
           const aRaw = readFileSync(analysisPath, "utf-8")
-          const aParsed = JSON.parse(aRaw)
+          aParsed = JSON.parse(aRaw)
           const aResult = AnalysisMetaSchema.safeParse(aParsed)
           if (!aResult.success) {
             return `Zod validation failed for analysis.json:\n${formatZodIssues(aResult.error)}`
           }
         } catch (e: any) {
           return `Failed to read/parse analysis.json: ${e.message}`
+        }
+        // 过程级入口闭包 scope（feat/proc-entry-scope）：analysis.json 就绪后在此计算并持久化；
+        // mainEntry 为过程级但入口不可解析（拼写错/已改名/subdir 不匹配）→ **硬失败**，拒绝 advance，
+        // 防止静默回退全量翻译（用户意图被吞）。非过程级 mainEntry → 返回 null，全量翻译。
+        const scopeOutcome = ensureRunScope(run, aParsed, artifactsDir)
+        if (scopeOutcome && !scopeOutcome.ok) {
+          return `过程级入口 mainEntry 校验失败：${(scopeOutcome as { error: string }).error}。请修正 mainEntry（形态 [subdir/]PKG.refName，重载须显式 refName 如 name__N），或留空以全量翻译。`
         }
       }
 
@@ -1712,12 +1852,16 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
         }
       }
 
-      // review 阶段（项目级单文件）：review.json.packages 必须覆盖 inventory 全部包。
+      // review 阶段（项目级单文件）：review.json.packages 必须覆盖期望包。
+      // scope 激活时期望 = 闭包 scopePackages；否则 inventory 全部包。
       // 无论主线还是 fix 回环都校验——fix 回环时 reviewer 必须保留非 fixed 包的条目（防 read-modify-write 丢条目）。
       if (phase === "review") {
+        const scope = readScope(run.metadata as Record<string, unknown>)
         const inventory = engine.loadArtifactJson(artifactsDir, "inventory")
         if (inventory) {
-          const expected = engine.extractPackageNames(inventory)
+          const expected = scope
+            ? new Set(scope.scopePackages)
+            : engine.extractPackageNames(inventory)
           const present = new Set(
             ((parsed.packages as Array<{ packageName?: unknown }>) ?? [])
               .map(p => p?.packageName)
@@ -1726,7 +1870,7 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
           )
           const missing = [...expected].filter(p => !present.has(p.toUpperCase()))
           if (missing.length > 0) {
-            return `review.json packages[] 缺失包: ${missing.join(", ")}。review 是项目级单次审核，packages[] 必须覆盖 inventory 全部包（fix 回环时须保留非目标包的现有条目，只更新目标包）。`
+            return `review.json packages[] 缺失包: ${missing.join(", ")}。review 是项目级单次审核，packages[] 必须覆盖${scope ? "闭包 scopePackages" : "inventory 全部包"}（fix 回环时须保留非目标包的现有条目，只更新目标包）。`
           }
         }
       }
@@ -1751,11 +1895,13 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
     // per-package 文件名映射（translate → translation.json，其余与 phase 名一致）
     const pkgFileName = getArtifactFilename(phase)
 
-    // 获取 inventory 期望包名列表（缓存到局部变量供非增量存在性检查 + Zod 校验共用）
+    // 获取期望包名列表（缓存到局部变量供非增量存在性检查 + Zod 校验共用）。
+    // scope 激活时期望 = 闭包 scopePackages（out-of-scope 包无产物，不应被要求存在）；否则 inventory 全部包。
+    const scope = readScope(run.metadata as Record<string, unknown>)
     const inventory = engine.loadArtifactJson(artifactsDir, "inventory")
-    const expectedPackages = inventory
-      ? Array.from(engine.extractPackageNames(inventory))
-      : [] as string[]
+    const expectedPackages = scope
+      ? scope.scopePackages
+      : (inventory ? Array.from(engine.extractPackageNames(inventory)) : [] as string[])
 
     // 缓存目录读取结果，避免存在性检查 + Zod 校验循环中重复 readdirSync
     const cachedDirEntries = readdirSync(translationsDir, { withFileTypes: true })
@@ -2461,9 +2607,14 @@ export function narrowUpstreamForShard(
   opts?: {
     targetUnits?: readonly string[]
     functionOwnership?: Record<string, string>
+    /** 闭包内**仅常量/类型被引用、无 unit 被翻译**的包（scopePackages \ pkgsOf(targetUnits)）。
+     *  translate 需读这些包的 inventory-packages/{pkg}.json 取常量/类型定义；它们无 unit 切片，
+     *  整包文件不含被翻译 proc 源码，不破坏切片硬隔离。feat/proc-entry-scope。 */
+    scopeConstOnlyPkgs?: readonly string[]
   },
 ): string[] {
   const targetUnits = opts?.targetUnits ?? []
+  const constOnlyInvFiles = (opts?.scopeConstOnlyPkgs ?? []).map(p => `inventory-packages/${p}.json`)
 
   // ── translate/analyze PROCEDURE 级（unit 模式）：shards 元素是 unit id `PKG.refName` ──
   // PROCEDURE 为 unit，FUNCTION 跟随属主（cargo）。收窄到本分片 unit 的源码/FSD + 已完成 unit
@@ -2501,7 +2652,8 @@ export function narrowUpstreamForShard(
     const sliceFiles = targetUnits.flatMap(u => unitSliceRelPaths(u, "translate"))
     const translated = upstream.flatMap(a => {
       // 两个整包结构 glob 都由 per-unit 切片取代（切片含 analysis-slice.json + source.sql + meta.json）
-      if (a === "inventory-packages/*.json") return sliceFiles
+      // inventory-packages 额外保留闭包内 const-only 包的整包文件（取常量/类型定义，无 proc 源码不破坏隔离）
+      if (a === "inventory-packages/*.json") return [...sliceFiles, ...constOnlyInvFiles]
       if (a === "analysis-packages/*.json") return sliceFiles
       if (a === "fsd/*/*.md") return fsdFiles
       if (a === "translations/*/translation.json") return []   // 依赖签名预注入，不再注入
@@ -4023,13 +4175,32 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               if (!isIncremental) {
                 // 从 analysis.json 读取拓扑序
                 const analysis = engine.loadArtifactJson(`${ARTIFACT_DIR}/${run.runId}`, "analysis")
+                // 过程级入口闭包 scope（feat/proc-entry-scope）：通常已在 inventory advance 校验时计算并持久化，
+                // 此处为缓存读（幂等；inventory 未跑的边缘路径下兜底计算）。硬失败已在 inventory 拦截，此处不会命中。
+                const scopeOutcome = ensureRunScope(run, analysis, `${ARTIFACT_DIR}/${run.runId}`)
+                const scope = scopeOutcome?.ok ? scopeOutcome.scope : null
                 // translate/analyze 优先用单元级 procedureOrder（PROCEDURE 级下沉）；缺失时回退包级 translationOrder
                 const isUnitPhase = run.currentPhase === "translate" || run.currentPhase === "analyze"
                 const procedureOrder = (analysis?.procedureOrder as string[][] | undefined) ?? undefined
                 const useUnits = isUnitPhase && procedureOrder && procedureOrder.length > 0
-                const translationOrder = useUnits
+                let translationOrder = useUnits
                   ? procedureOrder!
                   : (analysis?.translationOrder as string[][]) ?? []
+                // scope 激活时**内存过滤**拓扑序（绝不改盘上 analysis.json，engine-core 的 translationOrder
+                // 覆盖校验期望完整）：unit 级保留 scopeUnits 交集、包级保留 scopePackages 交集，保留拓扑层序、丢弃空层。
+                if (scope) {
+                  if (useUnits) {
+                    const ok = new Set(scope.scopeUnits.map(u => u.toUpperCase()))
+                    translationOrder = translationOrder
+                      .map(layer => layer.filter(u => ok.has(u.toUpperCase())))
+                      .filter(l => l.length > 0)
+                  } else {
+                    const ok = new Set(scope.scopePackages.map(p => p.toUpperCase()))
+                    translationOrder = translationOrder
+                      .map(layer => layer.filter(p => ok.has(p.toUpperCase())))
+                      .filter(l => l.length > 0)
+                  }
+                }
                 // 分片依赖 analysis.json 的拓扑序；缺失或为空时静默退化为不分片
                 // （单 session 处理全部——正是分片要避免的上下文爆炸），此处显式 warn 让退化可见。
                 const orderField = useUnits ? "procedureOrder" : "translationOrder"
@@ -4049,7 +4220,12 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                   // translate 保留 SCC 共处。详见 engine.shardOrderForPhase 的阶段语义说明。
                   const effectiveOrder = engine.shardOrderForPhase(translationOrder, run.currentPhase!)
                   const plan = engine.computeShardPlan(effectiveOrder, phaseConfig.maxPackagesPerShard, run.currentPhase!)
-                  if (plan.shards.length > 1) {
+                  // 多分片 → 设 shardPlan；scope 激活时**即使单分片**也设 targetUnits（硬约束），
+                  // 否则单分片 scoped run（闭包 ≤ maxPackagesPerShard 个 unit）worker 收不到硬 targetUnits
+                  // 清单，仅靠软 scopeLine banner，可能越界处理同包 out-of-scope unit（闭包泄漏）。
+                  // 非 scope 的单分片不设（单包项目整包处理是正确的）。1 分片 shardPlan 端到端可行
+                  // （advance 标记 shard 0 完成后 findIndex=-1 → 清 shardPlan → 阶段推进）。
+                  if (plan.shards.length > 1 || scope) {
                     // 多分片：设置 shardPlan 到 run.metadata，更新 currentEntry 的 incrementalContext
                     plan.unitMode = useUnits
                     run.metadata.shardPlan = plan
@@ -4058,7 +4234,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                       : { targetPackages: plan.shards[0], shardIndex: 0, totalShards: plan.shards.length }
                     engine.persist(run)
                   }
-                  // 只有 1 个分片时不需要分片机制（单包项目或单元很少）
+                  // 非 scope 单分片不需要分片机制（单包项目或单元很少）
                 }
               }
             }
@@ -4160,6 +4336,9 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             {
               const md = run.metadata as Record<string, unknown>
               if (md.mainEntry) workOrderParts.push(`- mainEntry: ${md.mainEntry}`)
+              // 过程级入口闭包 scope 指令（所有阶段注入；非分片阶段 plan/scaffold/review/dedup/verify 靠此知范围）
+              const scopeBannerText = buildScopeBanner(run)
+              if (scopeBannerText) workOrderParts.push("", scopeBannerText)
               if (run.currentPhase === "fix" && currentEntry?.branchedFrom) {
                 workOrderParts.push(`- triggerPhase: ${currentEntry.branchedFrom}`)
               }
@@ -4263,6 +4442,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                 upstream = narrowUpstreamForShard(upstream, run.currentPhase ?? "", shardTargetPkgs, completedPkgs, {
                   targetUnits: shardTargetUnits,
                   functionOwnership,
+                  scopeConstOnlyPkgs: constOnlyScopePkgs(readScope(run.metadata as Record<string, unknown>), shardTargetUnits),
                 })
               }
               workOrderParts.push(`- upstreamArtifacts:`)

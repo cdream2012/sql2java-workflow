@@ -173,7 +173,12 @@ const PhaseHistoryEntrySchema = z.object({
   retryCount: z.number(),
   branchedFrom: z.string().optional(),
   incrementalContext: z.object({
-    targetPackages: z.array(z.string()),
+    // 包级分片（review/包级回退）用 targetPackages；PROCEDURE 级分片（analyze/translate unit 模式）
+    // 用 targetUnits。二者择一，均 optional——unit 模式 entry 只含 targetUnits，包级只含 targetPackages。
+    // 此前 targetPackages 误设为必填且无 targetUnits 字段，导致 unit 模式分片 run resume 时
+    // loadFromDisk 校验失败（"targetPackages 字段缺失"）+ targetUnits 被当未知键剥离。feat/proc-entry-scope 暴露。
+    targetPackages: z.array(z.string()).optional(),
+    targetUnits: z.array(z.string()).optional(),
     shardIndex: z.number().optional(),
     totalShards: z.number().optional(),
     previousFindings: z.array(z.object({

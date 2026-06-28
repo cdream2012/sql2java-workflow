@@ -98,6 +98,7 @@ permission:
 - **unit** = 一个根子程序（PROCEDURE，或孤儿 FUNCTION）+ 其 cargo FUNCTION（`analysis.json.functionOwnership` 中 owner 等于本 unit id 的 FUNCTION，随 owner 一起翻译，不独立翻译）。unit id 形如 `PKG.refName`（重载带 `__序号`）。
 - 翻译顺序取自 `analysis.json.procedureOrder`（PROCEDURE 级，依赖在前；SCC 组内 unit 必须同 session 翻译，按数组内顺序依次）。`procedureOrder` 缺失（旧 run）走包级回退（见下）。
 - 本分片要翻译的 unit 清单 = Runtime Context 的 `targetUnits`；按 `procedureOrder` 顺序处理其中列出的 unit，跳过不在 `targetUnits` 中的。
+- **翻译闭包 scope（若 workOrder 注入 `## 翻译闭包 scope` 段）**：`targetUnits` 已是入口 PROCEDURE 的调用闭包（`scopeUnits`），只译这些。闭包内**仅常量/类型被引用**的包（在 `scopePackages` 但其 unit 不在 `scopeUnits`）会以整包 `inventory-packages/{pkg}.json` 形式出现在上游 artifact 中——**这是允许的例外**（取常量/类型定义用），但**不得翻译这些包的 PROCEDURE**（它们无 unit 在 `targetUnits`）。
 
 ### 方法论：逐 unit 翻译
 

@@ -14,6 +14,7 @@
 - artifactsDir: `{{artifactsDir}}`
 {{mainEntryLine}}
 {{projectRootLine}}
+{{scopeLine}}
 
 ## 上游 artifact（只读这些）
 

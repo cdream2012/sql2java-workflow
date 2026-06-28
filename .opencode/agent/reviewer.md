@@ -127,8 +127,10 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
 
 #### Step 1: 确定审查范围
 
-- **项目级单次审核（无 targetPackages）**：审查 `inventory.json.packageNames`（或 `analysis.json.packageNames`）中的**所有包**，产出**一个** `review.json`（`packages[]` 覆盖全部包）。
-- **fix 回环增量（`incrementalContext.targetPackages` 存在）**：**先 `read` 现有 `${artifactsDir}/review.json`**，只重审 targetPackages 列出的包、更新其 `packages[]` 条目；**其余包的条目原样保留**（不得改动/删除），写回完整 `review.json`。complete 校验要求 packages[] 仍覆盖全部包。
+> **「全部包」的定义**：workOrder 注入 `## 翻译闭包 scope` 段时（闭包翻译模式），「全部包」= 该段 `scopePackages`；否则 = `inventory.json.packageNames` 全部包。下文「全部包」均按此解。
+
+- **项目级单次审核（无 targetPackages）**：审查「全部包」，产出**一个** `review.json`（`packages[]` 覆盖「全部包」）。
+- **fix 回环增量（`incrementalContext.targetPackages` 存在）**：**先 `read` 现有 `${artifactsDir}/review.json`**，只重审 targetPackages 列出的包、更新其 `packages[]` 条目；**其余包的条目原样保留**（不得改动/删除），写回完整 `review.json`。complete 校验要求 packages[] 仍覆盖「全部包」。
 
 #### Step 2: 逐包审查
 

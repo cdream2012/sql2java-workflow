@@ -106,6 +106,54 @@ function scanCallSites(code: string): CallSite[] {
   return sites
 }
 
+/** 扫描源码中的同包**裸名**调用点（`proc_name(...)` / `proc_name;`，无 `PKG.` 前缀）。
+ *
+ * scanCallSites 只识别 `PKG.PROC` 点号调用，遗漏同包裸名互调——闭包翻译（feat/proc-entry-scope）
+ * 场景下入口 proc 调同包 helper 若漏边会漏译。此函数补同包裸名调用边：
+ *   - 候选：标识符后接 `(` 或 `;`（PL/SQL 调用两种形式）；
+ *   - 严格白名单：裸名须命中本包子程序名集合（procNameToRefNames 的 key，已大写），否则跳过
+ *     （排除列名/变量/SQL 关键字/伪列），避免幻边膨胀 SCC；
+ *   - 排除点号调用的一部分（`PKG.PROC` 的 PROC 段）——前一个非空白字符为 `.` 则跳过（已由
+ *     scanCallSites 处理）；
+ *   - 排除 `--` 注释行、`:NEW/:OLD` 绑定变量（与 scanCallSites 一致）。
+ *
+ * 跨包裸名调用（synonym/standalone，无包前缀）无法消歧，仍为已知局限，不在此处理。
+ */
+function scanBareCallSites(code: string, samePkgNames: Set<string>): CallSite[] {
+  const sites: CallSite[] = []
+  if (samePkgNames.size === 0) return sites
+  // 前导词为这些关键字时，NAME 不是调用：`procedure NAME(` / `function NAME(` 是声明，
+  // `end NAME;` 是子程序结束标签。排除以防声明/结尾误判为调用（自环污染 callGraph）。
+  const DECL_KEYWORDS = new Set(["PROCEDURE", "FUNCTION", "END"])
+  const lines = code.split("\n")
+  lines.forEach((rawLine, i) => {
+    const trimmed = rawLine.trim()
+    if (trimmed.startsWith("--")) return
+    const cleaned = trimmed.replace(/:[A-Z]+/gi, " ")
+    const re = /\b([A-Z][A-Z0-9_]*)\s*(?=[(;])/gi
+    let m: RegExpExecArray | null
+    while ((m = re.exec(cleaned)) !== null) {
+      const name = m[1].toUpperCase()
+      if (name.length < 2) continue
+      if (SQL_PSEUDO.has(name)) continue
+      if (!samePkgNames.has(name)) continue
+      // 排除点号调用的一部分（PKG.PROC 由 scanCallSites 处理）：前一个非空白字符为 `.` 则跳过
+      let j = m.index - 1
+      while (j >= 0 && /\s/.test(cleaned[j])) j--
+      if (j >= 0 && cleaned[j] === ".") continue
+      // 排除声明/结尾：前一个 word 是 procedure/function/end
+      let k = m.index - 1
+      while (k >= 0 && /\s/.test(cleaned[k])) k--
+      const wordEnd = k
+      while (k >= 0 && /[A-Za-z0-9_]/.test(cleaned[k])) k--
+      const prevWord = cleaned.slice(k + 1, wordEnd + 1).toUpperCase()
+      if (DECL_KEYWORDS.has(prevWord)) continue
+      sites.push({ line: i + 1, calleePkg: "", calleeProc: name })
+    }
+  })
+  return sites
+}
+
 /** 找包含指定行的最内层子程序（lineRange 最小者） */
 function findCallerSubprogram(subprograms: SubprogramInfo[], line: number): SubprogramInfo | null {
   let best: SubprogramInfo | null = null
@@ -348,6 +396,7 @@ export function buildAnalysisFromIndex(artifactsDir: string): {
     const pkgInfo = refIndex.get(pkg.name)!
     const bodyCode = readSource(sourcePath, pkg.bodyFile)
     if (!bodyCode) continue // spec-only 包无调用
+    // 2a) 点号调用 `PKG.PROC`（scanCallSites）
     const sites = scanCallSites(bodyCode)
     for (const site of sites) {
       // 包级引用：任何指向 inventory 包的 PKG.X 都算依赖（含常量/类型/子程序）
@@ -365,6 +414,26 @@ export function buildAnalysisFromIndex(artifactsDir: string): {
         if (!arr.includes(r)) arr.push(r)
       }
       callGraph[callerKey] = arr
+    }
+    // 2b) 同包 bare-name 调用边补全（feat/proc-entry-scope D）——复用同一 bodyCode，避免重复读文件。
+    // scanCallSites 仅识别 `PKG.PROC` 点号调用；同包裸名互调（`helper_proc()` / `helper_proc;` 无
+    // 包前缀）进不了 callGraph，闭包翻译会漏。命中本包子程序名集合即补边；calleePkg 同包
+    // （resolveCalleeRefNames 按 pkg.name 解析），不产生新的跨包 allRefs。
+    const samePkgNames = new Set(pkgInfo.procNameToRefNames.keys()) // 已大写
+    if (samePkgNames.size > 0) {
+      const bareSites = scanBareCallSites(bodyCode, samePkgNames)
+      for (const site of bareSites) {
+        const caller = findCallerSubprogram(pkgInfo.subprograms, site.line)
+        if (!caller) continue
+        const calleeRefNames = resolveCalleeRefNames(pkg.name, site.calleeProc, refIndex)
+        if (!calleeRefNames) continue
+        const callerKey = `${pkg.name}.${caller.refName}`
+        const arr = callGraph[callerKey] ?? []
+        for (const r of calleeRefNames) {
+          if (!arr.includes(r)) arr.push(r)
+        }
+        callGraph[callerKey] = arr
+      }
     }
   }
 

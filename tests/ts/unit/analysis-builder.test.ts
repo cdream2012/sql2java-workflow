@@ -58,10 +58,16 @@ describe("buildAnalysisFromIndex (tiny fixture)", () => {
     expect(a.sccGroups).toEqual([])
   })
 
-  it("callGraph 仅含跨包子程序调用（本 fixture 无，故为空对象）", () => {
+  it("callGraph：跨包子程序调用无（常量引用不建边）+ 同包裸名调用边已补全（feat/proc-entry-scope D）", () => {
     const a = JSON.parse(readFileSync(join(dir, "analysis.json"), "utf-8"))
-    // base_pkg 无子程序；core_pkg 的跨包引用是 base_pkg.c_dir_in（常量，非子程序）→ 不进 callGraph
-    expect(a.callGraph).toEqual({})
+    // base_pkg 无子程序；core_pkg 的跨包引用是 base_pkg.c_dir_in（常量，非子程序）→ 不进 callGraph。
+    // 同包裸名调用（此前 scanCallSites 只认 PKG.PROC 点号调用会漏）现由 scanBareCallSites 补全：
+    //   bom_cost 递归调用自身；bulk_receive→log_error；get_item_obj→get_item。
+    expect(a.callGraph).toEqual({
+      "CORE_PKG.bom_cost": ["CORE_PKG.bom_cost"],
+      "CORE_PKG.bulk_receive": ["CORE_PKG.log_error"],
+      "CORE_PKG.get_item_obj": ["CORE_PKG.get_item"],
+    })
   })
 
   it("complexity 启发式：BASE_PKG 低分，CORE_PKG 高分 + 模式", () => {
