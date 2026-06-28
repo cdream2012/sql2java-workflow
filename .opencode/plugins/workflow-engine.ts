@@ -769,6 +769,32 @@ function buildRuntimeContext(run: WorkflowRun): string {
 }
 
 /**
+ * 分片 incrementalContext 自愈：unitMode shardPlan 下 entry 缺/错 targetUnits 时，返回应纠正成的值。
+ *
+ * 背景：旧代码（a5b84ea4 前）advance/dispatch 在 unitMode=true 时仍写 targetPackages（整包名）而非
+ * targetUnits（单 unit id），导致 worker 收到整包范围越界处理包内所有 unit，且 advance 串行锁因
+ * status/{phase}.json 的 shardIndex 残留卡死（见 run-20260627-164206 脏数据）。修复后新 run 不再产生，
+ * 但历史脏 run 残留需自愈救活。检测到不一致即按 shards[shardIndex] 补写 targetUnits；无需纠正返回 null。
+ *
+ * 调用方：dispatch `if (shardPlan)` 分支（持久化）+ buildShardedWorkerOrder 入口（兜底，防直接调用路径）。
+ */
+export function healShardIncrementalContext(
+  currentEntry: { incrementalContext?: any } | null | undefined,
+  shardPlan: { unitMode?: boolean; shards: any[][] } | null | undefined,
+): { targetUnits: string[]; shardIndex: number; totalShards: number } | null {
+  if (!shardPlan?.unitMode || !currentEntry) return null
+  const ic = currentEntry.incrementalContext ?? {}
+  const si = typeof ic.shardIndex === "number" ? ic.shardIndex : 0
+  const correctUnits = (shardPlan.shards[si] ?? []).map(String)
+  if (correctUnits.length === 0) return null
+  const currentUnits: string[] = Array.isArray(ic.targetUnits) ? ic.targetUnits.map(String) : []
+  const alreadyCorrect = currentUnits.length > 0
+    && JSON.stringify(currentUnits) === JSON.stringify(correctUnits)
+  if (alreadyCorrect) return null
+  return { targetUnits: correctUnits, shardIndex: si, totalShards: shardPlan.shards.length }
+}
+
+/**
  * 分片范围硬约束 banner（系统提示级，置于 worker system prompt 最前）。
  *
  * 确定性兜底：编排者 LLM 可能不逐字透传 workOrder，自撰通用任务提示（"对每个包的每个子程序生成 FSD"），
@@ -821,11 +847,20 @@ export function buildShardedWorkerOrder(
   const phase = run.currentPhase ?? "analyze"
   const activeShardPlan = engine.getShardPlan(run)
   const ic = currentEntry?.incrementalContext
-  const shardTargetUnits: string[] = ic?.targetUnits ?? []
-  const shardTargetPkgs: string[] = ic?.targetPackages ?? []
+  // 防御性自愈：unitMode shardPlan 但 entry 缺/错 targetUnits（历史脏 run 残留）→ 按 shards[si] 补，
+  // 避免 worker 退化为整包处理（越界写所有 unit + advance 串行锁卡死）。dispatch 层已持久化自愈；
+  // 此处兜底直接调用路径（测试等），mutate currentEntry 引用但不持久化。
+  const healed = healShardIncrementalContext(currentEntry, activeShardPlan ?? null)
+  if (healed && currentEntry) {
+    currentEntry.incrementalContext = healed
+    getLogger().warn("[dispatch]", `buildShardedWorkerOrder 入口自愈：shardIndex=${healed.shardIndex} 补 targetUnits=${JSON.stringify(healed.targetUnits)}`)
+  }
+  const effectiveIc = currentEntry?.incrementalContext ?? ic
+  const shardTargetUnits: string[] = effectiveIc?.targetUnits ?? []
+  const shardTargetPkgs: string[] = healed ? [] : (effectiveIc?.targetPackages ?? [])
   const isUnitMode = shardTargetUnits.length > 0
-  const si = ic?.shardIndex as number | undefined
-  const ts = (ic?.totalShards as number | undefined) ?? activeShardPlan?.shards.length
+  const si = effectiveIc?.shardIndex as number | undefined
+  const ts = (effectiveIc?.totalShards as number | undefined) ?? activeShardPlan?.shards.length
   const completedUnitIds = (activeShardPlan?.completedShards ?? []).flatMap((i: number) => activeShardPlan!.shards[i] ?? [])
   const sourcePath = String((run.metadata as Record<string, unknown>).sourcePath ?? "")
   // 用传入的 artifactsDir（真实 dispatch = `${ARTIFACT_DIR}/${run.runId}`；测试可传 tmpdir）
@@ -3973,7 +4008,14 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             const shardPlan = engine.getShardPlan(run)
             if (shardPlan) {
               // 已有 shardPlan：当前 entry 的 incrementalContext 已由 advance 设置
-              // 无需额外处理
+              // 防御性自愈：历史脏 run（旧代码在 unitMode=true 下误写 targetPackages 整包名）会导致
+              // worker 越界处理整包 + advance 串行锁卡死。检测到缺/错 targetUnits 即按 shards[shardIndex] 补写并持久化。
+              const healed = healShardIncrementalContext(currentEntry, shardPlan)
+              if (healed && currentEntry) {
+                currentEntry.incrementalContext = healed
+                engine.persist(run)
+                getLogger().warn("[dispatch]", `分片 incrementalContext 自愈：shardIndex=${healed.shardIndex} 缺/错 targetUnits，已补写 ${JSON.stringify(healed.targetUnits)}（清除脏 targetPackages）。历史脏 run 残留，新 run 不应触发。`)
+              }
             } else if (phaseConfig.maxPackagesPerShard && phaseConfig.maxPackagesPerShard > 0 && currentEntry) {
               // 首次 dispatch 可分片阶段：检查是否有增量上下文（fix 回来时不分片）
               const isIncremental = !!(currentEntry.incrementalContext?.targetPackages?.length)

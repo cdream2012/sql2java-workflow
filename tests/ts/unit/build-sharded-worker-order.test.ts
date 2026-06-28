@@ -72,6 +72,29 @@ describe("buildShardedWorkerOrder — analyze", () => {
     // analyze 在 plan 之前，无 projectRoot
     expect(wo).not.toContain("projectRoot")
   })
+
+  it("脏 entry（unitMode shardPlan 但 targetPackages 整包）自愈成 targetUnits 单 unit", () => {
+    // 复现历史脏 run：旧代码在 unitMode=true 下误写 targetPackages 整包名
+    const run = makeRun("test-wo-analyze", "analyze", {
+      targetPackages: ["CORE_PKG"], shardIndex: 0, totalShards: 13,
+    })
+    ;(run.metadata as any).shardPlan = {
+      phase: "analyze", unitMode: true,
+      shards: [["CORE_PKG.get_item"], ["CORE_PKG.get_item_obj"]],
+      completedShards: [],
+    }
+    const currentEntry = (run as any).phaseHistory[0]
+    const wo = buildShardedWorkerOrder(run, currentEntry, art, null)
+
+    // 自愈：entry 被补写 targetUnits（= shards[0]），清除脏 targetPackages
+    expect(currentEntry.incrementalContext.targetUnits).toEqual(["CORE_PKG.get_item"])
+    expect(currentEntry.incrementalContext.targetPackages).toBeUndefined()
+    // workOrder 走 unit 模式（非整包）：含正确 unit + PROCEDURE 单元 banner
+    expect(wo).toContain("分片范围硬约束")
+    expect(wo).toContain("PROCEDURE 单元")
+    expect(wo).toContain("CORE_PKG.get_item")
+    expect(wo).toContain("shard-inputs/CORE_PKG/get_item/")
+  })
 })
 
 describe("buildShardedWorkerOrder — translate", () => {
