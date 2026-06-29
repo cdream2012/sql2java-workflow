@@ -124,13 +124,13 @@ describe("buildFileIndex", () => {
         { path: "src/main/java/a/OrderMapper.xml", role: "mapper-xml" },
       ],
       subprogramMethods: [
-        { oracleName: "do_x", javaClass: "com.x.AService", javaMethod: "doX", javaFile: "src/main/java/a/AService.java" },
+        { oracleName: "do_x", javaClass: "com.x.AAccessIntf", javaMethod: "doX", javaFile: "src/main/java/a/AAccessIntf.java" },
       ],
     }), "utf-8")
     const idx = buildFileIndex(art, projectRoot)
     expect(idx.get(join(projectRoot, "src/main/java/a/FooDto.java"))?.role).toBe("dto")
     expect(idx.get(join(projectRoot, "src/main/java/a/OrderMapper.xml"))?.packageName).toBe("PKG_A")
-    expect(idx.get(join(projectRoot, "src/main/java/a/AService.java"))?.role).toBe("service")
+    expect(idx.get(join(projectRoot, "src/main/java/a/AAccessIntf.java"))?.role).toBe("access-intf")
   })
 
   it("targetPackages 过滤：只收指定包", () => {

@@ -94,7 +94,7 @@ export function buildFileIndex(artifactsDir: string, projectRoot: string, target
       idx.set(abs, { packageName: pkgName, role: role || "unknown", absPath: abs })
     }
     for (const f of (agg.files ?? [])) addFile(f.path, f.role)
-    for (const m of (agg.subprogramMethods ?? [])) if (m.javaFile) addFile(m.javaFile, "service")
+    for (const m of (agg.subprogramMethods ?? [])) if (m.javaFile) addFile(m.javaFile, "access-intf")
   }
   return idx
 }

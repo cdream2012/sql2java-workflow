@@ -225,11 +225,10 @@ public void saveDeal(XxxBean bean) throws TranFailException {
 ```
 
 **规约要点：**
-1. 【强制】统一使用 `TranFailException` 作为业务异常类型，禁止抛出 `new RuntimeException()`、`Exception` 或 `Throwable`。
+1. 【强制】统一使用 `TranFailException` 作为业务异常类型，禁止抛出 `new RuntimeException()`、`Exception` 或 `Throwable`。各层方法声明 `throws TranFailException` 见 2.1（Aggregate）/ 2.3（Validator）。
 2. 【强制】异常信息长度超过 1000 字符时必须截断，避免数据库字段溢出。
 3. 【强制】Processor 层捕获异常后必须更新 `procStat` 和 `expInfo`。
-4. 【强制】Aggregate 层业务方法必须声明 `throws TranFailException`。
-5. 【强制】异常必须经 `CommonLog.error(msg, e)` 记录完整堆栈，禁止空 catch、禁止仅打印 `e.getMessage()` 丢弃堆栈。
+4. 【强制】catch 块不得丢弃原始异常信息：必须包装重抛（`throw new TranFailException(msg, e)`）或经 `CommonLog.error(msg, e)` 记录完整堆栈（日志规范详见 4.3）；禁止空 catch、禁止仅打印 `e.getMessage()` 丢弃堆栈。
 
 ## 四、编码规范
 
