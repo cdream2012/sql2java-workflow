@@ -7,12 +7,13 @@ import {
   InventoryIndexSchema,
   InventoryPackageSchema,
   InventorySchema,
-  AnalysisMetaSchema,
+  DependencyGraphSchema,
   AnalysisPackageSchema,
   PlanSchema,
   ScaffoldSchema,
   TranslationSchema,
   ReviewSchema,
+  ProjectReviewSchema,
   ReviewSummarySchema,
   VerifySchema,
   VerifySummarySchema,
@@ -26,7 +27,7 @@ import {
   getAnalysisPackageSchema,
 } from "@workflow/artifact-schemas"
 import {
-  makeInventoryIndex, makeInventory, makeInventoryPackage, makeAnalysisMeta,
+  makeInventoryIndex, makeInventory, makeInventoryPackage, makeDependencyGraphMeta,
   makePlan, makeScaffold, makeAnalysisPackage, makeTranslation,
   makeReviewSummary, makeVerifySummary, makeDedup, makeFixArtifact,
 } from "../helpers/artifact-factory"
@@ -85,7 +86,7 @@ describe("Schema 有效数据通过校验", () => {
     expect(InventorySchema.safeParse(data).success).toBe(true)
   })
 
-  it("AnalysisMetaSchema 通过", () => {
+  it("DependencyGraphSchema 通过", () => {
     const data = {
       callGraph: {},
       packageDependency: {},
@@ -94,7 +95,7 @@ describe("Schema 有效数据通过校验", () => {
       sccGroups: [["CORE_PKG"]],
       packageNames: ["CORE_PKG"],
     }
-    expect(AnalysisMetaSchema.safeParse(data).success).toBe(true)
+    expect(DependencyGraphSchema.safeParse(data).success).toBe(true)
   })
 
   it("AnalysisPackageSchema 通过", () => {
@@ -215,6 +216,25 @@ describe("Schema 有效数据通过校验", () => {
     expect(ReviewSchema.safeParse(data).success).toBe(true)
   })
 
+  it("ProjectReviewSchema 通过（packages[] 覆盖多包，每包过 ReviewSchema refine）", () => {
+    const data = {
+      packages: [
+        { packageName: "PKG_A", passed: true, overallScore: 90, procedureReviews: [], mustFix: [], suggestions: [], todoRemainingCount: 0 },
+        { packageName: "PKG_B", passed: false, overallScore: 55, procedureReviews: [], mustFix: [{ file: "B.java", line: 3, issue: "x" }], suggestions: [], todoRemainingCount: 1 },
+      ],
+    }
+    expect(ProjectReviewSchema.safeParse(data).success).toBe(true)
+  })
+
+  it("ProjectReviewSchema 拒绝 passed=true 但 mustFix 非空的包条目（per-package refine 生效）", () => {
+    const data = {
+      packages: [
+        { packageName: "PKG_A", passed: true, overallScore: 90, procedureReviews: [], mustFix: [{ file: "A.java", line: 1, issue: "x" }], suggestions: [], todoRemainingCount: 0 },
+      ],
+    }
+    expect(ProjectReviewSchema.safeParse(data).success).toBe(false)
+  })
+
   it("ReviewSummarySchema 通过 (allPassed=true)", () => {
     expect(ReviewSummarySchema.safeParse(makeReviewSummary()).success).toBe(true)
   })
@@ -284,8 +304,8 @@ describe("工厂默认产出符合 Schema", () => {
   it("makeScaffold 默认值通过 ScaffoldSchema", () => {
     expect(ScaffoldSchema.safeParse(makeScaffold()).success).toBe(true)
   })
-  it("makeAnalysisMeta 默认值通过 AnalysisMetaSchema", () => {
-    expect(AnalysisMetaSchema.safeParse(makeAnalysisMeta()).success).toBe(true)
+  it("makeDependencyGraphMeta 默认值通过 DependencyGraphSchema", () => {
+    expect(DependencyGraphSchema.safeParse(makeDependencyGraphMeta()).success).toBe(true)
   })
   it("makeTranslation 默认值通过 TranslationSchema", () => {
     expect(TranslationSchema.safeParse(makeTranslation()).success).toBe(true)
@@ -430,8 +450,8 @@ describe("Schema 无效数据被拒绝", () => {
 // ═══════════════════════════════════════════════════════════════
 
 describe("getArtifactFilename", () => {
-  it("analyze → analysis", () => {
-    expect(getArtifactFilename("analyze")).toBe("analysis")
+  it("analyze → analyze（无顶层文件，回退 phase 名）", () => {
+    expect(getArtifactFilename("analyze")).toBe("analyze")
   })
 
   it("translate → translation", () => {
@@ -452,12 +472,16 @@ describe("getArtifactFilename", () => {
 })
 
 describe("getSchemaForPhase", () => {
-  const knownPhases = ["inventory", "inventory-index", "analyze", "plan", "scaffold", "dedup", "fix"]
+  const knownPhases = ["inventory", "inventory-index", "plan", "scaffold", "dedup", "review", "fix"]
 
   it("已知阶段都返回非 null schema", () => {
     for (const phase of knownPhases) {
       expect(getSchemaForPhase(phase), `getSchemaForPhase("${phase}") should not be null`).not.toBeNull()
     }
+  })
+
+  it("review 返回 ProjectReviewSchema（项目级单文件）", () => {
+    expect(getSchemaForPhase("review")).not.toBeNull()
   })
 
   it("未知阶段返回 null", () => {
@@ -470,8 +494,10 @@ describe("getPerPackageSchema", () => {
     expect(getPerPackageSchema("translate")).not.toBeNull()
   })
 
-  it("review 返回 ReviewSchema", () => {
-    expect(getPerPackageSchema("review")).not.toBeNull()
+  it("review 不再 per-package（改项目级单文件 review.json，packages[]）", () => {
+    // review 改项目级单次审核：reviewer 写一个 artifactsDir/review.json（packages[] 覆盖全部包），
+    // 由 getSchemaForPhase("review") = ProjectReviewSchema 校验；不再有 per-package review.json。
+    expect(getPerPackageSchema("review")).toBeNull()
   })
 
   it("verify 不再 per-package（动态结果落 verify-summary.json）", () => {
@@ -744,7 +770,7 @@ describe("大小写 normalize — ciEnum 自动纠正 LLM 大小写变体", () =
 
   // ── riskLevel (ciEnumLower) ──────────────────────────────
 
-  it("AnalysisMetaSchema: riskLevel 'HIGH' normalize 为 'high'", () => {
+  it("DependencyGraphSchema: riskLevel 'HIGH' normalize 为 'high'", () => {
     const data = {
       callGraph: {},
       packageDependency: {},
@@ -753,7 +779,7 @@ describe("大小写 normalize — ciEnum 自动纠正 LLM 大小写变体", () =
       sccGroups: [["CORE_PKG"]],
       packageNames: ["CORE_PKG"],
     }
-    const result = AnalysisMetaSchema.safeParse(data)
+    const result = DependencyGraphSchema.safeParse(data)
     expect(result.success).toBe(true)
     if (result.success) {
       expect(result.data.complexity.CORE_PKG.riskLevel).toBe("high")

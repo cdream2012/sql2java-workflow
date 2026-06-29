@@ -32,7 +32,7 @@ function writeLowCompletionTranslate(ctx: ReturnType<typeof createEngineWithTemp
     sourcePath: "src", packageNames: ["CORE_PKG"], tables: [],
     standaloneProcedures: [], triggers: [], views: [], sequences: [],
   })
-  writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+  writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
     callGraph: {}, packageDependency: {},
     translationOrder: [["CORE_PKG"]],
     complexity: {}, sccGroups: [],

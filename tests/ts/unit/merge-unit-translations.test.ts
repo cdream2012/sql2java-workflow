@@ -22,9 +22,9 @@ describe("mergeUnitTranslations", () => {
     const art = join(dir, "a")
     const pkgDir = join(art, "translations", "PKG_A")
     mkdirSync(pkgDir, { recursive: true })
-    // analysis.json：procedureOrder 含 PKG_A 的两个 unit
+    // dependency-graph.json：procedureOrder 含 PKG_A 的两个 unit
     mkdirSync(art, { recursive: true })
-    writeFileSync(join(art, "analysis.json"), JSON.stringify({
+    writeFileSync(join(art, "dependency-graph.json"), JSON.stringify({
       procedureOrder: [["PKG_A.p1"], ["PKG_A.p2"]],
       functionOwnership: {},
     }), "utf-8")
@@ -65,7 +65,7 @@ describe("mergeUnitTranslations", () => {
     const pkgDir = join(art, "translations", "PKG_B")
     mkdirSync(pkgDir, { recursive: true })
     mkdirSync(art, { recursive: true })
-    writeFileSync(join(art, "analysis.json"), JSON.stringify({
+    writeFileSync(join(art, "dependency-graph.json"), JSON.stringify({
       procedureOrder: [["PKG_B.p1"], ["PKG_B.p2"]],
       functionOwnership: {},
     }), "utf-8")
@@ -91,7 +91,7 @@ describe("mergeUnitTranslations", () => {
     const pkgDir = join(art, "translations", "PKG_C")
     mkdirSync(pkgDir, { recursive: true })
     mkdirSync(art, { recursive: true })
-    writeFileSync(join(art, "analysis.json"), JSON.stringify({ procedureOrder: [["PKG_C.p1"]] }), "utf-8")
+    writeFileSync(join(art, "dependency-graph.json"), JSON.stringify({ procedureOrder: [["PKG_C.p1"]] }), "utf-8")
     // 缺 unitRefName（必填）→ Zod 失败
     writeFileSync(join(pkgDir, "p1.json"), JSON.stringify({
       packageName: "PKG_C", status: "completed",
@@ -104,8 +104,8 @@ describe("mergeUnitTranslations", () => {
   it("空包（procedureOrder 无其 unit）→ 写 completed 空 stub（保证下游可读）", () => {
     const art = join(dir, "d")
     mkdirSync(art, { recursive: true })
-    // analysis.json 有 procedureOrder 但不含 PKG_NONE 的 unit（空包）
-    writeFileSync(join(art, "analysis.json"), JSON.stringify({ procedureOrder: [["PKG_X.p1"]] }), "utf-8")
+    // dependency-graph.json 有 procedureOrder 但不含 PKG_NONE 的 unit（空包）
+    writeFileSync(join(art, "dependency-graph.json"), JSON.stringify({ procedureOrder: [["PKG_X.p1"]] }), "utf-8")
     expect(mergeUnitTranslations(art, "PKG_NONE")).toBeNull()
     const agg = JSON.parse(readFileSync(join(art, "translations", "PKG_NONE", "translation.json"), "utf-8"))
     expect(agg.status).toBe("completed")
@@ -118,7 +118,7 @@ describe("mergeUnitTranslations", () => {
     const pkgDir = join(art, "translations", "PKG_E")
     mkdirSync(pkgDir, { recursive: true })
     mkdirSync(art, { recursive: true })
-    writeFileSync(join(art, "analysis.json"), JSON.stringify({ procedureOrder: [["PKG_E.p1"]] }), "utf-8")
+    writeFileSync(join(art, "dependency-graph.json"), JSON.stringify({ procedureOrder: [["PKG_E.p1"]] }), "utf-8")
     // 合法 per-unit 文件
     writeFileSync(join(pkgDir, "p1.json"), JSON.stringify({
       unitRefName: "p1", packageName: "PKG_E", status: "completed",

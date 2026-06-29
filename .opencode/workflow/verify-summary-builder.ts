@@ -14,7 +14,7 @@
  * MyBatis/TODO 等静态字段在 summary 中为占位（mybatisValid=true / totalTodosRemaining=0）——
  * 真值在 review-summary，verify-summary 只承载动态结果。
  *
- * 与 buildAnalysisFromIndex / buildReviewSummary 同构。
+ * 与 buildDependencyGraphFromIndex / buildReviewSummary 同构。
  */
 
 import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs"

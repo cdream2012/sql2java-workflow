@@ -457,7 +457,7 @@ function extractInventoryData(data: PhaseBusinessData, dir: string): void {
 
 function extractAnalyzeData(data: PhaseBusinessData, dir: string): void {
   // 全局元数据
-  const meta = readJsonSafe(join(dir, "analysis.json"))
+  const meta = readJsonSafe(join(dir, "dependency-graph.json"))
   if (meta) {
     try { data.sccGroupCount = safeArrayLen(meta.sccGroups) } catch { /* skip */ }
   }

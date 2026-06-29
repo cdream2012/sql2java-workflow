@@ -112,8 +112,8 @@ export interface PhaseHistoryEntry {
   retryCount: number                            // 每次 retry 递增，与 PhaseConfig.maxRetries 比较
   branchedFrom?: string                         // fix 记录触发阶段；fix 回来的 entry 记录 "fix"
   incrementalContext?: {
-    targetPackages: string[]                    // 增量模式：只处理这些包（analyze/review 包级分片）
-    targetUnits?: string[]                      // translate PROCEDURE 级分片：只处理这些 unit id（PKG.refName）
+    targetPackages?: string[]                   // 增量模式：只处理这些包（analyze/review 包级分片）
+    targetUnits?: string[]                      // translate/analyze PROCEDURE 级分片：只处理这些 unit id（PKG.refName）
     shardIndex?: number                         // 分片模式：当前分片序号（0-based）
     totalShards?: number                        // 分片模式：总分片数
     previousFindings?: Array<{                  // 增量 review：上次 review 的 mustFix，供 reviewer 核对是否已修复
@@ -173,7 +173,12 @@ const PhaseHistoryEntrySchema = z.object({
   retryCount: z.number(),
   branchedFrom: z.string().optional(),
   incrementalContext: z.object({
-    targetPackages: z.array(z.string()),
+    // 包级分片（review/包级回退）用 targetPackages；PROCEDURE 级分片（analyze/translate unit 模式）
+    // 用 targetUnits。二者择一，均 optional——unit 模式 entry 只含 targetUnits，包级只含 targetPackages。
+    // 此前 targetPackages 误设为必填且无 targetUnits 字段，导致 unit 模式分片 run resume 时
+    // loadFromDisk 校验失败（"targetPackages 字段缺失"）+ targetUnits 被当未知键剥离。feat/proc-entry-scope 暴露。
+    targetPackages: z.array(z.string()).optional(),
+    targetUnits: z.array(z.string()).optional(),
     shardIndex: z.number().optional(),
     totalShards: z.number().optional(),
     previousFindings: z.array(z.object({
@@ -370,22 +375,24 @@ export class WorkflowEngine {
         run.updatedAt = now
 
         const nextShard = shardPlan.shards[nextShardIndex]
+        // unit 模式（analyze/translate PROCEDURE 级）shard 元素是 unit id `PKG.ref`，须写入 targetUnits
+        // 而非 targetPackages——否则下游 narrowUpstreamForShard / generateUnitSlices / 写入边界因 targetUnits
+        // 为空全部跳过，shard 1+ 退化为整包处理（硬隔离失效）。包级模式才用 targetPackages。
         const newEntry: PhaseHistoryEntry = {
           phase: run.currentPhase!,
           status: "in_progress",
           startedAt: now,
           retryCount: 0,
-          incrementalContext: {
-            targetPackages: nextShard,
-            shardIndex: nextShardIndex,
-            totalShards,
-          },
+          incrementalContext: shardPlan.unitMode
+            ? { targetUnits: nextShard, shardIndex: nextShardIndex, totalShards }
+            : { targetPackages: nextShard, shardIndex: nextShardIndex, totalShards },
         }
         run.phaseHistory.push(newEntry)
         run.metadata.shardPlan = shardPlan
         this.persist(run)
+        const shardLabel = shardPlan.unitMode ? "unit" : "包"
         this.appendEvent(runId, "SHARD_ADVANCE", run.currentPhase!,
-          `分片 ${currentShardIndex + 1}/${totalShards} 完成 → 分片 ${nextShardIndex + 1}/${totalShards} (包: ${nextShard.join(", ")})`)
+          `分片 ${currentShardIndex + 1}/${totalShards} 完成 → 分片 ${nextShardIndex + 1}/${totalShards} (${shardLabel}: ${nextShard.join(", ")})`)
 
         return {
           run,
@@ -736,11 +743,11 @@ export class WorkflowEngine {
     const artifactsDir = join(this.artifactsRoot, run.runId)
 
     const inventory = this.loadArtifactJson(artifactsDir, "inventory")
-    const analysis = this.loadArtifactJson(artifactsDir, "analysis")
+    const analysis = this.loadArtifactJson(artifactsDir, "dependency-graph")
 
     if (!inventory || !analysis) {
       findings.push({
-        message: `跨 Schema 校验跳过：缺少必要的 artifact（inventory: ${!!inventory}, analysis: ${!!analysis}）`,
+        message: `跨 Schema 校验跳过：缺少必要的 artifact（inventory: ${!!inventory}, dependency-graph: ${!!analysis}）`,
         severity: "warning",
       })
       return findings
@@ -748,16 +755,16 @@ export class WorkflowEngine {
 
     // inventory-index ↔ inventory 一致性已在 inventory 阶段完成时独立校验，此处不重复
 
-    // inventory 包名 ↔ analysis 包名（双向，大小写不敏感）
+    // inventory 包名 ↔ dependency-graph 包名（双向，大小写不敏感）
     const invNames = this.extractPackageNames(inventory)
     const anaNames = this.extractPackageNames(analysis)
     const invUpper = new Set([...invNames].map((n) => n.toUpperCase()))
     const anaUpper = new Set([...anaNames].map((n) => n.toUpperCase()))
     for (const name of invNames) {
-      if (!anaUpper.has(name.toUpperCase())) findings.push({ message: `analysis 缺少包: ${name}`, severity: "warning" })
+      if (!anaUpper.has(name.toUpperCase())) findings.push({ message: `dependency-graph 缺少包: ${name}`, severity: "warning" })
     }
     for (const name of anaNames) {
-      if (!invUpper.has(name.toUpperCase())) findings.push({ message: `inventory 缺少包: ${name}（analysis 中存在但 inventory 中不存在）`, severity: "warning" })
+      if (!invUpper.has(name.toUpperCase())) findings.push({ message: `inventory 缺少包: ${name}（dependency-graph 中存在但 inventory 中不存在）`, severity: "warning" })
     }
 
     // translationOrder 覆盖校验（大小写不敏感）
@@ -770,8 +777,8 @@ export class WorkflowEngine {
       if (!orderedUpper.has(name.toUpperCase())) findings.push({ message: `translationOrder 缺少包: ${name}`, severity: "warning" })
     }
 
-    // callGraph refName 一致性校验（仅 inventory 完成后；analysis.json 现由 inventory 阶段代码产出）
-    // analysis.json.callGraph 的 key/value 须为 PKG.refName，refName 须落在该包 inventory-packages
+    // callGraph refName 一致性校验（仅 inventory 完成后；dependency-graph.json 现由 inventory 阶段代码产出）
+    // dependency-graph.json.callGraph 的 key/value 须为 PKG.refName，refName 须落在该包 inventory-packages
     // 推导出的合法集合内（非重载=裸名，重载={name}__序号，全部带序号）。
     if (completedPhase === "inventory") {
       const callGraph = (analysis.callGraph as Record<string, string[]>) ?? {}
@@ -814,8 +821,24 @@ export class WorkflowEngine {
           .map((m) => m.oraclePackage)
           .filter((n): n is string => typeof n === "string" && n.length > 0)
       )
+      // scope 激活（mainEntry 过程级闭包）时期望集 = scopePackages（闭包内包）；
+      // 否则 = 全部 inventory 包。scope 下 out-of-scope 包不该被规划，跳过"未映射"检查。
+      const scopePkgsRaw = (run.metadata as Record<string, unknown>).scopePackages
+      const scopeUpper = Array.isArray(scopePkgsRaw) && scopePkgsRaw.length > 0
+        ? new Set((scopePkgsRaw as unknown[]).map((n) => String(n).toUpperCase()))
+        : null
       for (const name of invNames) {
+        if (scopeUpper && !scopeUpper.has(name.toUpperCase())) continue // out-of-scope，不该映射
         if (!mappedNames.has(name)) findings.push({ message: `plan 未映射包: ${name}`, severity: "warning" })
+      }
+      // scope 激活时补"越界映射"检查：packageMappings 含 scopePackages 之外的包 → warning
+      // （防架构师读全量上游后把 out-of-scope 包写进 plan，导致 scaffold 过量生成壳）
+      if (scopeUpper) {
+        for (const name of mappedNames) {
+          if (!scopeUpper.has(name.toUpperCase())) {
+            findings.push({ message: `plan 越界映射包: ${name}（不在 scopePackages 闭包内，scope 模式下不应规划）`, severity: "warning" })
+          }
+        }
       }
     }
 
@@ -1167,7 +1190,7 @@ export class WorkflowEngine {
   }
 
   /**
-   * 根据 analysis.json 的 translationOrder 计算分片计划。
+   * 根据 dependency-graph.json 的 translationOrder 计算分片计划。
    *
    * translationOrder 的每个内层数组要么是单包（独立包），要么是 SCC 组
    *（强连通循环依赖包，必须同 session 翻译以解析循环引用，见 sql-analyst.md）。
@@ -1500,10 +1523,12 @@ export class WorkflowEngine {
         crossSchemaWarnings,
       }
     }
-    const pkgResults = (summary as { packageResults?: Array<{ packageName: string; passed: boolean }> }).packageResults ?? []
+    const pkgResults = (summary as { packageResults?: Array<{ packageName: string; passed: boolean; staticPassed?: boolean | null }> }).packageResults ?? []
+    // 失败包 = 语义未过(!passed) 或 静态未过(staticPassed===false)。后者由 review 静态重构引入
+    // （review.json 纯语义、静态 finding 走独立通道），若不纳入 fix 范围会导致静态问题永不修复+不重扫→死循环。
     const failedPackages = new Set(
       pkgResults
-        .filter(p => !p.passed && typeof p.packageName === "string" && p.packageName)
+        .filter(p => typeof p.packageName === "string" && p.packageName && (!p.passed || p.staticPassed === false))
         .map(p => p.packageName.toUpperCase())
     )
     const fixedUpper = new Set(
@@ -1546,27 +1571,30 @@ export class WorkflowEngine {
     }
     // B-minimal: 增量 review 时把上次 review 的 mustFix 注入 previousFindings，
     // 让 reviewer 先核对旧问题是否修复（机制化核对，保证 fix 没修好的问题不被遗忘）。
+    // review 改项目级单文件：从 artifactsDir/review.json 的 packages[] 过滤 fixedPackages 收集 mustFix。
     let previousFindings: Array<{ packageName: string; file: string; line?: number | null; issue: string }> | undefined
     if (nextPhase === "review" && triggerPhase === "review") {
       const collected: Array<{ packageName: string; file: string; line?: number | null; issue: string }> = []
-      for (const pkg of fixedPackages) {
-        const reviewPath = join(artifactsDir, "translations", pkg, "review.json")
-        try {
-          const raw = JSON.parse(readFileSync(reviewPath, "utf-8")) as {
-            mustFix?: Array<{ file?: unknown; line?: unknown; issue?: unknown }>
-          }
-          for (const f of raw.mustFix ?? []) {
+      const fixedUpper = new Set(fixedPackages.map(p => p.toUpperCase()))
+      try {
+        const raw = JSON.parse(readFileSync(join(artifactsDir, "review.json"), "utf-8")) as {
+          packages?: Array<{ packageName?: unknown; mustFix?: Array<{ file?: unknown; line?: unknown; issue?: unknown }> }>
+        }
+        for (const pkg of raw.packages ?? []) {
+          if (!pkg || typeof pkg.packageName !== "string") continue
+          if (!fixedUpper.has(pkg.packageName.toUpperCase())) continue
+          for (const f of pkg.mustFix ?? []) {
             if (f && typeof f.file === "string" && typeof f.issue === "string") {
               collected.push({
-                packageName: pkg,
+                packageName: pkg.packageName,
                 file: f.file,
                 line: typeof f.line === "number" ? f.line : null,
                 issue: f.issue,
               })
             }
           }
-        } catch { /* review.json 不存在或解析失败：跳过该包，无 previousFindings 不阻断 */ }
-      }
+        }
+      } catch { /* review.json 不存在或解析失败：无 previousFindings 不阻断 */ }
       previousFindings = collected.length > 0 ? collected : undefined
     }
 

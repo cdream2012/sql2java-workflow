@@ -31,7 +31,7 @@ function setupOverloadedUtilPkg(dir: string) {
     sourcePath: "src", packageNames: ["UTIL_PKG"], tables: [],
     standaloneProcedures: [], triggers: [], views: [], sequences: [],
   })
-  writeArtifact(dir, RUN_ID, "analysis.json", {
+  writeArtifact(dir, RUN_ID, "dependency-graph.json", {
     callGraph: {},
     packageDependency: {},
     translationOrder: [["UTIL_PKG"]],
@@ -56,7 +56,7 @@ describe("validateCrossSchema — callGraph refName 校验 (inventory 阶段)", 
     ctx = createEngineWithTempDir()
     setupOverloadedUtilPkg(ctx.dir)
     // 覆盖 analysis.callGraph：裸名 get_by_id（非法）+ 合法 get_by_id__1
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: { "UTIL_PKG.get_by_id": [], "UTIL_PKG.get_by_id__1": [] },
       packageDependency: {}, translationOrder: [["UTIL_PKG"]],
       complexity: {}, sccGroups: [], packageNames: ["UTIL_PKG"],
@@ -74,7 +74,7 @@ describe("validateCrossSchema — callGraph refName 校验 (inventory 阶段)", 
   it("合法 refName（重载带 __序号）不告警", () => {
     ctx = createEngineWithTempDir()
     setupOverloadedUtilPkg(ctx.dir)
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: { "UTIL_PKG.get_by_id__2": ["UTIL_PKG.get_by_id__1"] },
       packageDependency: {}, translationOrder: [["UTIL_PKG"]],
       complexity: {}, sccGroups: [], packageNames: ["UTIL_PKG"],
@@ -168,7 +168,7 @@ describe("validateCrossSchema — subprogramMethods 校验 (translate 阶段，t
   it("callGraph 校验不在 translate 触发（仅 inventory），translate 不应报 callGraph refName 问题", () => {
     ctx = createEngineWithTempDir()
     setupOverloadedUtilPkg(ctx.dir)
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: { "UTIL_PKG.get_by_id": [] },  // 裸名（非法），但 inventory 才校验
       packageDependency: {}, translationOrder: [["UTIL_PKG"]],
       complexity: {}, sccGroups: [], packageNames: ["UTIL_PKG"],

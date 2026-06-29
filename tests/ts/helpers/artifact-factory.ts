@@ -56,8 +56,8 @@ export function makeInventory(overrides: Record<string, unknown> = {}) {
 
 // ── Analysis Meta ────────────────────────────────────────────
 
-/** analysis.json — 全局元数据（callGraph key 用 PKG.refName） */
-export function makeAnalysisMeta(overrides: Record<string, unknown> = {}) {
+/** dependency-graph.json — 全局元数据（callGraph key 用 PKG.refName） */
+export function makeDependencyGraphMeta(overrides: Record<string, unknown> = {}) {
   return {
     callGraph: { "CORE_PKG.GET_ITEM": [], "CORE_PKG.SET_ITEM": [] },
     packageDependency: { CORE_PKG: [], BASE_PKG: [] },

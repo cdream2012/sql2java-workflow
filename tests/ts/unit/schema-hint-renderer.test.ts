@@ -63,9 +63,9 @@ describe("renderSchemaHint", () => {
     expect(hint).toContain('"info"')
   })
 
-  it("analyze 阶段不渲染 riskLevel 枚举（complexity.riskLevel 属代码生成的 analysis.json，已从 hint 去掉）", () => {
+  it("analyze 阶段不渲染 riskLevel 枚举（complexity.riskLevel 属代码生成的 dependency-graph.json，已从 hint 去掉）", () => {
     const hint = renderSchemaHint("analyze")
-    // riskLevel 在 AnalysisMetaSchema.complexity（analysis.json，代码生成），非 worker 手写，不渲染
+    // riskLevel 在 DependencyGraphSchema.complexity（dependency-graph.json，代码生成），非 worker 手写，不渲染
     expect(hint).not.toContain('"low"')
     expect(hint).not.toContain('"high"')
     // 但 per-package 的 subprograms 结构仍渲染
@@ -178,7 +178,7 @@ describe("renderSchemaHint", () => {
     expect(hint).toContain("--- 跨 Schema 校验 ---")
   })
 
-  it("inventory 阶段包含跨 Schema 校验（analysis.json 由 inventory 产出，需校验 callGraph refName）", () => {
+  it("inventory 阶段包含跨 Schema 校验（dependency-graph.json 由 inventory 产出，需校验 callGraph refName）", () => {
     const hint = renderSchemaHint("inventory")
     expect(hint).toContain("--- 跨 Schema 校验 ---")
   })
@@ -345,7 +345,7 @@ describe("renderSchemaHint — 约束完整性（anyOf/nullable/string 长度）
     expect(hint).toContain("minLen 1")
   })
 
-  it("analyze 阶段不渲染顶层 analysis.json schema（代码生成）", () => {
+  it("analyze 阶段不渲染顶层 dependency-graph.json schema（代码生成）", () => {
     const hint = renderSchemaHint("analyze")
     expect(hint).not.toMatch(/###\s*analysis\.json/)
   })

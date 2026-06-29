@@ -27,7 +27,7 @@ describe("mergeUnitAnalysis", () => {
     const pkgSub = join(art, "analysis-packages", "PKG_A")
     mkdirSync(pkgSub, { recursive: true })
     mkdirSync(art, { recursive: true })
-    writeFileSync(join(art, "analysis.json"), JSON.stringify({
+    writeFileSync(join(art, "dependency-graph.json"), JSON.stringify({
       procedureOrder: [["PKG_A.p1"], ["PKG_A.p2"]],
       functionOwnership: { "PKG_A.f1": "PKG_A.p1" },
     }), "utf-8")
@@ -51,7 +51,7 @@ describe("mergeUnitAnalysis", () => {
     const pkgSub = join(art, "analysis-packages", "PKG_B")
     mkdirSync(pkgSub, { recursive: true })
     mkdirSync(art, { recursive: true })
-    writeFileSync(join(art, "analysis.json"), JSON.stringify({
+    writeFileSync(join(art, "dependency-graph.json"), JSON.stringify({
       procedureOrder: [["PKG_B.p1"]], functionOwnership: {},
     }), "utf-8")
     writeFileSync(join(pkgSub, "p1.json"), JSON.stringify({
@@ -68,7 +68,7 @@ describe("mergeUnitAnalysis", () => {
     const pkgSub = join(art, "analysis-packages", "PKG_C")
     mkdirSync(pkgSub, { recursive: true })
     mkdirSync(art, { recursive: true })
-    writeFileSync(join(art, "analysis.json"), JSON.stringify({ procedureOrder: [["PKG_C.p1"]] }), "utf-8")
+    writeFileSync(join(art, "dependency-graph.json"), JSON.stringify({ procedureOrder: [["PKG_C.p1"]] }), "utf-8")
     // 缺 unitRefName（必填）→ Zod 失败
     writeFileSync(join(pkgSub, "p1.json"), JSON.stringify({
       packageName: "PKG_C", subprograms: [sub("p1")],
@@ -83,7 +83,7 @@ describe("mergeUnitAnalysis", () => {
     const pkgSub = join(art, "analysis-packages", "PKG_D")
     mkdirSync(pkgSub, { recursive: true })
     mkdirSync(art, { recursive: true })
-    writeFileSync(join(art, "analysis.json"), JSON.stringify({ procedureOrder: [["PKG_D.p1"]] }), "utf-8")
+    writeFileSync(join(art, "dependency-graph.json"), JSON.stringify({ procedureOrder: [["PKG_D.p1"]] }), "utf-8")
     writeFileSync(join(pkgSub, "p1.json"), JSON.stringify({
       unitRefName: "p1", packageName: "PKG_D", subprograms: [sub("p1")],
     }), "utf-8")
@@ -98,7 +98,7 @@ describe("mergeUnitAnalysis", () => {
   it("空包（procedureOrder 无其 unit，子目录不存在）→ 返回 null 不抛错", () => {
     const art = join(dir, "e")
     mkdirSync(art, { recursive: true })
-    writeFileSync(join(art, "analysis.json"), JSON.stringify({ procedureOrder: [["PKG_X.p1"]] }), "utf-8")
+    writeFileSync(join(art, "dependency-graph.json"), JSON.stringify({ procedureOrder: [["PKG_X.p1"]] }), "utf-8")
     // PKG_NONE 无 unit，子目录不存在；聚合空文件由 analysis-builder 预写（此处不模拟）
     expect(mergeUnitAnalysis(art, "PKG_NONE")).toBeNull()
   })

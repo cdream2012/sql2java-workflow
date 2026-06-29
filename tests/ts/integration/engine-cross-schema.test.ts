@@ -17,7 +17,7 @@ function setupBaseline(dir: string) {
     sourcePath: "src", packageNames: ["CORE_PKG", "EXTRA_PKG"], tables: [],
     standaloneProcedures: [], triggers: [], views: [], sequences: [],
   })
-  writeArtifact(dir, RUN_ID, "analysis.json", {
+  writeArtifact(dir, RUN_ID, "dependency-graph.json", {
     callGraph: {},
     packageDependency: {},
     translationOrder: [["CORE_PKG"], ["EXTRA_PKG"]],
@@ -57,7 +57,7 @@ describe("validateCrossSchema — 包名一致性", () => {
   let ctx: ReturnType<typeof createEngineWithTempDir>
   afterEach(() => ctx?.cleanup())
 
-  it("analysis 引用的包在 inventory 中存在 → 无 finding", () => {
+  it("dependency-graph 引用的包在 inventory 中存在 → 无 finding", () => {
     ctx = createEngineWithTempDir()
     setupBaseline(ctx.dir)
 
@@ -68,13 +68,13 @@ describe("validateCrossSchema — 包名一致性", () => {
     expect(findings.length).toBe(0)
   })
 
-  it("analysis 缺少包（inventory 有但 analysis 没有）→ warning", () => {
+  it("dependency-graph 缺少包（inventory 有但 dependency-graph 没有）→ warning", () => {
     ctx = createEngineWithTempDir()
     writeArtifact(ctx.dir, RUN_ID, "inventory.json", {
       sourcePath: "src", packageNames: ["CORE_PKG", "EXTRA_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: {}, packageDependency: {},
       translationOrder: [["CORE_PKG"]],
       complexity: {}, sccGroups: [],
@@ -90,18 +90,18 @@ describe("validateCrossSchema — 包名一致性", () => {
       { runId: RUN_ID, currentPhase: "analyze", status: "running", phaseHistory: [], metadata: {}, createdAt: "", updatedAt: "" },
       "analyze",
     )
-    const missing = findings.find(f => f.message.includes("analysis 缺少包: EXTRA_PKG"))
+    const missing = findings.find(f => f.message.includes("dependency-graph 缺少包: EXTRA_PKG"))
     expect(missing).toBeTruthy()
     expect(missing!.severity).toBe("warning")
   })
 
-  it("inventory 缺少包（analysis 有但 inventory 没有）→ warning", () => {
+  it("inventory 缺少包（dependency-graph 有但 inventory 没有）→ warning", () => {
     ctx = createEngineWithTempDir()
     writeArtifact(ctx.dir, RUN_ID, "inventory.json", {
       sourcePath: "src", packageNames: ["CORE_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: {}, packageDependency: {},
       translationOrder: [["CORE_PKG", "GHOST_PKG"]],
       complexity: {}, sccGroups: [],
@@ -137,7 +137,7 @@ describe("validateCrossSchema — translationOrder 覆盖", () => {
       sourcePath: "src", packageNames: ["CORE_PKG", "EXTRA_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: {}, packageDependency: {},
       translationOrder: [["CORE_PKG"]],  // 缺少 EXTRA_PKG
       complexity: {}, sccGroups: [],
@@ -194,6 +194,65 @@ describe("validateCrossSchema — plan 映射覆盖", () => {
     expect(missing).toBeTruthy()
     expect(missing!.severity).toBe("warning")
   })
+
+  it("scope 激活时越界映射包（out-of-scope 包写进 plan）→ warning", () => {
+    ctx = createEngineWithTempDir()
+    setupBaseline(ctx.dir)
+    writeArtifact(ctx.dir, RUN_ID, "plan.json", {
+      targetProject: {
+        groupId: "com.example", artifactId: "myapp",
+        packageBase: "com.example", javaVersion: "17", springBootVersion: "3.2",
+      },
+      // scope 只覆盖 CORE_PKG，但 plan 把 out-of-scope 的 EXTRA_PKG 也映射了
+      packageMappings: [
+        { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
+          mapperInterface: "CoreMapper", serviceClass: "CoreService", serviceImplClass: "CoreServiceImpl" },
+        { oraclePackage: "EXTRA_PKG", javaPackage: "com.example.extra",
+          mapperInterface: "ExtraMapper", serviceClass: "ExtraService", serviceImplClass: "ExtraServiceImpl" },
+      ],
+      rules: { namingConvention: "camelCase", nullHandling: "optional", exceptionStrategy: "spring-data", logFramework: "slf4j" },
+      typeMappings: {}, manualReviewList: [], conventions: "",
+    })
+
+    const findings: CrossSchemaFinding[] = ctx.engine.validateCrossSchema(
+      { runId: RUN_ID, currentPhase: "plan", status: "running", phaseHistory: [], metadata: { scopePackages: ["CORE_PKG"] }, createdAt: "", updatedAt: "" },
+      "plan",
+    )
+    const overflow = findings.find(f => f.message.includes("plan 越界映射包: EXTRA_PKG"))
+    expect(overflow).toBeTruthy()
+    expect(overflow!.severity).toBe("warning")
+    // out-of-scope 包不该再被报"未映射"（scope 下期望集只是 scopePackages）
+    const falseMissing = findings.find(f => f.message.includes("plan 未映射包: EXTRA_PKG"))
+    expect(falseMissing).toBeFalsy()
+  })
+
+  it("scope 激活时 out-of-scope 包未映射不误报", () => {
+    ctx = createEngineWithTempDir()
+    setupBaseline(ctx.dir)
+    writeArtifact(ctx.dir, RUN_ID, "plan.json", {
+      targetProject: {
+        groupId: "com.example", artifactId: "myapp",
+        packageBase: "com.example", javaVersion: "17", springBootVersion: "3.2",
+      },
+      // scope 只覆盖 CORE_PKG，plan 正确地只映射 CORE_PKG（EXTRA_PKG 不映射）
+      packageMappings: [
+        { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
+          mapperInterface: "CoreMapper", serviceClass: "CoreService", serviceImplClass: "CoreServiceImpl" },
+      ],
+      rules: { namingConvention: "camelCase", nullHandling: "optional", exceptionStrategy: "spring-data", logFramework: "slf4j" },
+      typeMappings: {}, manualReviewList: [], conventions: "",
+    })
+
+    const findings: CrossSchemaFinding[] = ctx.engine.validateCrossSchema(
+      { runId: RUN_ID, currentPhase: "plan", status: "running", phaseHistory: [], metadata: { scopePackages: ["CORE_PKG"] }, createdAt: "", updatedAt: "" },
+      "plan",
+    )
+    // EXTRA_PKG 是 out-of-scope，未映射是正确的，不应报 warning
+    const falseMissing = findings.find(f => f.message.includes("plan 未映射包: EXTRA_PKG"))
+    expect(falseMissing).toBeFalsy()
+    const overflow = findings.find(f => f.message.includes("plan 越界映射包"))
+    expect(overflow).toBeFalsy()
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════
@@ -204,7 +263,7 @@ describe("advance() — blocking 拒绝", () => {
   let ctx: ReturnType<typeof createEngineWithTempDir>
   afterEach(() => ctx?.cleanup())
 
-  it("analysis 缺少包 → warning 自动放行（不再 blocking）", () => {
+  it("dependency-graph 缺少包 → warning 自动放行（不再 blocking）", () => {
     ctx = createEngineWithTempDir()
     const engine = ctx.engine
     engine.start("sql2java", RUN_ID)
@@ -215,7 +274,7 @@ describe("advance() — blocking 拒绝", () => {
       sourcePath: "src", packageNames: ["CORE_PKG", "EXTRA_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: {}, packageDependency: {},
       translationOrder: [["CORE_PKG"]],  // 也缺少 EXTRA_PKG
       complexity: {}, sccGroups: [],
@@ -255,7 +314,7 @@ describe("advance() — warning 自动放行", () => {
       sourcePath: "src", packageNames: ["CORE_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: {}, packageDependency: {},
       translationOrder: [["CORE_PKG", "GHOST_PKG"]],
       complexity: {}, sccGroups: [],
@@ -292,7 +351,7 @@ describe("advance() — warning 自动放行", () => {
       sourcePath: "src", packageNames: ["CORE_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: {}, packageDependency: {},
       translationOrder: [["CORE_PKG", "GHOST_PKG"]],
       complexity: {}, sccGroups: [],
@@ -331,13 +390,13 @@ describe("advance() — 混合场景", () => {
     pushToPhase(engine, "analyze")
 
     // inventory 有 CORE_PKG + EXTRA_PKG，analysis 有 CORE_PKG + GHOST_PKG
-    // → EXTRA_PKG: analysis 缺少包 = warning
+    // → EXTRA_PKG: dependency-graph 缺少包 = warning
     // → GHOST_PKG: inventory 缺少包 = warning
     writeArtifact(ctx.dir, RUN_ID, "inventory.json", {
       sourcePath: "src", packageNames: ["CORE_PKG", "EXTRA_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: {}, packageDependency: {},
       translationOrder: [["CORE_PKG", "GHOST_PKG"]],
       complexity: {}, sccGroups: [],

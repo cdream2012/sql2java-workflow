@@ -38,14 +38,15 @@ describe("severityRank", () => {
 })
 
 describe("assertCheckFound（reviewer 能力断言）", () => {
+  // review 改项目级单文件：review.json = { packages: [{ procedureReviews, ... }] }
   const reviewWith = (checks: unknown[]) => ({
-    procedureReviews: [{ procedure: "doSomething", checks }],
+    packages: [{ packageName: "BAD_PKG", procedureReviews: [{ procedure: "doSomething", checks }] }],
   })
 
   it("命中 category=collection-exception + passed=false + severity=major → 通过", () => {
     const ctx = makeCtx({
       artifacts: {
-        "translations/BAD_PKG/review.json": reviewWith([
+        "review.json": reviewWith([
           { category: "collection-exception", passed: false, severity: "major", detail: "空 catch" },
         ]),
       },
@@ -56,7 +57,7 @@ describe("assertCheckFound（reviewer 能力断言）", () => {
   it("severity 低于阈值（minor）→ 不通过", () => {
     const ctx = makeCtx({
       artifacts: {
-        "translations/BAD_PKG/review.json": reviewWith([
+        "review.json": reviewWith([
           { category: "collection-exception", passed: false, severity: "minor", detail: "空 catch" },
         ]),
       },
@@ -67,7 +68,7 @@ describe("assertCheckFound（reviewer 能力断言）", () => {
   it("passed=true（非缺陷）→ 不通过", () => {
     const ctx = makeCtx({
       artifacts: {
-        "translations/BAD_PKG/review.json": reviewWith([
+        "review.json": reviewWith([
           { category: "collection-exception", passed: true, severity: "critical", detail: "ok" },
         ]),
       },
@@ -78,7 +79,7 @@ describe("assertCheckFound（reviewer 能力断言）", () => {
   it("category 不符 → 不通过", () => {
     const ctx = makeCtx({
       artifacts: {
-        "translations/BAD_PKG/review.json": reviewWith([
+        "review.json": reviewWith([
           { category: "naming-convention", passed: false, severity: "critical", detail: "命名" },
         ]),
       },
@@ -89,7 +90,7 @@ describe("assertCheckFound（reviewer 能力断言）", () => {
   it("critical 也满足 major 阈值 → 通过", () => {
     const ctx = makeCtx({
       artifacts: {
-        "translations/BAD_PKG/review.json": reviewWith([
+        "review.json": reviewWith([
           { category: "collection-exception", passed: false, severity: "critical", detail: "空 catch" },
         ]),
       },
@@ -154,7 +155,7 @@ describe("prepareExecutionPoint（真实引擎推进，不调 opencode）", () =
           writeFileSync(join(dir, "inventory-index.json"), '{"packages":[{"name":"BAD_PKG"}]}')
           writeFileSync(join(dir, "plan.json"), '{"x":1}')
           writeFileSync(join(dir, "scaffold.json"), '{"x":1}')
-          writeFileSync(join(dir, "analysis.json"), '{"x":1}')
+          writeFileSync(join(dir, "dependency-graph.json"), '{"x":1}')
         },
       })
       const runDir = join(workDir, ".workflow-artifacts", RUN_ID)

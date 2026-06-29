@@ -1,6 +1,10 @@
 {
   "type": "module",
   "private": true,
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
   "devDependencies": {
     "vitest": "^3.2.6",
     "zod": "4.1.8"

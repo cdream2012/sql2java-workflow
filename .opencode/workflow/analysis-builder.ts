@@ -1,6 +1,6 @@
 /**
  * Analysis Builder — 把 prescan 的 inventory-index.json（结构全字段）转换为
- * 下游 analysis.json（依赖图 meta）+ 无子程序包的空 analysis-packages。
+ * 下游 dependency-graph.json（依赖图 meta）+ 无子程序包的空 analysis-packages。
  *
  * 这是 analyze map-reduce 的 **reduce**（代码，零 LLM），归入 inventory 阶段：
  *   - callGraph：按子程序 lineRange 扫描源码 `PKG.PROC` 调用 → caller→callee 真实边，
@@ -9,12 +9,12 @@
  *   - translationOrder + sccGroups：包级依赖图上跑 Tarjan SCC，输出拓扑序（依赖在前）。
  *   - complexity：启发式（LOC + 子程序数 + 出边数 + 模式 grep）→ score/riskLevel/patterns。
  *
- * 产出过 AnalysisMetaSchema / AnalysisPackageSchema Zod 校验。
+ * 产出过 DependencyGraphSchema / AnalysisPackageSchema Zod 校验。
  */
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { join, isAbsolute } from "node:path"
-import { AnalysisMetaSchema, AnalysisPackageSchema } from "./artifact-schemas"
+import { DependencyGraphSchema, AnalysisPackageSchema } from "./artifact-schemas"
 import { formatZodIssues } from "./engine-core"
 import { refNamesForPackage, pkgOf } from "./refname"
 import { getLogger } from "./workflow-logger"
@@ -101,6 +101,54 @@ function scanCallSites(code: string): CallSite[] {
       if (SQL_PSEUDO.has(calleePkg) || SQL_PSEUDO.has(calleeProc)) continue
       if (calleePkg.length < 2 || calleeProc.length < 2) continue
       sites.push({ line: i + 1, calleePkg, calleeProc })
+    }
+  })
+  return sites
+}
+
+/** 扫描源码中的同包**裸名**调用点（`proc_name(...)` / `proc_name;`，无 `PKG.` 前缀）。
+ *
+ * scanCallSites 只识别 `PKG.PROC` 点号调用，遗漏同包裸名互调——闭包翻译（feat/proc-entry-scope）
+ * 场景下入口 proc 调同包 helper 若漏边会漏译。此函数补同包裸名调用边：
+ *   - 候选：标识符后接 `(` 或 `;`（PL/SQL 调用两种形式）；
+ *   - 严格白名单：裸名须命中本包子程序名集合（procNameToRefNames 的 key，已大写），否则跳过
+ *     （排除列名/变量/SQL 关键字/伪列），避免幻边膨胀 SCC；
+ *   - 排除点号调用的一部分（`PKG.PROC` 的 PROC 段）——前一个非空白字符为 `.` 则跳过（已由
+ *     scanCallSites 处理）；
+ *   - 排除 `--` 注释行、`:NEW/:OLD` 绑定变量（与 scanCallSites 一致）。
+ *
+ * 跨包裸名调用（synonym/standalone，无包前缀）无法消歧，仍为已知局限，不在此处理。
+ */
+function scanBareCallSites(code: string, samePkgNames: Set<string>): CallSite[] {
+  const sites: CallSite[] = []
+  if (samePkgNames.size === 0) return sites
+  // 前导词为这些关键字时，NAME 不是调用：`procedure NAME(` / `function NAME(` 是声明，
+  // `end NAME;` 是子程序结束标签。排除以防声明/结尾误判为调用（自环污染 callGraph）。
+  const DECL_KEYWORDS = new Set(["PROCEDURE", "FUNCTION", "END"])
+  const lines = code.split("\n")
+  lines.forEach((rawLine, i) => {
+    const trimmed = rawLine.trim()
+    if (trimmed.startsWith("--")) return
+    const cleaned = trimmed.replace(/:[A-Z]+/gi, " ")
+    const re = /\b([A-Z][A-Z0-9_]*)\s*(?=[(;])/gi
+    let m: RegExpExecArray | null
+    while ((m = re.exec(cleaned)) !== null) {
+      const name = m[1].toUpperCase()
+      if (name.length < 2) continue
+      if (SQL_PSEUDO.has(name)) continue
+      if (!samePkgNames.has(name)) continue
+      // 排除点号调用的一部分（PKG.PROC 由 scanCallSites 处理）：前一个非空白字符为 `.` 则跳过
+      let j = m.index - 1
+      while (j >= 0 && /\s/.test(cleaned[j])) j--
+      if (j >= 0 && cleaned[j] === ".") continue
+      // 排除声明/结尾：前一个 word 是 procedure/function/end
+      let k = m.index - 1
+      while (k >= 0 && /\s/.test(cleaned[k])) k--
+      const wordEnd = k
+      while (k >= 0 && /[A-Za-z0-9_]/.test(cleaned[k])) k--
+      const prevWord = cleaned.slice(k + 1, wordEnd + 1).toUpperCase()
+      if (DECL_KEYWORDS.has(prevWord)) continue
+      sites.push({ line: i + 1, calleePkg: "", calleeProc: name })
     }
   })
   return sites
@@ -318,10 +366,10 @@ function heuristicComplexity(
 }
 
 /**
- * 读 inventory-index.json，写出 analysis.json + 无子程序包的空 analysis-packages/{PKG}.json。
+ * 读 inventory-index.json，写出 dependency-graph.json + 无子程序包的空 analysis-packages/{PKG}.json。
  * 任一产物 Zod 校验失败即抛错。
  */
-export function buildAnalysisFromIndex(artifactsDir: string): {
+export function buildDependencyGraphFromIndex(artifactsDir: string): {
   packageCount: number
   sccGroupCount: number
   warnings: string[]
@@ -348,6 +396,7 @@ export function buildAnalysisFromIndex(artifactsDir: string): {
     const pkgInfo = refIndex.get(pkg.name)!
     const bodyCode = readSource(sourcePath, pkg.bodyFile)
     if (!bodyCode) continue // spec-only 包无调用
+    // 2a) 点号调用 `PKG.PROC`（scanCallSites）
     const sites = scanCallSites(bodyCode)
     for (const site of sites) {
       // 包级引用：任何指向 inventory 包的 PKG.X 都算依赖（含常量/类型/子程序）
@@ -365,6 +414,26 @@ export function buildAnalysisFromIndex(artifactsDir: string): {
         if (!arr.includes(r)) arr.push(r)
       }
       callGraph[callerKey] = arr
+    }
+    // 2b) 同包 bare-name 调用边补全（feat/proc-entry-scope D）——复用同一 bodyCode，避免重复读文件。
+    // scanCallSites 仅识别 `PKG.PROC` 点号调用；同包裸名互调（`helper_proc()` / `helper_proc;` 无
+    // 包前缀）进不了 callGraph，闭包翻译会漏。命中本包子程序名集合即补边；calleePkg 同包
+    // （resolveCalleeRefNames 按 pkg.name 解析），不产生新的跨包 allRefs。
+    const samePkgNames = new Set(pkgInfo.procNameToRefNames.keys()) // 已大写
+    if (samePkgNames.size > 0) {
+      const bareSites = scanBareCallSites(bodyCode, samePkgNames)
+      for (const site of bareSites) {
+        const caller = findCallerSubprogram(pkgInfo.subprograms, site.line)
+        if (!caller) continue
+        const calleeRefNames = resolveCalleeRefNames(pkg.name, site.calleeProc, refIndex)
+        if (!calleeRefNames) continue
+        const callerKey = `${pkg.name}.${caller.refName}`
+        const arr = callGraph[callerKey] ?? []
+        for (const r of calleeRefNames) {
+          if (!arr.includes(r)) arr.push(r)
+        }
+        callGraph[callerKey] = arr
+      }
     }
   }
 
@@ -408,7 +477,7 @@ export function buildAnalysisFromIndex(artifactsDir: string): {
   for (const [k, v] of functionOwnershipMap) functionOwnership[k] = v
   const procedureOrder = buildProcedureOrder(callGraph, refIndex, functionOwnershipMap)
 
-  // 6) 写 analysis.json
+  // 6) 写 dependency-graph.json
   const analysis = {
     callGraph,
     packageDependency: pkgDep,
@@ -419,11 +488,11 @@ export function buildAnalysisFromIndex(artifactsDir: string): {
     procedureOrder,
     functionOwnership,
   }
-  const metaResult = AnalysisMetaSchema.safeParse(analysis)
+  const metaResult = DependencyGraphSchema.safeParse(analysis)
   if (!metaResult.success) {
-    throw new Error(`analysis.json 校验失败:\n${formatZodIssues(metaResult.error)}`)
+    throw new Error(`dependency-graph.json 校验失败:\n${formatZodIssues(metaResult.error)}`)
   }
-  writeFileSync(join(artifactsDir, "analysis.json"), JSON.stringify(metaResult.data, null, 2), "utf-8")
+  writeFileSync(join(artifactsDir, "dependency-graph.json"), JSON.stringify(metaResult.data, null, 2), "utf-8")
 
   // 7) 无子程序包写空 analysis-packages/{PKG}.json（有子程序的包由 analyze map 阶段填充）
   const analysisPkgDir = join(artifactsDir, "analysis-packages")
@@ -438,6 +507,6 @@ export function buildAnalysisFromIndex(artifactsDir: string): {
     writeFileSync(join(analysisPkgDir, `${pkg.name}.json`), JSON.stringify(r.data, null, 2), "utf-8")
   }
 
-  getLogger().info("[analysis-builder]", `生成 analysis.json: ${nodes.length} 包, ${sccGroups.length} SCC 组, ${Object.keys(callGraph).length} 调用边, ${procedureOrder.flat().length} PROCEDURE 单元, ${Object.keys(functionOwnership).length} 被拥有 FUNCTION`)
+  getLogger().info("[analysis-builder]", `生成 dependency-graph.json: ${nodes.length} 包, ${sccGroups.length} SCC 组, ${Object.keys(callGraph).length} 调用边, ${procedureOrder.flat().length} PROCEDURE 单元, ${Object.keys(functionOwnership).length} 被拥有 FUNCTION`)
   return { packageCount: nodes.length, sccGroupCount: sccGroups.length, warnings }
 }
