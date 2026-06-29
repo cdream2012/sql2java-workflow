@@ -821,8 +821,24 @@ export class WorkflowEngine {
           .map((m) => m.oraclePackage)
           .filter((n): n is string => typeof n === "string" && n.length > 0)
       )
+      // scope 激活（mainEntry 过程级闭包）时期望集 = scopePackages（闭包内包）；
+      // 否则 = 全部 inventory 包。scope 下 out-of-scope 包不该被规划，跳过"未映射"检查。
+      const scopePkgsRaw = (run.metadata as Record<string, unknown>).scopePackages
+      const scopeUpper = Array.isArray(scopePkgsRaw) && scopePkgsRaw.length > 0
+        ? new Set((scopePkgsRaw as unknown[]).map((n) => String(n).toUpperCase()))
+        : null
       for (const name of invNames) {
+        if (scopeUpper && !scopeUpper.has(name.toUpperCase())) continue // out-of-scope，不该映射
         if (!mappedNames.has(name)) findings.push({ message: `plan 未映射包: ${name}`, severity: "warning" })
+      }
+      // scope 激活时补"越界映射"检查：packageMappings 含 scopePackages 之外的包 → warning
+      // （防架构师读全量上游后把 out-of-scope 包写进 plan，导致 scaffold 过量生成壳）
+      if (scopeUpper) {
+        for (const name of mappedNames) {
+          if (!scopeUpper.has(name.toUpperCase())) {
+            findings.push({ message: `plan 越界映射包: ${name}（不在 scopePackages 闭包内，scope 模式下不应规划）`, severity: "warning" })
+          }
+        }
       }
     }
 

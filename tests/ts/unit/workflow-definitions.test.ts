@@ -178,6 +178,11 @@ describe("UPSTREAM_ARTIFACTS", () => {
     expect(UPSTREAM_ARTIFACTS.translate).toContain("fsd/*/*.md")
   })
 
+  it("plan 不注入 FSD（框架设计不做逐过程翻译，manualReviewList 来自 analysis-packages.translationNotes）", () => {
+    expect(UPSTREAM_ARTIFACTS.plan).not.toContain("fsd/*/*.md")
+    expect(UPSTREAM_ARTIFACTS.plan).toContain("analysis-packages/*.json")
+  })
+
   it("inventory-index.json 仅 inventory 阶段注入；其余下游阶段都不读它", () => {
     // inventory-index 是预扫描源，仅 inventory 阶段代码生成 + 边界校验消费；下游 worker
     // 读精炼后的 inventory.json / inventory-packages / dependency-graph.json 即可。

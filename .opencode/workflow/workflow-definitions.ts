@@ -139,7 +139,10 @@ export const UPSTREAM_ARTIFACTS: Record<string, string[]> = {
   // analyze 不注入 inventory-index.json：本包源码路径从 inventory-packages/{PKG}.json 的
   // specFile/bodyFile 取（已收窄到本分片）；表结构从 inventory.json，callGraph 从 dependency-graph.json。
   analyze: ["inventory.json", "inventory-packages/*.json", "dependency-graph.json"],
-  plan: [..._INV_BASE, ..._ANALYSIS, ..._FSD],
+  // plan 是框架设计（包映射/类型映射/规则/约定/manualReviewList），不做逐过程翻译，
+  // 不需要 FSD（FSD 是 per-procedure 业务翻译说明书，给 translate 用）。manualReviewList
+  // 的高风险项来自 analysis-packages.translationNotes，不依赖 FSD。
+  plan: [..._INV_BASE, ..._ANALYSIS],
   scaffold: [..._PLAN, ..._INV_BASE],
   // translate 同样不注入 inventory-index.json（同 analyze 理由：避免全量包源码路径泄漏）。
   // fsd/*/*.md 会在分片模式下被 narrowUpstreamForShard 收窄到 fsd/{pkg}/*.md（本包 FSD）。

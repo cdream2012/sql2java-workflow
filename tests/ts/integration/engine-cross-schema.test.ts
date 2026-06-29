@@ -194,6 +194,65 @@ describe("validateCrossSchema — plan 映射覆盖", () => {
     expect(missing).toBeTruthy()
     expect(missing!.severity).toBe("warning")
   })
+
+  it("scope 激活时越界映射包（out-of-scope 包写进 plan）→ warning", () => {
+    ctx = createEngineWithTempDir()
+    setupBaseline(ctx.dir)
+    writeArtifact(ctx.dir, RUN_ID, "plan.json", {
+      targetProject: {
+        groupId: "com.example", artifactId: "myapp",
+        packageBase: "com.example", javaVersion: "17", springBootVersion: "3.2",
+      },
+      // scope 只覆盖 CORE_PKG，但 plan 把 out-of-scope 的 EXTRA_PKG 也映射了
+      packageMappings: [
+        { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
+          mapperInterface: "CoreMapper", serviceClass: "CoreService", serviceImplClass: "CoreServiceImpl" },
+        { oraclePackage: "EXTRA_PKG", javaPackage: "com.example.extra",
+          mapperInterface: "ExtraMapper", serviceClass: "ExtraService", serviceImplClass: "ExtraServiceImpl" },
+      ],
+      rules: { namingConvention: "camelCase", nullHandling: "optional", exceptionStrategy: "spring-data", logFramework: "slf4j" },
+      typeMappings: {}, manualReviewList: [], conventions: "",
+    })
+
+    const findings: CrossSchemaFinding[] = ctx.engine.validateCrossSchema(
+      { runId: RUN_ID, currentPhase: "plan", status: "running", phaseHistory: [], metadata: { scopePackages: ["CORE_PKG"] }, createdAt: "", updatedAt: "" },
+      "plan",
+    )
+    const overflow = findings.find(f => f.message.includes("plan 越界映射包: EXTRA_PKG"))
+    expect(overflow).toBeTruthy()
+    expect(overflow!.severity).toBe("warning")
+    // out-of-scope 包不该再被报"未映射"（scope 下期望集只是 scopePackages）
+    const falseMissing = findings.find(f => f.message.includes("plan 未映射包: EXTRA_PKG"))
+    expect(falseMissing).toBeFalsy()
+  })
+
+  it("scope 激活时 out-of-scope 包未映射不误报", () => {
+    ctx = createEngineWithTempDir()
+    setupBaseline(ctx.dir)
+    writeArtifact(ctx.dir, RUN_ID, "plan.json", {
+      targetProject: {
+        groupId: "com.example", artifactId: "myapp",
+        packageBase: "com.example", javaVersion: "17", springBootVersion: "3.2",
+      },
+      // scope 只覆盖 CORE_PKG，plan 正确地只映射 CORE_PKG（EXTRA_PKG 不映射）
+      packageMappings: [
+        { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
+          mapperInterface: "CoreMapper", serviceClass: "CoreService", serviceImplClass: "CoreServiceImpl" },
+      ],
+      rules: { namingConvention: "camelCase", nullHandling: "optional", exceptionStrategy: "spring-data", logFramework: "slf4j" },
+      typeMappings: {}, manualReviewList: [], conventions: "",
+    })
+
+    const findings: CrossSchemaFinding[] = ctx.engine.validateCrossSchema(
+      { runId: RUN_ID, currentPhase: "plan", status: "running", phaseHistory: [], metadata: { scopePackages: ["CORE_PKG"] }, createdAt: "", updatedAt: "" },
+      "plan",
+    )
+    // EXTRA_PKG 是 out-of-scope，未映射是正确的，不应报 warning
+    const falseMissing = findings.find(f => f.message.includes("plan 未映射包: EXTRA_PKG"))
+    expect(falseMissing).toBeFalsy()
+    const overflow = findings.find(f => f.message.includes("plan 越界映射包"))
+    expect(overflow).toBeFalsy()
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════

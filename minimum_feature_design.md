@@ -321,7 +321,7 @@ LLM 传入 `result: "passed" | "failed"`（可选，见 D8 自动推导）。引
 - 生成 common 模块（类型映射工具类、异常体系、基础配置）
 - 生成 Entity 类（从 `inventory.json` 中的 tables + `inventory-packages` 中的 types）
 - 生成空的 Mapper 接口和 Service 壳
-- 产出 `scaffold.json`（含 `basedOnPlanHash` 关联 plan 版本）+ 实际 Java 文件
+- 产出 `scaffold.json` + 实际 Java 文件
 
 **dedup 职责**：
 - 检测跨包重复代码（如相似的异常处理、工具方法、常量定义）
@@ -1096,7 +1096,6 @@ export const ScaffoldSchema = z.object({
     }).optional(),
   }),
   conventions: z.string(),
-  basedOnPlanHash: z.string().optional(),              // 关联 plan 版本
 })
 ```
 

@@ -410,7 +410,6 @@ export const ScaffoldSchema = z.object({
     }).optional(),
   }),
   conventions: z.string(),
-  basedOnPlanHash: z.string().nullable().optional(),
 }).passthrough()
 
 // ============================================================================
