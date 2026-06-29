@@ -25,7 +25,7 @@ function writeInvPkg(art: string, pkg: string, bodyFile: string, procs: Array<Re
 }
 
 function writeAnalysis(art: string, opts: Record<string, unknown>) {
-  writeFileSync(join(art, "analysis.json"), JSON.stringify(opts), "utf-8")
+  writeFileSync(join(art, "dependency-graph.json"), JSON.stringify(opts), "utf-8")
 }
 
 describe("generateUnitSlices — analyze", () => {

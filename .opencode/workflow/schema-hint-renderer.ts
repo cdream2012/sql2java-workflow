@@ -272,7 +272,7 @@ export function renderSchemaHint(phase: string | null | undefined): string {
   parts.push("")
 
   // ── 顶层 schema ──
-  // analyze 阶段跳过：analysis.json 由 inventory 阶段 generateAnalysis 代码产出（非 worker 手写），
+  // analyze 阶段跳过：dependency-graph.json 由 inventory 阶段 generateDependencyGraph 代码产出（非 worker 手写），
   // 其格式由 inventory 边界校验 + CROSS_SCHEMA_HINTS.analyze 文字覆盖，不在此渲染。
   const topLevelSchema = getSchemaForPhase(phase)
   if (topLevelSchema && phase !== "analyze") {

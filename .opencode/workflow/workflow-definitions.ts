@@ -20,7 +20,7 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
       agentFile: "agent/sql-analyst.md",
       temperature: 0.1,
       maxRetries: 2,
-      // analysis.json（含 callGraph）现由 inventory 阶段代码产出，需在 inventory advance
+      // dependency-graph.json（含 callGraph）现由 inventory 阶段代码产出，需在 inventory advance
       // 时运行 validateCrossSchema：校验 analysis↔inventory 包名一致 + callGraph refName 合法性。
       needsCrossSchemaValidation: true,
       tools: ["read", "bash", "write", "workflow"],
@@ -123,10 +123,10 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
 
 // 共享 artifact 路径常量，避免跨阶段重复声明时遗漏
 // inventory-index.json 是预扫描源，仅 inventory 阶段代码生成（generateInventory/
-// generateAnalysis）+ 边界校验消费，不注入任何下游 worker（其内容已精炼到
-// inventory.json / inventory-packages / analysis.json，下游读那些即可）。
+// generateDependencyGraph）+ 边界校验消费，不注入任何下游 worker（其内容已精炼到
+// inventory.json / inventory-packages / dependency-graph.json，下游读那些即可）。
 const _INV_BASE = ["inventory.json", "inventory-packages/*.json"] as const
-const _ANALYSIS = ["analysis.json", "analysis-packages/*.json"] as const
+const _ANALYSIS = ["dependency-graph.json", "analysis-packages/*.json"] as const
 const _PLAN = ["plan.json"] as const
 const _SCAFFOLD = ["scaffold.json"] as const
 const _DEDUP = ["dedup.json"] as const
@@ -137,8 +137,8 @@ const _FSD = ["fsd/*/*.md"] as const
 export const UPSTREAM_ARTIFACTS: Record<string, string[]> = {
   inventory: ["inventory-index.json"],
   // analyze 不注入 inventory-index.json：本包源码路径从 inventory-packages/{PKG}.json 的
-  // specFile/bodyFile 取（已收窄到本分片）；表结构从 inventory.json，callGraph 从 analysis.json。
-  analyze: ["inventory.json", "inventory-packages/*.json", "analysis.json"],
+  // specFile/bodyFile 取（已收窄到本分片）；表结构从 inventory.json，callGraph 从 dependency-graph.json。
+  analyze: ["inventory.json", "inventory-packages/*.json", "dependency-graph.json"],
   plan: [..._INV_BASE, ..._ANALYSIS, ..._FSD],
   scaffold: [..._PLAN, ..._INV_BASE],
   // translate 同样不注入 inventory-index.json（同 analyze 理由：避免全量包源码路径泄漏）。
@@ -174,15 +174,15 @@ export type PrerequisiteItem = string | string[]
 
 /** 目标阶段 → 必须存在的 artifact 文件名（string=必须，string[]=OR组） */
 export const PHASE_PREREQUISITES: Record<string, PrerequisiteItem[]> = {
-  analyze: ["inventory-index.json", "inventory.json", "inventory-packages", "analysis.json"],
-  plan: ["inventory-index.json", "inventory.json", "inventory-packages", "analysis.json", "analysis-packages"],
+  analyze: ["inventory-index.json", "inventory.json", "inventory-packages", "dependency-graph.json"],
+  plan: ["inventory-index.json", "inventory.json", "inventory-packages", "dependency-graph.json", "analysis-packages"],
   scaffold: ["plan.json", "inventory-index.json", "inventory.json", "inventory-packages"],
-  translate: ["inventory-index.json", "inventory.json", "inventory-packages", "analysis.json", "analysis-packages", "plan.json", "scaffold.json"],
-  dedup: ["inventory.json", "plan.json", "scaffold.json", "analysis.json", "translations"],
-  review: ["plan.json", "scaffold.json", "analysis.json", "analysis-packages"],
+  translate: ["inventory-index.json", "inventory.json", "inventory-packages", "dependency-graph.json", "analysis-packages", "plan.json", "scaffold.json"],
+  dedup: ["inventory.json", "plan.json", "scaffold.json", "dependency-graph.json", "translations"],
+  review: ["plan.json", "scaffold.json", "dependency-graph.json", "analysis-packages"],
   verify: ["plan.json", "scaffold.json", "dedup.json"],
   fix: [
-    "analysis.json", "analysis-packages", "plan.json", "scaffold.json", "dedup.json",
+    "dependency-graph.json", "analysis-packages", "plan.json", "scaffold.json", "dedup.json",
     // 触发阶段的 summary：review-summary.json 或 verify-summary.json，至少一个
     ["review-summary.json", "verify-summary.json"],
     "translations",

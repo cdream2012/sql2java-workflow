@@ -126,7 +126,7 @@ export function buildReviewFocus(
 ): string {
   if (!targetPackages || targetPackages.length === 0) return ""
 
-  const analysis = readJson(join(artifactsDir, "analysis.json")) ?? {}
+  const analysis = readJson(join(artifactsDir, "dependency-graph.json")) ?? {}
   const complexity = (analysis.complexity ?? {}) as Record<string, { riskLevel?: string }>
   const plan = readJson(join(artifactsDir, "plan.json")) ?? {}
   const manualReview = Array.isArray(plan.manualReviewList) ? plan.manualReviewList as Array<{ procedure?: string }> : []

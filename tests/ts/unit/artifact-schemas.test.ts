@@ -7,7 +7,7 @@ import {
   InventoryIndexSchema,
   InventoryPackageSchema,
   InventorySchema,
-  AnalysisMetaSchema,
+  DependencyGraphSchema,
   AnalysisPackageSchema,
   PlanSchema,
   ScaffoldSchema,
@@ -27,7 +27,7 @@ import {
   getAnalysisPackageSchema,
 } from "@workflow/artifact-schemas"
 import {
-  makeInventoryIndex, makeInventory, makeInventoryPackage, makeAnalysisMeta,
+  makeInventoryIndex, makeInventory, makeInventoryPackage, makeDependencyGraphMeta,
   makePlan, makeScaffold, makeAnalysisPackage, makeTranslation,
   makeReviewSummary, makeVerifySummary, makeDedup, makeFixArtifact,
 } from "../helpers/artifact-factory"
@@ -86,7 +86,7 @@ describe("Schema 有效数据通过校验", () => {
     expect(InventorySchema.safeParse(data).success).toBe(true)
   })
 
-  it("AnalysisMetaSchema 通过", () => {
+  it("DependencyGraphSchema 通过", () => {
     const data = {
       callGraph: {},
       packageDependency: {},
@@ -95,7 +95,7 @@ describe("Schema 有效数据通过校验", () => {
       sccGroups: [["CORE_PKG"]],
       packageNames: ["CORE_PKG"],
     }
-    expect(AnalysisMetaSchema.safeParse(data).success).toBe(true)
+    expect(DependencyGraphSchema.safeParse(data).success).toBe(true)
   })
 
   it("AnalysisPackageSchema 通过", () => {
@@ -304,8 +304,8 @@ describe("工厂默认产出符合 Schema", () => {
   it("makeScaffold 默认值通过 ScaffoldSchema", () => {
     expect(ScaffoldSchema.safeParse(makeScaffold()).success).toBe(true)
   })
-  it("makeAnalysisMeta 默认值通过 AnalysisMetaSchema", () => {
-    expect(AnalysisMetaSchema.safeParse(makeAnalysisMeta()).success).toBe(true)
+  it("makeDependencyGraphMeta 默认值通过 DependencyGraphSchema", () => {
+    expect(DependencyGraphSchema.safeParse(makeDependencyGraphMeta()).success).toBe(true)
   })
   it("makeTranslation 默认值通过 TranslationSchema", () => {
     expect(TranslationSchema.safeParse(makeTranslation()).success).toBe(true)
@@ -450,8 +450,8 @@ describe("Schema 无效数据被拒绝", () => {
 // ═══════════════════════════════════════════════════════════════
 
 describe("getArtifactFilename", () => {
-  it("analyze → analysis", () => {
-    expect(getArtifactFilename("analyze")).toBe("analysis")
+  it("analyze → analyze（无顶层文件，回退 phase 名）", () => {
+    expect(getArtifactFilename("analyze")).toBe("analyze")
   })
 
   it("translate → translation", () => {
@@ -472,7 +472,7 @@ describe("getArtifactFilename", () => {
 })
 
 describe("getSchemaForPhase", () => {
-  const knownPhases = ["inventory", "inventory-index", "analyze", "plan", "scaffold", "dedup", "review", "fix"]
+  const knownPhases = ["inventory", "inventory-index", "plan", "scaffold", "dedup", "review", "fix"]
 
   it("已知阶段都返回非 null schema", () => {
     for (const phase of knownPhases) {
@@ -770,7 +770,7 @@ describe("大小写 normalize — ciEnum 自动纠正 LLM 大小写变体", () =
 
   // ── riskLevel (ciEnumLower) ──────────────────────────────
 
-  it("AnalysisMetaSchema: riskLevel 'HIGH' normalize 为 'high'", () => {
+  it("DependencyGraphSchema: riskLevel 'HIGH' normalize 为 'high'", () => {
     const data = {
       callGraph: {},
       packageDependency: {},
@@ -779,7 +779,7 @@ describe("大小写 normalize — ciEnum 自动纠正 LLM 大小写变体", () =
       sccGroups: [["CORE_PKG"]],
       packageNames: ["CORE_PKG"],
     }
-    const result = AnalysisMetaSchema.safeParse(data)
+    const result = DependencyGraphSchema.safeParse(data)
     expect(result.success).toBe(true)
     if (result.success) {
       expect(result.data.complexity.CORE_PKG.riskLevel).toBe("high")

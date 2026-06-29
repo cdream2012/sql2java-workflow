@@ -1,7 +1,7 @@
 /**
  * analysis-builder.test.ts — analyze reduce（代码）核心逻辑测试
  *
- * 验证：① tiny fixture 上 analysis.json 产出正确（callGraph/packageDependency/
+ * 验证：① tiny fixture 上 dependency-graph.json 产出正确（callGraph/packageDependency/
  * translationOrder/sccGroups/complexity）；② Tarjan SCC 算法（含环）；③ refName 索引（重载）。
  */
 
@@ -11,8 +11,8 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { resolve } from "node:path"
 import { scanSource } from "@workflow/plsql-scanner"
-import { buildAnalysisFromIndex, tarjanSCC, buildRefNameIndex, assignFunctionOwnership, buildProcedureOrder } from "@workflow/analysis-builder"
-import { AnalysisMetaSchema, AnalysisPackageSchema } from "@workflow/artifact-schemas"
+import { buildDependencyGraphFromIndex, tarjanSCC, buildRefNameIndex, assignFunctionOwnership, buildProcedureOrder } from "@workflow/analysis-builder"
+import { DependencyGraphSchema, AnalysisPackageSchema } from "@workflow/artifact-schemas"
 
 const FIXTURE_TINY = resolve(import.meta.dirname, "../fixtures/sql/tiny")
 let dir: string
@@ -24,29 +24,29 @@ beforeAll(async () => {
   writeFileSync(join(dir, "inventory-index.json"), JSON.stringify(index, null, 2), "utf-8")
 }, 60000)
 
-describe("buildAnalysisFromIndex (tiny fixture)", () => {
-  it("生成 analysis.json 并过 AnalysisMetaSchema 校验", () => {
-    const r = buildAnalysisFromIndex(dir)
+describe("buildDependencyGraphFromIndex (tiny fixture)", () => {
+  it("生成 dependency-graph.json 并过 DependencyGraphSchema 校验", () => {
+    const r = buildDependencyGraphFromIndex(dir)
     expect(r.packageCount).toBe(3)
-    const a = JSON.parse(readFileSync(join(dir, "analysis.json"), "utf-8"))
-    expect(AnalysisMetaSchema.safeParse(a).success).toBe(true)
+    const a = JSON.parse(readFileSync(join(dir, "dependency-graph.json"), "utf-8"))
+    expect(DependencyGraphSchema.safeParse(a).success).toBe(true)
   })
 
   it("packageNames 覆盖全部包", () => {
-    const a = JSON.parse(readFileSync(join(dir, "analysis.json"), "utf-8"))
+    const a = JSON.parse(readFileSync(join(dir, "dependency-graph.json"), "utf-8"))
     // 含独立函数 fn_abc_class 注入的虚拟包
     expect(a.packageNames.sort()).toEqual(["BASE_PKG", "CORE_PKG", "__STANDALONE_FN_ABC_CLASS__"])
   })
 
   it("packageDependency 捕获跨包常量引用（CORE_PKG→BASE_PKG）", () => {
-    const a = JSON.parse(readFileSync(join(dir, "analysis.json"), "utf-8"))
+    const a = JSON.parse(readFileSync(join(dir, "dependency-graph.json"), "utf-8"))
     // core_pkg 用 base_pkg.c_dir_in（常量），包级依赖须包含
     expect(a.packageDependency["CORE_PKG"]).toContain("BASE_PKG")
     expect(a.packageDependency["BASE_PKG"]).toEqual([])
   })
 
   it("translationOrder 依赖在前：BASE_PKG 先于 CORE_PKG", () => {
-    const a = JSON.parse(readFileSync(join(dir, "analysis.json"), "utf-8"))
+    const a = JSON.parse(readFileSync(join(dir, "dependency-graph.json"), "utf-8"))
     // 含独立函数虚拟包；CORE_PKG 依赖 BASE_PKG，故 BASE_PKG 必在前
     const order = a.translationOrder.flat()
     expect(order).toEqual(expect.arrayContaining(["BASE_PKG", "CORE_PKG", "__STANDALONE_FN_ABC_CLASS__"]))
@@ -54,12 +54,12 @@ describe("buildAnalysisFromIndex (tiny fixture)", () => {
   })
 
   it("sccGroups：无环时为空", () => {
-    const a = JSON.parse(readFileSync(join(dir, "analysis.json"), "utf-8"))
+    const a = JSON.parse(readFileSync(join(dir, "dependency-graph.json"), "utf-8"))
     expect(a.sccGroups).toEqual([])
   })
 
   it("callGraph：跨包子程序调用无（常量引用不建边）+ 同包裸名调用边已补全（feat/proc-entry-scope D）", () => {
-    const a = JSON.parse(readFileSync(join(dir, "analysis.json"), "utf-8"))
+    const a = JSON.parse(readFileSync(join(dir, "dependency-graph.json"), "utf-8"))
     // base_pkg 无子程序；core_pkg 的跨包引用是 base_pkg.c_dir_in（常量，非子程序）→ 不进 callGraph。
     // 同包裸名调用（此前 scanCallSites 只认 PKG.PROC 点号调用会漏）现由 scanBareCallSites 补全：
     //   bom_cost 递归调用自身；bulk_receive→log_error；get_item_obj→get_item。
@@ -71,7 +71,7 @@ describe("buildAnalysisFromIndex (tiny fixture)", () => {
   })
 
   it("complexity 启发式：BASE_PKG 低分，CORE_PKG 高分 + 模式", () => {
-    const a = JSON.parse(readFileSync(join(dir, "analysis.json"), "utf-8"))
+    const a = JSON.parse(readFileSync(join(dir, "dependency-graph.json"), "utf-8"))
     expect(a.complexity["BASE_PKG"].riskLevel).toBe("low")
     expect(a.complexity["BASE_PKG"].score).toBeLessThanOrEqual(3)
     expect(a.complexity["CORE_PKG"].riskLevel).toBe("high")
@@ -320,22 +320,22 @@ END pkg_a;
     const index = await scanSource(synthDir)
     synthArtifacts = mkdtempSync(join(tmpdir(), "analysis-synth-art-"))
     writeFileSync(join(synthArtifacts, "inventory-index.json"), JSON.stringify(index, null, 2), "utf-8")
-    buildAnalysisFromIndex(synthArtifacts)
+    buildDependencyGraphFromIndex(synthArtifacts)
   }, 60000)
 
   it("callGraph 捕获跨包子程序调用 PKG_A.p1 → PKG_B.p2", () => {
-    const a = JSON.parse(readFileSync(join(synthArtifacts, "analysis.json"), "utf-8"))
+    const a = JSON.parse(readFileSync(join(synthArtifacts, "dependency-graph.json"), "utf-8"))
     expect(a.callGraph["PKG_A.p1"]).toContain("PKG_B.p2")
   })
 
   it("packageDependency: PKG_A → PKG_B", () => {
-    const a = JSON.parse(readFileSync(join(synthArtifacts, "analysis.json"), "utf-8"))
+    const a = JSON.parse(readFileSync(join(synthArtifacts, "dependency-graph.json"), "utf-8"))
     expect(a.packageDependency["PKG_A"]).toContain("PKG_B")
     expect(a.packageDependency["PKG_B"]).toEqual([])
   })
 
   it("translationOrder: PKG_B（依赖）先于 PKG_A", () => {
-    const a = JSON.parse(readFileSync(join(synthArtifacts, "analysis.json"), "utf-8"))
+    const a = JSON.parse(readFileSync(join(synthArtifacts, "dependency-graph.json"), "utf-8"))
     const order = a.translationOrder.flat()
     expect(order.indexOf("PKG_B")).toBeLessThan(order.indexOf("PKG_A"))
   })
@@ -363,8 +363,8 @@ END pkg_b;
     const index2 = await scanSource(synthDir)
     const art2 = mkdtempSync(join(tmpdir(), "analysis-synth-art2-"))
     writeFileSync(join(art2, "inventory-index.json"), JSON.stringify(index2, null, 2), "utf-8")
-    buildAnalysisFromIndex(art2)
-    const a = JSON.parse(readFileSync(join(art2, "analysis.json"), "utf-8"))
+    buildDependencyGraphFromIndex(art2)
+    const a = JSON.parse(readFileSync(join(art2, "dependency-graph.json"), "utf-8"))
     expect(a.callGraph).toEqual({}) // 常量引用不进 callGraph
     expect(a.packageDependency["PKG_A"]).toContain("PKG_B") // 但进包依赖
   })

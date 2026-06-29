@@ -237,8 +237,8 @@ const SubprogramSchema = z.object({
   translationNotes: z.array(z.string()),
 })
 
-/** analysis.json — 全局元数据（不含逐包子程序数据） */
-export const AnalysisMetaSchema = z.object({
+/** dependency-graph.json — 全局元数据（不含逐包子程序数据） */
+export const DependencyGraphSchema = z.object({
   /**
    * 调用图：key = 限定名 `PKG.refName`，value = 被调用的 `PKG.refName` 数组（与 key 同规范）。
    * refName 规范：非重载子程序=Oracle 原始名；重载子程序=`{name}__{序号}`（1-based，全部带序号），
@@ -858,7 +858,6 @@ import type { ZodType } from "zod"
 const PHASE_FILENAME_MAP: Record<string, string> = {
   inventory: "inventory",
   "inventory-index": "inventory-index",
-  analyze: "analysis",       // phase="analyze" → 文件名 analysis.json
   plan: "plan",
   scaffold: "scaffold",
   translate: "translation",  // phase="translate" → 文件名 translation.json
@@ -876,7 +875,6 @@ export function getSchemaForPhase(phase: string): ZodType | null {
   const schemaMap: Record<string, ZodType> = {
     inventory: InventorySchema,
     "inventory-index": InventoryIndexSchema,
-    analyze: AnalysisMetaSchema,
     plan: PlanSchema,
     scaffold: ScaffoldSchema,
     dedup: DedupSchema,

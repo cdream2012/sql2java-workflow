@@ -10,11 +10,11 @@ import { narrowUpstreamForShard } from "@plugins/workflow-engine"
 
 describe("narrowUpstreamForShard", () => {
   it("analyze: inventory-packages/*.json 收窄到本分片包，全局只读 artifact 保留", () => {
-    const upstream = ["inventory-index.json", "inventory.json", "inventory-packages/*.json", "analysis.json"]
+    const upstream = ["inventory-index.json", "inventory.json", "inventory-packages/*.json", "dependency-graph.json"]
     const result = narrowUpstreamForShard(upstream, "analyze", ["PKG_A"], [])
     expect(result).toContain("inventory-index.json")
     expect(result).toContain("inventory.json")
-    expect(result).toContain("analysis.json")
+    expect(result).toContain("dependency-graph.json")
     // 收窄到本分片包，不再有 glob
     expect(result).toContain("inventory-packages/PKG_A.json")
     expect(result).not.toContain("inventory-packages/*.json")
@@ -23,7 +23,7 @@ describe("narrowUpstreamForShard", () => {
   })
 
   it("analyze: 多包分片都保留（SCC 共处场景），但仍不含本分片外的包", () => {
-    const upstream = ["inventory-packages/*.json", "analysis.json"]
+    const upstream = ["inventory-packages/*.json", "dependency-graph.json"]
     const result = narrowUpstreamForShard(upstream, "analyze", ["PKG_A", "PKG_B"], [])
     expect(result).toEqual(expect.arrayContaining(["inventory-packages/PKG_A.json", "inventory-packages/PKG_B.json"]))
     expect(result).not.toContain("inventory-packages/PKG_C.json")
@@ -32,7 +32,7 @@ describe("narrowUpstreamForShard", () => {
   it("translate: inventory-packages + analysis-packages + fsd 都收窄到本分片包", () => {
     const upstream = [
       "inventory.json", "inventory-packages/*.json",
-      "plan.json", "analysis.json", "analysis-packages/*.json", "scaffold.json",
+      "plan.json", "dependency-graph.json", "analysis-packages/*.json", "scaffold.json",
       "fsd/*/*.md",
     ]
     const result = narrowUpstreamForShard(upstream, "translate", ["PKG_A"], [])
@@ -62,7 +62,7 @@ describe("narrowUpstreamForShard", () => {
   it("review: analysis-packages/*.json 收窄到本分片包，translations/* 收窄到本分片包（不展开已完成分片）", () => {
     // cf4ca26 后：review 只审本分片包翻译，translations/* 收窄到 targetPkgs 而非 completedPkgs，
     // 避免第一分片 completedPkgs=[] 时 glob 保留导致 worker 全审所有包。
-    const upstream = ["plan.json", "scaffold.json", "analysis.json", "analysis-packages/*.json", "dedup.json", "translations/*/translation.json"]
+    const upstream = ["plan.json", "scaffold.json", "dependency-graph.json", "analysis-packages/*.json", "dedup.json", "translations/*/translation.json"]
     const result = narrowUpstreamForShard(upstream, "review", ["PKG_B"], ["PKG_A"])
     expect(result).toContain("analysis-packages/PKG_B.json")
     expect(result).not.toContain("analysis-packages/*.json")
@@ -72,7 +72,7 @@ describe("narrowUpstreamForShard", () => {
   })
 
   it("非分片（targetPkgs 空）：glob 原样保留，不收窄", () => {
-    const upstream = ["inventory-packages/*.json", "analysis-packages/*.json", "analysis.json"]
+    const upstream = ["inventory-packages/*.json", "analysis-packages/*.json", "dependency-graph.json"]
     const result = narrowUpstreamForShard(upstream, "analyze", [], [])
     expect(result).toEqual(upstream)
   })
@@ -85,7 +85,7 @@ describe("narrowUpstreamForShard", () => {
 
   it("回归核心：analyze 分片不再把全量 inventory-packages 交给 worker", () => {
     // 修复前：upstream 含 inventory-packages/*.json → worker 读全部包 → 写出其他包的 FSD
-    const upstream = ["inventory.json", "inventory-packages/*.json", "analysis.json"]
+    const upstream = ["inventory.json", "inventory-packages/*.json", "dependency-graph.json"]
     const result = narrowUpstreamForShard(upstream, "analyze", ["ONLY_THIS_PKG"], [])
     const perPkgEntries = result.filter(a => a.startsWith("inventory-packages/"))
     expect(perPkgEntries).toEqual(["inventory-packages/ONLY_THIS_PKG.json"])
@@ -95,7 +95,7 @@ describe("narrowUpstreamForShard", () => {
 describe("narrowUpstreamForShard — translate PROCEDURE 级（unit 模式）", () => {
   const baseUpstream = [
     "inventory.json", "inventory-packages/*.json",
-    "plan.json", "analysis.json", "analysis-packages/*.json", "scaffold.json",
+    "plan.json", "dependency-graph.json", "analysis-packages/*.json", "scaffold.json",
     "fsd/*/*.md", "translations/*/translation.json",
   ]
 
@@ -161,7 +161,7 @@ describe("narrowUpstreamForShard — translate PROCEDURE 级（unit 模式）", 
 })
 
 describe("narrowUpstreamForShard — analyze PROCEDURE 级（unit 模式，Phase 1 切片）", () => {
-  const baseUpstream = ["inventory.json", "inventory-packages/*.json", "analysis.json"]
+  const baseUpstream = ["inventory.json", "inventory-packages/*.json", "dependency-graph.json"]
 
   it("targetUnits → inventory-packages/*.json 替换为 per-unit 切片文件", () => {
     const result = narrowUpstreamForShard(baseUpstream, "analyze", [], [], {
@@ -178,7 +178,7 @@ describe("narrowUpstreamForShard — analyze PROCEDURE 级（unit 模式，Phase
     expect(result).not.toContain("inventory-packages/*.json")
     // 全局只读 artifact 保留（表 DDL + callGraph meta）
     expect(result).toContain("inventory.json")
-    expect(result).toContain("analysis.json")
+    expect(result).toContain("dependency-graph.json")
   })
 
   it("跨包 unit：切片覆盖多个包", () => {

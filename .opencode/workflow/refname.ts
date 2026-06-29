@@ -8,7 +8,7 @@
  *     **全部** K 个版本都带后缀（即 `__1`..`__K`），避免裸名撞重载。
  *
  * 该 refName 在以下四处必须一致：
- *   analysis.json.callGraph 的 key/value、FSD 文件名、
+ *   dependency-graph.json.callGraph 的 key/value、FSD 文件名、
  *   translation.json.subprogramMethods.oracleName、translation.json.completedSubprograms。
  *
  * 本模块的纯函数被 validateCrossSchema 用作校验依据（见 engine-core.ts D9），

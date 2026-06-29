@@ -74,7 +74,7 @@ const config: CaseConfig = {
       conventions: "Standard conventions",
     })
 
-    writeArtifactJson(dir, "analysis.json", {
+    writeArtifactJson(dir, "dependency-graph.json", {
       callGraph: {},
       packageDependency: {},
       translationOrder: [[PACKAGE]],

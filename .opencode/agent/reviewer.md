@@ -104,7 +104,7 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
 - **上游 artifact**：
   - `${artifactsDir}/plan.json` — 映射规则和编码约定
   - `${artifactsDir}/scaffold.json` — 项目结构
-  - `${artifactsDir}/analysis.json` — 全局元数据
+  - `${artifactsDir}/dependency-graph.json` — 全局元数据
   - `${artifactsDir}/analysis-packages/{pkg}.json` — 逐包子程序结构和翻译注意事项
   - `${artifactsDir}/translations/*/translation.json` — 翻译记录
 - **Java 文件**：Runtime Context 中 `projectRoot` 指定的目录下的 Java 代码（使用 `read` 工具读取，路径为 `{projectRoot}/src/...`）

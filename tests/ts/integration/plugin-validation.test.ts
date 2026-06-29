@@ -17,7 +17,7 @@ import { describe, it } from "vitest"
 // import { validateArtifactOnDisk, validateInventoryPackages, validateAnalysisPackages, checkPrerequisites } from "@plugins/workflow-engine"
 // import { createEngineWithTempDir, writeArtifact } from "../helpers/engine-factory"
 // import {
-//   makeInventoryIndex, makeAnalysisMeta, makePlan, makeScaffold,
+//   makeInventoryIndex, makeDependencyGraphMeta, makePlan, makeScaffold,
 //   makeTranslation, makeReviewSummary, makeVerifySummary, makeDedup,
 // } from "../helpers/artifact-factory"
 

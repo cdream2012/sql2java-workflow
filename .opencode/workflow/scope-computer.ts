@@ -14,12 +14,12 @@
  * 单一真相源（refName 规范、pkgOf/refOf/parseQualified），与 callGraph key 口径一致。
  *
  * 纯函数、零副作用、可单测：不读文件、不持久化。调用方（workflow-engine）负责加载
- * analysis.json / inventory-packages 数据并传入，以及把结果写入 run.metadata。
+ * dependency-graph.json / inventory-packages 数据并传入，以及把结果写入 run.metadata。
  */
 
 import { pkgOf, refNamesForPackage, parseQualified } from "./refname"
 
-// ── 宽松输入形态（来自 Zod 校验后的 analysis.json / inventory-packages，但本模块不强耦合 schema）──
+// ── 宽松输入形态（来自 Zod 校验后的 dependency-graph.json / inventory-packages，但本模块不强耦合 schema）──
 
 export interface AnalysisLike {
   callGraph: Record<string, string[]>

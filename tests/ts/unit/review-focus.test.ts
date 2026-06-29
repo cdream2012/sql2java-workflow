@@ -60,8 +60,8 @@ beforeAll(() => {
     ],
   }))
 
-  // analysis.json（complexity：create_order high → #1）
-  writeFileSync(join(dir, "analysis.json"), JSON.stringify({
+  // dependency-graph.json（complexity：create_order high → #1）
+  writeFileSync(join(dir, "dependency-graph.json"), JSON.stringify({
     packageNames: ["PKG_A"],
     complexity: {
       "PKG_A.create_order": { score: 8, patterns: ["nested-if"], riskLevel: "high" },

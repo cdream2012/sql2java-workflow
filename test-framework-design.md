@@ -440,7 +440,7 @@ tests/llm/cases/translate-exception-mapping/
     inventory-index.json
     inventory.json
     inventory-packages/EXC_PKG.json
-    analysis.json
+    dependency-graph.json
     analysis-packages/EXC_PKG.json
     plan.json
     scaffold.json
@@ -465,7 +465,7 @@ tests/llm/cases/review-detect-swallowed-exception/
   artifacts/                            ← 预置前置（让 --phases review 可跳过前面阶段）
     plan.json
     scaffold.json
-    analysis.json
+    dependency-graph.json
     analysis-packages/<pkg>.json
     translations/<pkg>/translation.json
   case.config.ts
@@ -570,7 +570,7 @@ export default config
 
 **Step 3 · 准备 `fixture/`**：最小输入，只含被测构造（§4.3 第③层输入聚焦）。fixture 是测试输入，允许现造。
 
-**Step 4 · 准备 `artifacts/`**：用 `tests/ts/helpers/artifact-factory.ts`（`makePlan` / `makeScaffold` / `makeAnalysisMeta` 等）构造前置 artifact，让 `--phases` 跳到目标 phase（§6.4 三层来源）。
+**Step 4 · 准备 `artifacts/`**：用 `tests/ts/helpers/artifact-factory.ts`（`makePlan` / `makeScaffold` / `makeDependencyGraphMeta` 等）构造前置 artifact，让 `--phases` 跳到目标 phase（§6.4 三层来源）。
 
 **Step 5 · 选判定方式**：
 

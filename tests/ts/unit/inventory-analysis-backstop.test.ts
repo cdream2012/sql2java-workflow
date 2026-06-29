@@ -1,9 +1,9 @@
 /**
- * inventory-analysis-backstop.test.ts — inventory advance 缺 analysis.json 时引擎兜底生成
+ * inventory-analysis-backstop.test.ts — inventory advance 缺 dependency-graph.json 时引擎兜底生成
  *
- * 真实执行中 inventory worker 偶发漏调 generateAnalysis → analysis.json 缺失 →
+ * 真实执行中 inventory worker 偶发漏调 generateDependencyGraph → dependency-graph.json 缺失 →
  * validateArtifactOnDisk(inventory) 卡住 advance。修复后引擎在该 gate 兜底调用
- * buildAnalysisFromIndex（零 LLM 确定性），缺失自动生成；生成失败才报错。
+ * buildDependencyGraphFromIndex（零 LLM 确定性），缺失自动生成；生成失败才报错。
  *
  * 注：validateArtifactOnDisk 用插件常量 ARTIFACT_DIR=".workflow-artifacts"（相对 cwd），
  * 无法重定向到 tmpdir，故在 cwd 下用唯一 runId 建临时 artifact 目录，测后清理。
@@ -15,7 +15,7 @@ import { join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { scanSource } from "@workflow/plsql-scanner"
 import { buildInventoryFromIndex } from "@workflow/inventory-builder"
-import { AnalysisMetaSchema } from "@workflow/artifact-schemas"
+import { DependencyGraphSchema } from "@workflow/artifact-schemas"
 import { validateArtifactOnDisk } from "@plugins/workflow-engine"
 import type { WorkflowRun } from "@workflow/engine-core"
 
@@ -31,7 +31,7 @@ beforeAll(async () => {
   // 1) prescan → inventory-index.json
   const index = await scanSource(FIXTURE_TINY)
   writeFileSync(join(ARTIFACTS_DIR, "inventory-index.json"), JSON.stringify(index, null, 2), "utf-8")
-  // 2) 纯代码生成 inventory-packages + inventory.json（不生成 analysis.json —— 模拟 worker 漏调）
+  // 2) 纯代码生成 inventory-packages + inventory.json（不生成 dependency-graph.json —— 模拟 worker 漏调）
   buildInventoryFromIndex(ARTIFACTS_DIR)
 }, 60000)
 
@@ -43,18 +43,18 @@ function makeRun(phase: string): WorkflowRun {
   return { runId: RUN_ID, currentPhase: phase } as unknown as WorkflowRun
 }
 
-describe("inventory analysis.json 缺失兜底", () => {
-  it("缺 analysis.json → 引擎兜底生成，validateArtifactOnDisk 返回 null（放行 advance）", () => {
-    expect(existsSync(join(ARTIFACTS_DIR, "analysis.json"))).toBe(false)
+describe("inventory dependency-graph.json 缺失兜底", () => {
+  it("缺 dependency-graph.json → 引擎兜底生成，validateArtifactOnDisk 返回 null（放行 advance）", () => {
+    expect(existsSync(join(ARTIFACTS_DIR, "dependency-graph.json"))).toBe(false)
     const err = validateArtifactOnDisk(makeRun("inventory"))
     expect(err).toBeNull()
-    // 兜底生成后 analysis.json 存在且过 Zod
-    expect(existsSync(join(ARTIFACTS_DIR, "analysis.json"))).toBe(true)
-    const a = JSON.parse(readFileSync(join(ARTIFACTS_DIR, "analysis.json"), "utf-8"))
-    expect(AnalysisMetaSchema.safeParse(a).success).toBe(true)
+    // 兜底生成后 dependency-graph.json 存在且过 Zod
+    expect(existsSync(join(ARTIFACTS_DIR, "dependency-graph.json"))).toBe(true)
+    const a = JSON.parse(readFileSync(join(ARTIFACTS_DIR, "dependency-graph.json"), "utf-8"))
+    expect(DependencyGraphSchema.safeParse(a).success).toBe(true)
   })
 
-  it("analysis.json 已存在 → 不再报缺失（幂等，第二次校验直接放行）", () => {
+  it("dependency-graph.json 已存在 → 不再报缺失（幂等，第二次校验直接放行）", () => {
     const err = validateArtifactOnDisk(makeRun("inventory"))
     expect(err).toBeNull()
   })

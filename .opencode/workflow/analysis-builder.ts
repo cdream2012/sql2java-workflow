@@ -1,6 +1,6 @@
 /**
  * Analysis Builder — 把 prescan 的 inventory-index.json（结构全字段）转换为
- * 下游 analysis.json（依赖图 meta）+ 无子程序包的空 analysis-packages。
+ * 下游 dependency-graph.json（依赖图 meta）+ 无子程序包的空 analysis-packages。
  *
  * 这是 analyze map-reduce 的 **reduce**（代码，零 LLM），归入 inventory 阶段：
  *   - callGraph：按子程序 lineRange 扫描源码 `PKG.PROC` 调用 → caller→callee 真实边，
@@ -9,12 +9,12 @@
  *   - translationOrder + sccGroups：包级依赖图上跑 Tarjan SCC，输出拓扑序（依赖在前）。
  *   - complexity：启发式（LOC + 子程序数 + 出边数 + 模式 grep）→ score/riskLevel/patterns。
  *
- * 产出过 AnalysisMetaSchema / AnalysisPackageSchema Zod 校验。
+ * 产出过 DependencyGraphSchema / AnalysisPackageSchema Zod 校验。
  */
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { join, isAbsolute } from "node:path"
-import { AnalysisMetaSchema, AnalysisPackageSchema } from "./artifact-schemas"
+import { DependencyGraphSchema, AnalysisPackageSchema } from "./artifact-schemas"
 import { formatZodIssues } from "./engine-core"
 import { refNamesForPackage, pkgOf } from "./refname"
 import { getLogger } from "./workflow-logger"
@@ -366,10 +366,10 @@ function heuristicComplexity(
 }
 
 /**
- * 读 inventory-index.json，写出 analysis.json + 无子程序包的空 analysis-packages/{PKG}.json。
+ * 读 inventory-index.json，写出 dependency-graph.json + 无子程序包的空 analysis-packages/{PKG}.json。
  * 任一产物 Zod 校验失败即抛错。
  */
-export function buildAnalysisFromIndex(artifactsDir: string): {
+export function buildDependencyGraphFromIndex(artifactsDir: string): {
   packageCount: number
   sccGroupCount: number
   warnings: string[]
@@ -477,7 +477,7 @@ export function buildAnalysisFromIndex(artifactsDir: string): {
   for (const [k, v] of functionOwnershipMap) functionOwnership[k] = v
   const procedureOrder = buildProcedureOrder(callGraph, refIndex, functionOwnershipMap)
 
-  // 6) 写 analysis.json
+  // 6) 写 dependency-graph.json
   const analysis = {
     callGraph,
     packageDependency: pkgDep,
@@ -488,11 +488,11 @@ export function buildAnalysisFromIndex(artifactsDir: string): {
     procedureOrder,
     functionOwnership,
   }
-  const metaResult = AnalysisMetaSchema.safeParse(analysis)
+  const metaResult = DependencyGraphSchema.safeParse(analysis)
   if (!metaResult.success) {
-    throw new Error(`analysis.json 校验失败:\n${formatZodIssues(metaResult.error)}`)
+    throw new Error(`dependency-graph.json 校验失败:\n${formatZodIssues(metaResult.error)}`)
   }
-  writeFileSync(join(artifactsDir, "analysis.json"), JSON.stringify(metaResult.data, null, 2), "utf-8")
+  writeFileSync(join(artifactsDir, "dependency-graph.json"), JSON.stringify(metaResult.data, null, 2), "utf-8")
 
   // 7) 无子程序包写空 analysis-packages/{PKG}.json（有子程序的包由 analyze map 阶段填充）
   const analysisPkgDir = join(artifactsDir, "analysis-packages")
@@ -507,6 +507,6 @@ export function buildAnalysisFromIndex(artifactsDir: string): {
     writeFileSync(join(analysisPkgDir, `${pkg.name}.json`), JSON.stringify(r.data, null, 2), "utf-8")
   }
 
-  getLogger().info("[analysis-builder]", `生成 analysis.json: ${nodes.length} 包, ${sccGroups.length} SCC 组, ${Object.keys(callGraph).length} 调用边, ${procedureOrder.flat().length} PROCEDURE 单元, ${Object.keys(functionOwnership).length} 被拥有 FUNCTION`)
+  getLogger().info("[analysis-builder]", `生成 dependency-graph.json: ${nodes.length} 包, ${sccGroups.length} SCC 组, ${Object.keys(callGraph).length} 调用边, ${procedureOrder.flat().length} PROCEDURE 单元, ${Object.keys(functionOwnership).length} 被拥有 FUNCTION`)
   return { packageCount: nodes.length, sccGroupCount: sccGroups.length, warnings }
 }

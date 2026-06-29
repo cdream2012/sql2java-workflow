@@ -743,11 +743,11 @@ export class WorkflowEngine {
     const artifactsDir = join(this.artifactsRoot, run.runId)
 
     const inventory = this.loadArtifactJson(artifactsDir, "inventory")
-    const analysis = this.loadArtifactJson(artifactsDir, "analysis")
+    const analysis = this.loadArtifactJson(artifactsDir, "dependency-graph")
 
     if (!inventory || !analysis) {
       findings.push({
-        message: `跨 Schema 校验跳过：缺少必要的 artifact（inventory: ${!!inventory}, analysis: ${!!analysis}）`,
+        message: `跨 Schema 校验跳过：缺少必要的 artifact（inventory: ${!!inventory}, dependency-graph: ${!!analysis}）`,
         severity: "warning",
       })
       return findings
@@ -755,16 +755,16 @@ export class WorkflowEngine {
 
     // inventory-index ↔ inventory 一致性已在 inventory 阶段完成时独立校验，此处不重复
 
-    // inventory 包名 ↔ analysis 包名（双向，大小写不敏感）
+    // inventory 包名 ↔ dependency-graph 包名（双向，大小写不敏感）
     const invNames = this.extractPackageNames(inventory)
     const anaNames = this.extractPackageNames(analysis)
     const invUpper = new Set([...invNames].map((n) => n.toUpperCase()))
     const anaUpper = new Set([...anaNames].map((n) => n.toUpperCase()))
     for (const name of invNames) {
-      if (!anaUpper.has(name.toUpperCase())) findings.push({ message: `analysis 缺少包: ${name}`, severity: "warning" })
+      if (!anaUpper.has(name.toUpperCase())) findings.push({ message: `dependency-graph 缺少包: ${name}`, severity: "warning" })
     }
     for (const name of anaNames) {
-      if (!invUpper.has(name.toUpperCase())) findings.push({ message: `inventory 缺少包: ${name}（analysis 中存在但 inventory 中不存在）`, severity: "warning" })
+      if (!invUpper.has(name.toUpperCase())) findings.push({ message: `inventory 缺少包: ${name}（dependency-graph 中存在但 inventory 中不存在）`, severity: "warning" })
     }
 
     // translationOrder 覆盖校验（大小写不敏感）
@@ -777,8 +777,8 @@ export class WorkflowEngine {
       if (!orderedUpper.has(name.toUpperCase())) findings.push({ message: `translationOrder 缺少包: ${name}`, severity: "warning" })
     }
 
-    // callGraph refName 一致性校验（仅 inventory 完成后；analysis.json 现由 inventory 阶段代码产出）
-    // analysis.json.callGraph 的 key/value 须为 PKG.refName，refName 须落在该包 inventory-packages
+    // callGraph refName 一致性校验（仅 inventory 完成后；dependency-graph.json 现由 inventory 阶段代码产出）
+    // dependency-graph.json.callGraph 的 key/value 须为 PKG.refName，refName 须落在该包 inventory-packages
     // 推导出的合法集合内（非重载=裸名，重载={name}__序号，全部带序号）。
     if (completedPhase === "inventory") {
       const callGraph = (analysis.callGraph as Record<string, string[]>) ?? {}
@@ -1174,7 +1174,7 @@ export class WorkflowEngine {
   }
 
   /**
-   * 根据 analysis.json 的 translationOrder 计算分片计划。
+   * 根据 dependency-graph.json 的 translationOrder 计算分片计划。
    *
    * translationOrder 的每个内层数组要么是单包（独立包），要么是 SCC 组
    *（强连通循环依赖包，必须同 session 翻译以解析循环引用，见 sql-analyst.md）。

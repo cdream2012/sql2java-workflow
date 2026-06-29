@@ -299,12 +299,12 @@ inventory → analyze → plan → scaffold → translate → dedup → review �
 |------|---------|
 | inventory | 无 |
 | analyze | inventory-index.json + inventory.json + inventory-packages/ |
-| plan | inventory-index.json + inventory.json + inventory-packages/ + analysis.json + analysis-packages/ |
+| plan | inventory-index.json + inventory.json + inventory-packages/ + dependency-graph.json + analysis-packages/ |
 | scaffold | plan.json + inventory-index.json + inventory.json + inventory-packages/ |
-| translate | inventory-index.json + inventory.json + inventory-packages/ + analysis.json + analysis-packages/ + plan.json + scaffold.json |
-| review | plan.json + scaffold.json + analysis.json + analysis-packages/ |
+| translate | inventory-index.json + inventory.json + inventory-packages/ + dependency-graph.json + analysis-packages/ + plan.json + scaffold.json |
+| review | plan.json + scaffold.json + dependency-graph.json + analysis-packages/ |
 | verify | plan.json + scaffold.json |
-| fix | analysis.json + analysis-packages/ + plan.json + scaffold.json + review-summary.json 或 verify-summary.json + translations/ |
+| fix | dependency-graph.json + analysis-packages/ + plan.json + scaffold.json + review-summary.json 或 verify-summary.json + translations/ |
 
 ---
 

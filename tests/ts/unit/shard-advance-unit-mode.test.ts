@@ -16,7 +16,7 @@ import { WorkflowEngine } from "@workflow/engine-core"
 import { SQL2JAVA_WORKFLOW } from "@workflow/workflow-definitions"
 import { scanSource } from "@workflow/plsql-scanner"
 import { buildInventoryFromIndex } from "@workflow/inventory-builder"
-import { buildAnalysisFromIndex } from "@workflow/analysis-builder"
+import { buildDependencyGraphFromIndex } from "@workflow/analysis-builder"
 
 const FIXTURE_TINY = resolve(import.meta.dirname, "../fixtures/sql/tiny")
 let engine: WorkflowEngine
@@ -34,7 +34,7 @@ beforeAll(async () => {
   const index = await scanSource(FIXTURE_TINY)
   writeFileSync(join(artifactsDir, "inventory-index.json"), JSON.stringify(index, null, 2), "utf-8")
   buildInventoryFromIndex(artifactsDir)
-  buildAnalysisFromIndex(artifactsDir) // 产出 analysis.json（含 procedureOrder）
+  buildDependencyGraphFromIndex(artifactsDir) // 产出 dependency-graph.json（含 procedureOrder）
 }, 60000)
 
 describe("engine.advance 分片推进 — unitMode 字段", () => {

@@ -17,7 +17,7 @@ function setupBaseline(dir: string) {
     sourcePath: "src", packageNames: ["CORE_PKG", "EXTRA_PKG"], tables: [],
     standaloneProcedures: [], triggers: [], views: [], sequences: [],
   })
-  writeArtifact(dir, RUN_ID, "analysis.json", {
+  writeArtifact(dir, RUN_ID, "dependency-graph.json", {
     callGraph: {},
     packageDependency: {},
     translationOrder: [["CORE_PKG"], ["EXTRA_PKG"]],
@@ -57,7 +57,7 @@ describe("validateCrossSchema — 包名一致性", () => {
   let ctx: ReturnType<typeof createEngineWithTempDir>
   afterEach(() => ctx?.cleanup())
 
-  it("analysis 引用的包在 inventory 中存在 → 无 finding", () => {
+  it("dependency-graph 引用的包在 inventory 中存在 → 无 finding", () => {
     ctx = createEngineWithTempDir()
     setupBaseline(ctx.dir)
 
@@ -68,13 +68,13 @@ describe("validateCrossSchema — 包名一致性", () => {
     expect(findings.length).toBe(0)
   })
 
-  it("analysis 缺少包（inventory 有但 analysis 没有）→ warning", () => {
+  it("dependency-graph 缺少包（inventory 有但 dependency-graph 没有）→ warning", () => {
     ctx = createEngineWithTempDir()
     writeArtifact(ctx.dir, RUN_ID, "inventory.json", {
       sourcePath: "src", packageNames: ["CORE_PKG", "EXTRA_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: {}, packageDependency: {},
       translationOrder: [["CORE_PKG"]],
       complexity: {}, sccGroups: [],
@@ -90,18 +90,18 @@ describe("validateCrossSchema — 包名一致性", () => {
       { runId: RUN_ID, currentPhase: "analyze", status: "running", phaseHistory: [], metadata: {}, createdAt: "", updatedAt: "" },
       "analyze",
     )
-    const missing = findings.find(f => f.message.includes("analysis 缺少包: EXTRA_PKG"))
+    const missing = findings.find(f => f.message.includes("dependency-graph 缺少包: EXTRA_PKG"))
     expect(missing).toBeTruthy()
     expect(missing!.severity).toBe("warning")
   })
 
-  it("inventory 缺少包（analysis 有但 inventory 没有）→ warning", () => {
+  it("inventory 缺少包（dependency-graph 有但 inventory 没有）→ warning", () => {
     ctx = createEngineWithTempDir()
     writeArtifact(ctx.dir, RUN_ID, "inventory.json", {
       sourcePath: "src", packageNames: ["CORE_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: {}, packageDependency: {},
       translationOrder: [["CORE_PKG", "GHOST_PKG"]],
       complexity: {}, sccGroups: [],
@@ -137,7 +137,7 @@ describe("validateCrossSchema — translationOrder 覆盖", () => {
       sourcePath: "src", packageNames: ["CORE_PKG", "EXTRA_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: {}, packageDependency: {},
       translationOrder: [["CORE_PKG"]],  // 缺少 EXTRA_PKG
       complexity: {}, sccGroups: [],
@@ -204,7 +204,7 @@ describe("advance() — blocking 拒绝", () => {
   let ctx: ReturnType<typeof createEngineWithTempDir>
   afterEach(() => ctx?.cleanup())
 
-  it("analysis 缺少包 → warning 自动放行（不再 blocking）", () => {
+  it("dependency-graph 缺少包 → warning 自动放行（不再 blocking）", () => {
     ctx = createEngineWithTempDir()
     const engine = ctx.engine
     engine.start("sql2java", RUN_ID)
@@ -215,7 +215,7 @@ describe("advance() — blocking 拒绝", () => {
       sourcePath: "src", packageNames: ["CORE_PKG", "EXTRA_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: {}, packageDependency: {},
       translationOrder: [["CORE_PKG"]],  // 也缺少 EXTRA_PKG
       complexity: {}, sccGroups: [],
@@ -255,7 +255,7 @@ describe("advance() — warning 自动放行", () => {
       sourcePath: "src", packageNames: ["CORE_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: {}, packageDependency: {},
       translationOrder: [["CORE_PKG", "GHOST_PKG"]],
       complexity: {}, sccGroups: [],
@@ -292,7 +292,7 @@ describe("advance() — warning 自动放行", () => {
       sourcePath: "src", packageNames: ["CORE_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: {}, packageDependency: {},
       translationOrder: [["CORE_PKG", "GHOST_PKG"]],
       complexity: {}, sccGroups: [],
@@ -331,13 +331,13 @@ describe("advance() — 混合场景", () => {
     pushToPhase(engine, "analyze")
 
     // inventory 有 CORE_PKG + EXTRA_PKG，analysis 有 CORE_PKG + GHOST_PKG
-    // → EXTRA_PKG: analysis 缺少包 = warning
+    // → EXTRA_PKG: dependency-graph 缺少包 = warning
     // → GHOST_PKG: inventory 缺少包 = warning
     writeArtifact(ctx.dir, RUN_ID, "inventory.json", {
       sourcePath: "src", packageNames: ["CORE_PKG", "EXTRA_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
-    writeArtifact(ctx.dir, RUN_ID, "analysis.json", {
+    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
       callGraph: {}, packageDependency: {},
       translationOrder: [["CORE_PKG", "GHOST_PKG"]],
       complexity: {}, sccGroups: [],

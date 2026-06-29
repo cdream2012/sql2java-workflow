@@ -62,7 +62,7 @@ describe("SQL2JAVA_WORKFLOW phases", () => {
 
   it("needsCrossSchemaValidation 的阶段正确", () => {
     const crossSchemaPhases = phases.filter(p => p.needsCrossSchemaValidation).map(p => p.name)
-    // inventory：analysis.json（含 callGraph）由 inventory 阶段代码产出，需校验 refName 合法性 + 包名一致
+    // inventory：dependency-graph.json（含 callGraph）由 inventory 阶段代码产出，需校验 refName 合法性 + 包名一致
     // translate 完成时所有包 translation.json 已齐，即时校验 subprogramMethods 给 translator 反馈
     expect(crossSchemaPhases.sort()).toEqual(["analyze", "dedup", "inventory", "plan", "translate"])
   })
@@ -180,7 +180,7 @@ describe("UPSTREAM_ARTIFACTS", () => {
 
   it("inventory-index.json 仅 inventory 阶段注入；其余下游阶段都不读它", () => {
     // inventory-index 是预扫描源，仅 inventory 阶段代码生成 + 边界校验消费；下游 worker
-    // 读精炼后的 inventory.json / inventory-packages / analysis.json 即可。
+    // 读精炼后的 inventory.json / inventory-packages / dependency-graph.json 即可。
     for (const [phase, artifacts] of Object.entries(UPSTREAM_ARTIFACTS)) {
       if (phase === "inventory") {
         expect(artifacts, "inventory 阶段读 inventory-index.json").toContain("inventory-index.json")

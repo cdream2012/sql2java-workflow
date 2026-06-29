@@ -12,7 +12,7 @@ import { join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { scanSource } from "@workflow/plsql-scanner"
 import { buildInventoryFromIndex } from "@workflow/inventory-builder"
-import { buildAnalysisFromIndex } from "@workflow/analysis-builder"
+import { buildDependencyGraphFromIndex } from "@workflow/analysis-builder"
 import { buildShardedWorkerOrder } from "@plugins/workflow-engine"
 import type { WorkflowRun } from "@workflow/engine-core"
 
@@ -44,7 +44,7 @@ describe("buildShardedWorkerOrder — analyze", () => {
     const index = await scanSource(FIXTURE_TINY)
     writeFileSync(join(art, "inventory-index.json"), JSON.stringify(index, null, 2), "utf-8")
     buildInventoryFromIndex(art)
-    buildAnalysisFromIndex(art) // 产出 analysis.json（含 procedureOrder/functionOwnership）
+    buildDependencyGraphFromIndex(art) // 产出 dependency-graph.json（含 procedureOrder/functionOwnership）
   }, 60000)
 
   it("渲染 analyze shard 0 workOrder：含分片硬约束 + targetUnits + 切片目录 + 落盘", () => {
@@ -106,13 +106,13 @@ describe("buildShardedWorkerOrder — translate", () => {
     const index = await scanSource(FIXTURE_TINY)
     writeFileSync(join(art, "inventory-index.json"), JSON.stringify(index, null, 2), "utf-8")
     buildInventoryFromIndex(art)
-    buildAnalysisFromIndex(art)
+    buildDependencyGraphFromIndex(art)
     // translate 在 plan 之后，需 plan.json（给 projectRoot）+ analysis-packages 聚合（analysis-slice）
     writeFileSync(join(art, "plan.json"), JSON.stringify({
       targetProject: { artifactId: "testapp" }, projectRoot: "/tmp/gen/testapp",
     }), "utf-8")
-    // analysis-packages 聚合（buildAnalysisFromIndex 已为无子程序包写空文件；CORE_PKG 有子程序需聚合）
-    // buildAnalysisFromIndex 不写有子程序包的聚合——由 analyze 阶段产。这里手写一个最小聚合供 analysis-slice。
+    // analysis-packages 聚合（buildDependencyGraphFromIndex 已为无子程序包写空文件；CORE_PKG 有子程序需聚合）
+    // buildDependencyGraphFromIndex 不写有子程序包的聚合——由 analyze 阶段产。这里手写一个最小聚合供 analysis-slice。
     mkdirSync(join(art, "analysis-packages"), { recursive: true })
     writeFileSync(join(art, "analysis-packages", "CORE_PKG.json"), JSON.stringify({
       packageName: "CORE_PKG",

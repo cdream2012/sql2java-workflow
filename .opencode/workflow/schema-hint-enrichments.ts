@@ -73,7 +73,7 @@ export const NON_ZOD_VALIDATION_RULES: { phases: string[]; message: string }[] =
   },
   {
     phases: ["analyze"],
-    message: "analysis.json 的 packageNames 必须与 inventory 包名一致",
+    message: "dependency-graph.json 的 packageNames 必须与 inventory 包名一致",
   },
   {
     phases: ["scaffold"],
@@ -134,12 +134,12 @@ export const QUALITY_GATE_HINTS: Record<string, string[]> = {
  */
 export const CROSS_SCHEMA_HINTS: Record<string, string[]> = {
   inventory: [
-    "analysis.json（含 callGraph）现由 inventory 阶段代码产出：packageNames 必须与 inventory 包名一致（大小写不敏感）",
+    "dependency-graph.json（含 callGraph）现由 inventory 阶段代码产出：packageNames 必须与 inventory 包名一致（大小写不敏感）",
     "callGraph 的 key/value 必须为 PKG.refName 格式；refName 须落在该包 inventory-packages 推导的合法集合内（非重载=裸名，重载={name}__序号，大小写不敏感计数重载）",
     "translationOrder 必须覆盖所有 analysis 包",
   ],
   analyze: [
-    "analysis.json 的 packageNames 必须与 inventory 包名一致（大小写不敏感）",
+    "dependency-graph.json 的 packageNames 必须与 inventory 包名一致（大小写不敏感）",
     "callGraph 的 key 必须为 PKG.refName 格式；重载子程序用 {name}__序号",
   ],
   plan: [

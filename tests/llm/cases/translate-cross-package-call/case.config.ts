@@ -21,7 +21,7 @@ import type { CaseConfig } from "../../harness"
 import { assertGeneratedFileExists, assertJavaMatches } from "../../harness"
 import {
   makeInventoryIndex, makeInventory, makeInventoryPackage,
-  makePlan, makeScaffold, makeAnalysisMeta, makeAnalysisPackage,
+  makePlan, makeScaffold, makeDependencyGraphMeta, makeAnalysisPackage,
   makeTranslation, writeArtifactJson,
 } from "../../../ts/helpers/artifact-factory"
 
@@ -84,7 +84,7 @@ const config: CaseConfig = {
     }))
 
     // analysis（拓扑序：B 叶子先、A 后；callGraph 用 refName key）
-    writeArtifactJson(dir, "analysis.json", makeAnalysisMeta({
+    writeArtifactJson(dir, "dependency-graph.json", makeDependencyGraphMeta({
       callGraph: {
         "ORDER_PKG.create_order": ["UTIL_PKG.get_by_id"],
         "UTIL_PKG.get_by_id": [],

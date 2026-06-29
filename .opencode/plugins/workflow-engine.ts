@@ -21,13 +21,13 @@ import { UPSTREAM_ARTIFACTS, PHASE_PREREQUISITES } from "../workflow/workflow-de
 import {
   getSchemaForPhase, getPerPackageSchema, getPerUnitSchema, getSummarySchema,
   getAnalysisPackageSchema, getInventoryPackageSchema,
-  getArtifactFilename, AnalysisMetaSchema,
+  getArtifactFilename, DependencyGraphSchema,
 } from "../workflow/artifact-schemas"
 import { scanSource } from "../workflow/plsql-scanner"
 import { refNamesForPackage, pkgOf, refOf } from "../workflow/refname"
 import { parseInventoryPackage, parseAnalysisPackage, type InventoryPackageParsed } from "../workflow/package-parser"
 import { buildInventoryFromIndex } from "../workflow/inventory-builder"
-import { buildAnalysisFromIndex } from "../workflow/analysis-builder"
+import { buildDependencyGraphFromIndex } from "../workflow/analysis-builder"
 import {
   parseMainEntry, resolveEntry, computeClosure, readScope, constOnlyScopePkgs,
   type RunScope, type InventoryPackageLike,
@@ -247,7 +247,7 @@ function resolveUnitAllowedRefs(): Set<string> | undefined {
   const currentEntry = run ? engine.findCurrentEntry(run) : undefined
   const targetUnits = currentEntry?.incrementalContext?.targetUnits as string[] | undefined
   if (!targetUnits || targetUnits.length === 0) return undefined
-  const analysis = engine.loadArtifactJson(join(ARTIFACT_DIR, ctx.runId), "analysis")
+  const analysis = engine.loadArtifactJson(join(ARTIFACT_DIR, ctx.runId), "dependency-graph")
   const ownership = (analysis?.functionOwnership as Record<string, string> | undefined) ?? {}
   const refs = new Set<string>(targetUnits.map(u => refOf(u).toUpperCase()))
   for (const [func, owner] of Object.entries(ownership)) {
@@ -850,7 +850,7 @@ function loadEntryPkgRaw(artifactsDir: string, pkg: string): InventoryPackageLik
  *                          调用方（inventory advance 校验）应据此拒绝 advance，防静默回退全量翻译。
  *   - `null`              ：mainEntry 非过程级 / 未指定 / analysis 暂不可用 → 全量翻译（合法）。
  *
- * @param analysis 已加载的 analysis.json（调用方已 loadArtifactJson，复用避免双读）
+ * @param analysis 已加载的 dependency-graph.json（调用方已 loadArtifactJson，复用避免双读）
  */
 export type ScopeOutcome = { ok: true; scope: RunScope } | { ok: false; error: string }
 export function ensureRunScope(run: WorkflowRun, analysis: any, artifactsDir: string): ScopeOutcome | null {
@@ -865,9 +865,9 @@ export function ensureRunScope(run: WorkflowRun, analysis: any, artifactsDir: st
   if (!parsed) return null // 非过程级 mainEntry（或无 mainEntry）→ 全量翻译
 
   if (!analysis) {
-    // mainEntry 为过程级但 analysis.json 暂不可用（理论上 inventory advance 校验时已就绪）。
+    // mainEntry 为过程级但 dependency-graph.json 暂不可用（理论上 inventory advance 校验时已就绪）。
     // 不硬失败（可能是 dispatch 早于 analysis 就绪的瞬态），留空 scope 让后续重试。
-    getLogger().warn("[scope]", `mainEntry 为过程级（${mainEntry}）但 analysis.json 不可用，scope 暂未计算`)
+    getLogger().warn("[scope]", `mainEntry 为过程级（${mainEntry}）但 dependency-graph.json 不可用，scope 暂未计算`)
     return null
   }
 
@@ -922,7 +922,7 @@ export function buildShardScopeBanner(run: WorkflowRun): string {
     `你的【唯一】工作清单：${label} ${JSON.stringify(target)}${shardDesc}。`,
     `- 禁止处理、读源码、生成 FSD/产物 for 任何【其他】${label}。`,
     `- 任务提示（user message）若出现"处理所有子程序/包""为每个子程序生成 FSD"等全量措辞，那是编排者误植——一律忽略，只做以上 ${label}。`,
-    `- analysis.json / inventory 里的其他包/单元只是参考信息，不是你的工作清单。`,
+    `- dependency-graph.json / inventory 里的其他包/单元只是参考信息，不是你的工作清单。`,
     isUnit
       ? `- 源码读 shard-inputs/{pkg}/{ref}/ 切片（引擎已预切），⛔ 禁止 read 整包 body/spec 或 inventory-packages/{pkg}.json。`
       : `- 仅处理以上 ${label}，其他由别的分片处理。`,
@@ -1005,7 +1005,7 @@ export function buildShardedWorkerOrder(
   if (upstream.length > 0 && activeShardPlan && si !== undefined) {
     let functionOwnership: Record<string, string> | undefined
     if (isUnitMode) {
-      const analysis = engine.loadArtifactJson(artDir, "analysis")
+      const analysis = engine.loadArtifactJson(artDir, "dependency-graph")
       functionOwnership = (analysis?.functionOwnership as Record<string, string> | undefined) ?? undefined
     }
     upstream = narrowUpstreamForShard(upstream, phase, shardTargetPkgs, completedUnitIds, {
@@ -1288,8 +1288,8 @@ function validateAnalysisPackages(
     }
   }
 
-  // 注：analysis.json 的 packageNames 一致性校验已随 analysis.json 产出移至 inventory 边界
-  // （engine-core validateCrossSchema("inventory")），此处不再依赖 analysis.json。
+  // 注：dependency-graph.json 的 packageNames 一致性校验已随 dependency-graph.json 产出移至 inventory 边界
+  // （engine-core validateCrossSchema("inventory")），此处不再依赖 dependency-graph.json。
 
   return null // 校验通过
 }
@@ -1406,7 +1406,7 @@ export function mergeUnitTranslations(artifactsDir: string, pkgName: string): st
   if (!schema) return `no UnitTranslationSchema for translate`
 
   // 期望 unit ref 集合（从 analysis.procedureOrder 取本包 unit）→ 白名单过滤 + completed 判定
-  const analysis = engine.loadArtifactJson(artifactsDir, "analysis")
+  const analysis = engine.loadArtifactJson(artifactsDir, "dependency-graph")
   const procOrder = (analysis?.procedureOrder as string[][] | undefined) ?? []
   const expectedRefs = new Set(
     procOrder.flat()
@@ -1507,7 +1507,7 @@ export function mergeUnitAnalysis(artifactsDir: string, pkgName: string): string
   const schema = getPerUnitSchema("analyze")
   if (!schema) return `no UnitAnalysisSchema for analyze`
 
-  const analysis = engine.loadArtifactJson(artifactsDir, "analysis")
+  const analysis = engine.loadArtifactJson(artifactsDir, "dependency-graph")
   const procOrder = (analysis?.procedureOrder as string[][] | undefined) ?? []
   const expectedRefs = new Set(
     procOrder.flat()
@@ -1582,13 +1582,13 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
     }
   }
 
-  // analyze 阶段：analysis.json 已归 inventory 产出（不在此校验），只验逐包 analysis-packages + FSD。
+  // analyze 阶段：dependency-graph.json 已归 inventory 产出（不在此校验），只验逐包 analysis-packages + FSD。
   // PROCEDURE 级（unit 模式，procedureOrder 存在）：agent 写 per-procedure analysis-packages/{pkg}/{ref}.json
   // + fsd/{pkg}/{ref}.md；此处 merge 聚合 analysis-packages/{pkg}.json + 校验本分片 unit 产物存在性 +
   // FSD 占位符。包级回退（procedureOrder 缺失旧 run）：按 targetPackages 走包级 validateAnalysisPackages+validateFsds。
   if (phase === "analyze") {
     const currentEntry = engine.findCurrentEntry(run)
-    const analysis = engine.loadArtifactJson(artifactsDir, "analysis")
+    const analysis = engine.loadArtifactJson(artifactsDir, "dependency-graph")
     const procedureOrder = (analysis?.procedureOrder as string[][] | undefined) ?? []
     if (procedureOrder.length > 0) {
       const targetUnits = currentEntry?.incrementalContext?.targetUnits
@@ -1644,7 +1644,7 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
   // 此处合并 → 聚合 translation.json + 校验 per-unit 文件，短路掉下方的包级 translation.json 校验。
   // unit 模式判定基于 analysis.procedureOrder 存在（覆盖分片与单分片全量两种场景）。
   if (phase === "translate") {
-    const analysis = engine.loadArtifactJson(artifactsDir, "analysis")
+    const analysis = engine.loadArtifactJson(artifactsDir, "dependency-graph")
     const procedureOrder = (analysis?.procedureOrder as string[][] | undefined) ?? []
     if (procedureOrder.length > 0) {
       const currentEntry = engine.findCurrentEntry(run)
@@ -1690,7 +1690,7 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
   // fix 阶段（unit 模式）：translator 重翻 targetPackages 的 unit 写 per-unit 文件后，
   // 此处 re-merge 这些包的聚合 translation.json，供后续 review 读取最新索引。
   if (phase === "fix") {
-    const analysis = engine.loadArtifactJson(artifactsDir, "analysis")
+    const analysis = engine.loadArtifactJson(artifactsDir, "dependency-graph")
     const procedureOrder = (analysis?.procedureOrder as string[][] | undefined) ?? []
     if (procedureOrder.length > 0) {
       const currentEntry = engine.findCurrentEntry(run)
@@ -1719,7 +1719,7 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
         return `Zod validation failed for ${artifactFileName}.json:\n${errors}`
       }
 
-      // analyze 阶段已在函数开头提前返回（不校验 analysis.json，归 inventory）
+      // analyze 阶段已在函数开头提前返回（不校验 dependency-graph.json，归 inventory）
 
       // scaffold 阶段：校验 projectRoot 必须指向项目根目录下的 generated/{artifactId}
       // 并校验 Java 文件实际写入了 projectRoot 而非 artifactsDir/translations/
@@ -1746,21 +1746,21 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
         }
       }
 
-      // inventory 阶段：校验 inventory-packages/ + inventory-index.json + analysis.json（reduce 归 inventory）
+      // inventory 阶段：校验 inventory-packages/ + inventory-index.json + dependency-graph.json（reduce 归 inventory）
       if (phase === "inventory") {
         const pkgError = validateInventoryPackages(artifactsDir)
         if (pkgError) return pkgError
-        // analysis.json 由 inventory 阶段 generateAnalysis 代码产出（零 LLM 确定性）。worker 偶发漏调
-        // generateAnalysis 或调用抛错 → 文件缺失 → advance 卡住。引擎在此兜底自动生成（与 dedup.json /
+        // dependency-graph.json 由 inventory 阶段 generateDependencyGraph 代码产出（零 LLM 确定性）。worker 偶发漏调
+        // generateDependencyGraph 或调用抛错 → 文件缺失 → advance 卡住。引擎在此兜底自动生成（与 dedup.json /
         // review-static.json 引擎兜底同模式），消除对该 worker action 的强依赖。生成失败才报错（且错误
-        // 信息比"Artifact not found"更具诊断价值——直接暴露 buildAnalysisFromIndex 的失败原因）。
-        const analysisPath = join(artifactsDir, "analysis.json")
+        // 信息比"Artifact not found"更具诊断价值——直接暴露 buildDependencyGraphFromIndex 的失败原因）。
+        const analysisPath = join(artifactsDir, "dependency-graph.json")
         if (!existsSync(analysisPath)) {
           try {
-            buildAnalysisFromIndex(artifactsDir)
-            getLogger().warn("[advance]", "inventory worker 未产出 analysis.json，引擎兜底生成成功")
+            buildDependencyGraphFromIndex(artifactsDir)
+            getLogger().warn("[advance]", "inventory worker 未产出 dependency-graph.json，引擎兜底生成成功")
           } catch (e: any) {
-            return `analysis.json 缺失且引擎兜底生成失败: ${e.message}（检查 inventory-index.json 是否完整；可重试 workflow({action:"generateAnalysis", runId:"${run.runId}"})）`
+            return `dependency-graph.json 缺失且引擎兜底生成失败: ${e.message}（检查 inventory-index.json 是否完整；可重试 workflow({action:"generateDependencyGraph", runId:"${run.runId}"})）`
           }
         }
         // 复验（含兜底生成的）：Zod 校验
@@ -1768,14 +1768,14 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
         try {
           const aRaw = readFileSync(analysisPath, "utf-8")
           aParsed = JSON.parse(aRaw)
-          const aResult = AnalysisMetaSchema.safeParse(aParsed)
+          const aResult = DependencyGraphSchema.safeParse(aParsed)
           if (!aResult.success) {
-            return `Zod validation failed for analysis.json:\n${formatZodIssues(aResult.error)}`
+            return `Zod validation failed for dependency-graph.json:\n${formatZodIssues(aResult.error)}`
           }
         } catch (e: any) {
-          return `Failed to read/parse analysis.json: ${e.message}`
+          return `Failed to read/parse dependency-graph.json: ${e.message}`
         }
-        // 过程级入口闭包 scope（feat/proc-entry-scope）：analysis.json 就绪后在此计算并持久化；
+        // 过程级入口闭包 scope（feat/proc-entry-scope）：dependency-graph.json 就绪后在此计算并持久化；
         // mainEntry 为过程级但入口不可解析（拼写错/已改名/subdir 不匹配）→ **硬失败**，拒绝 advance，
         // 防止静默回退全量翻译（用户意图被吞）。非过程级 mainEntry → 返回 null，全量翻译。
         const scopeOutcome = ensureRunScope(run, aParsed, artifactsDir)
@@ -2594,9 +2594,9 @@ function classifyWritePath(
  *  - analysis-packages 通配   → 收窄为本分片 targetPackages 各包
  *  - fsd 通配（fsd 下所有 .md）→ 收窄为本分片 targetPackages 各包的 fsd/{pkg}/*.md
  *  - translate 阶段额外追加已完成分片的 translation.json（跨包调用依赖，translator.md 承诺）
- *  - 全局只读 artifact（analysis.json、plan.json 等）原样保留
+ *  - 全局只读 artifact（dependency-graph.json、plan.json 等）原样保留
  *
- * 跨包调用关系不需要读别的包的 inventory-packages/analysis-packages：analyze 从 analysis.json
+ * 跨包调用关系不需要读别的包的 inventory-packages/analysis-packages：analyze 从 dependency-graph.json
  * 的 callGraph 取，translate 从已完成分片的 translation.json.subprogramMethods 取。
  */
 export function narrowUpstreamForShard(
@@ -2627,8 +2627,8 @@ export function narrowUpstreamForShard(
     // ── analyze：切片硬隔离 ──
     // 整包 inventory-packages/{pkg}.json（含同包全部 proc）→ per-unit 切片（source.sql +
     // inventory-slice.json + meta.json，由 generateUnitSlices 在 dispatch 时落盘）。worker 物理上
-    // 拿不到同包其他 proc。analyze upstream = [inventory.json, inventory-packages/*.json, analysis.json]，
-    // 故仅 inventory-packages/*.json 被替换，inventory.json/analysis.json 原样保留（表 DDL + callGraph meta）。
+    // 拿不到同包其他 proc。analyze upstream = [inventory.json, inventory-packages/*.json, dependency-graph.json]，
+    // 故仅 inventory-packages/*.json 被替换，inventory.json/dependency-graph.json 原样保留（表 DDL + callGraph meta）。
     if (phase === "analyze") {
       const sliceFiles = targetUnits.flatMap(u => unitSliceRelPaths(u, "analyze"))
       return upstream.flatMap(a => {
@@ -2747,7 +2747,7 @@ export function generateUnitSlices(
   if (targetUnits.length === 0) return []
   if (phase !== "analyze" && phase !== "translate") return []
 
-  const analysis = engine.loadArtifactJson(artifactsDir, "analysis")
+  const analysis = engine.loadArtifactJson(artifactsDir, "dependency-graph")
   const ownership = (analysis?.functionOwnership as Record<string, string> | undefined) ?? {}
 
   const absSrc = (rel: string | null | undefined): string | null => {
@@ -2892,7 +2892,7 @@ export function buildDependencySignaturesBlock(
   completedUnitIds: readonly string[],
 ): string {
   if (targetUnits.length === 0) return ""
-  const analysis = engine.loadArtifactJson(artifactsDir, "analysis")
+  const analysis = engine.loadArtifactJson(artifactsDir, "dependency-graph")
   const callGraph = (analysis?.callGraph as Record<string, string[]> | undefined) ?? {}
   const completedPkgsUpper = new Set(completedUnitIds.map(u => pkgOf(u).toUpperCase()))
 
@@ -2964,7 +2964,7 @@ export function buildDependencySignaturesBlock(
 /**
  * 构建分片 work order 的「单元读取清单」（中间文件，软约束）：对本分片每个 targetUnit 精准列出
  * 要读的源码文件 + 行范围（sed -n）+ cargo FUNCTION + FSD/依赖聚合路径。数据确定性取自
- * inventory-packages（lineRange/bodyFile）+ analysis.json（functionOwnership/callGraph）。
+ * inventory-packages（lineRange/bodyFile）+ dependency-graph.json（functionOwnership/callGraph）。
  *
  * 目的：把「读取单元」收紧到「工作单元」——agent 按清单 sed -n 抽片段，不再读整包 body 顺手全做
  * （详见 [[translate-procedure-level]] / analyze 下沉）。analyze 与 translate 共用。
@@ -2986,7 +2986,7 @@ export function buildUnitScopeBlock(
   void sourcePath
   void completedUnitIds
 
-  const analysis = engine.loadArtifactJson(artifactsDir, "analysis")
+  const analysis = engine.loadArtifactJson(artifactsDir, "dependency-graph")
   const ownership = (analysis?.functionOwnership as Record<string, string> | undefined) ?? {}
 
   const lines: string[] = [
@@ -3569,26 +3569,26 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             }
           }
 
-          // ── generateAnalysis — inventory 阶段代码生成 analysis.json（reduce，零 LLM）──
+          // ── generateDependencyGraph — inventory 阶段代码生成 dependency-graph.json（reduce，零 LLM）──
           // analyze 的全局依赖图 meta（callGraph/packageDependency/translationOrder/sccGroups/
           // complexity）已可从 inventory-index 纯代码计算，归入 inventory 阶段。agent 在调完
-          // generateInventory 后调本 action 生成 analysis.json + 无子程序包空 analysis-packages。
+          // generateInventory 后调本 action 生成 dependency-graph.json + 无子程序包空 analysis-packages。
           // advance 失败时编排者重新 dispatch，workOrder 带校验错误，agent 最小修复 json。
-          case "generateAnalysis": {
+          case "generateDependencyGraph": {
             if (!args.runId) throw new Error("runId required")
             const runId = args.runId
             const artifactsDir = join(ARTIFACT_DIR, runId)
             try {
-              const r = buildAnalysisFromIndex(artifactsDir)
+              const r = buildDependencyGraphFromIndex(artifactsDir)
               return {
                 title: "Analysis Meta Generated",
-                output: `✔ analysis.json 代码生成完成：${r.packageCount} 包 / ${r.sccGroupCount} SCC 组（已过 Zod 校验）。${r.warnings.length ? `\n⚠️ ${r.warnings.join("; ")}` : ""}\n\n⏹ 请输出 WORKER_SUMMARY + TASK_STATUS 并结束——编排者会调用 advance 推进。`,
+                output: `✔ dependency-graph.json 代码生成完成：${r.packageCount} 包 / ${r.sccGroupCount} SCC 组（已过 Zod 校验）。${r.warnings.length ? `\n⚠️ ${r.warnings.join("; ")}` : ""}\n\n⏹ 请输出 WORKER_SUMMARY + TASK_STATUS 并结束——编排者会调用 advance 推进。`,
                 metadata: { runId, packageCount: r.packageCount, sccGroupCount: r.sccGroupCount, warnings: r.warnings },
               }
             } catch (e: any) {
               return {
                 title: "Analysis Meta Generation Failed",
-                output: `✖ analysis.json 代码生成失败：${e.message}\n\n可重试 workflow({action:"generateAnalysis", runId:"${runId}"})；若反复失败，检查 inventory-index.json 是否完整。`,
+                output: `✖ dependency-graph.json 代码生成失败：${e.message}\n\n可重试 workflow({action:"generateDependencyGraph", runId:"${runId}"})；若反复失败，检查 inventory-index.json 是否完整。`,
                 metadata: { runId, error: e.message },
               }
             }
@@ -4173,8 +4173,8 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               const isIncremental = !!(currentEntry.incrementalContext?.targetPackages?.length)
                 || !!(currentEntry.incrementalContext?.targetUnits?.length)
               if (!isIncremental) {
-                // 从 analysis.json 读取拓扑序
-                const analysis = engine.loadArtifactJson(`${ARTIFACT_DIR}/${run.runId}`, "analysis")
+                // 从 dependency-graph.json 读取拓扑序
+                const analysis = engine.loadArtifactJson(`${ARTIFACT_DIR}/${run.runId}`, "dependency-graph")
                 // 过程级入口闭包 scope（feat/proc-entry-scope）：通常已在 inventory advance 校验时计算并持久化，
                 // 此处为缓存读（幂等；inventory 未跑的边缘路径下兜底计算）。硬失败已在 inventory 拦截，此处不会命中。
                 const scopeOutcome = ensureRunScope(run, analysis, `${ARTIFACT_DIR}/${run.runId}`)
@@ -4186,7 +4186,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                 let translationOrder = useUnits
                   ? procedureOrder!
                   : (analysis?.translationOrder as string[][]) ?? []
-                // scope 激活时**内存过滤**拓扑序（绝不改盘上 analysis.json，engine-core 的 translationOrder
+                // scope 激活时**内存过滤**拓扑序（绝不改盘上 dependency-graph.json，engine-core 的 translationOrder
                 // 覆盖校验期望完整）：unit 级保留 scopeUnits 交集、包级保留 scopePackages 交集，保留拓扑层序、丢弃空层。
                 if (scope) {
                   if (useUnits) {
@@ -4201,18 +4201,18 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                       .filter(l => l.length > 0)
                   }
                 }
-                // 分片依赖 analysis.json 的拓扑序；缺失或为空时静默退化为不分片
+                // 分片依赖 dependency-graph.json 的拓扑序；缺失或为空时静默退化为不分片
                 // （单 session 处理全部——正是分片要避免的上下文爆炸），此处显式 warn 让退化可见。
                 const orderField = useUnits ? "procedureOrder" : "translationOrder"
                 if (!analysis) {
                   getLogger().warn(
                     "[dispatch]",
-                    `阶段 ${run.currentPhase} 配置了分片(maxPackagesPerShard=${phaseConfig.maxPackagesPerShard})但 analysis.json 缺失或不可解析，无法计算拓扑序——回退为不分片(单 session 处理全部)。请确认 inventory 阶段已产出 analysis.json。`,
+                    `阶段 ${run.currentPhase} 配置了分片(maxPackagesPerShard=${phaseConfig.maxPackagesPerShard})但 dependency-graph.json 缺失或不可解析，无法计算拓扑序——回退为不分片(单 session 处理全部)。请确认 inventory 阶段已产出 dependency-graph.json。`,
                   )
                 } else if (translationOrder.length === 0) {
                   getLogger().warn(
                     "[dispatch]",
-                    `阶段 ${run.currentPhase} 配置了分片但 analysis.json.${orderField} 为空——回退为不分片。请确认 inventory 阶段产出了非空 ${orderField}。`,
+                    `阶段 ${run.currentPhase} 配置了分片但 dependency-graph.json.${orderField} 为空——回退为不分片。请确认 inventory 阶段产出了非空 ${orderField}。`,
                   )
                 }
                 if (translationOrder.length > 0) {
@@ -4436,7 +4436,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                 // translate unit 模式需 functionOwnership 展开 cargo FUNCTION 的 FSD
                 let functionOwnership: Record<string, string> | undefined
                 if (shardTargetUnits.length > 0) {
-                  const analysis = engine.loadArtifactJson(`${ARTIFACT_DIR}/${run.runId}`, "analysis")
+                  const analysis = engine.loadArtifactJson(`${ARTIFACT_DIR}/${run.runId}`, "dependency-graph")
                   functionOwnership = (analysis?.functionOwnership as Record<string, string> | undefined) ?? undefined
                 }
                 upstream = narrowUpstreamForShard(upstream, run.currentPhase ?? "", shardTargetPkgs, completedPkgs, {
@@ -4496,7 +4496,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                 `⛔⛔⛔ 分片范围硬约束（最高优先级，开始工作前先读）⛔⛔⛔`,
                 `本分片【只】处理以下 ${targetWord}: ${targetLabel}`,
                 `- 禁止处理、读源码、生成 FSD/产物 for 任何【其他】${targetWord}。`,
-                `- analysis.json / inventory.json 里列出的其他包/单元【不是】你的工作清单，仅作参考信息。`,
+                `- dependency-graph.json / inventory.json 里列出的其他包/单元【不是】你的工作清单，仅作参考信息。`,
                 `- 处理完本分片 ${targetWord} 后立即输出 WORKER_SUMMARY + TASK_STATUS 结束，不要"顺手"做其他 ${targetWord}（会有别的分片做，重复 = 产物冲突）。`,
                 `⛔⛔⛔ 违反 = 重复工作 + 产物冲突 ⛔⛔⛔`,
                 ``,
@@ -4523,7 +4523,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               const artifactId = (planForDispatch.targetProject as any)?.artifactId
               if (artifactId) {
                 const focusPkgs = (currentEntry?.incrementalContext?.targetPackages as string[] | undefined)
-                  ?? (engine.loadArtifactJson(`${ARTIFACT_DIR}/${run.runId}`, "analysis")?.packageNames as string[] | undefined)
+                  ?? (engine.loadArtifactJson(`${ARTIFACT_DIR}/${run.runId}`, "dependency-graph")?.packageNames as string[] | undefined)
                   ?? []
                 if (focusPkgs.length > 0) {
                   const projectRoot = join(resolveProjectRoot(), "generated", artifactId)

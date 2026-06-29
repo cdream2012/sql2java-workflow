@@ -9,7 +9,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { buildAnalysisFromIndex } from "@workflow/analysis-builder"
+import { buildDependencyGraphFromIndex } from "@workflow/analysis-builder"
 
 let dir: string
 let analysis: any
@@ -44,8 +44,8 @@ beforeAll(() => {
     }],
   }
   writeFileSync(join(dir, "inventory-index.json"), JSON.stringify(index, null, 2), "utf-8")
-  buildAnalysisFromIndex(dir)
-  analysis = JSON.parse(readFileSync(join(dir, "analysis.json"), "utf-8"))
+  buildDependencyGraphFromIndex(dir)
+  analysis = JSON.parse(readFileSync(join(dir, "dependency-graph.json"), "utf-8"))
 }, 30000)
 
 afterAll(() => { /* OS 清理 tmpdir */ })

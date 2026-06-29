@@ -18,7 +18,7 @@ beforeAll(() => {
 })
 
 function writeAnalysis(art: string, callGraph: Record<string, string[]>) {
-  writeFileSync(join(art, "analysis.json"), JSON.stringify({ callGraph, functionOwnership: {} }), "utf-8")
+  writeFileSync(join(art, "dependency-graph.json"), JSON.stringify({ callGraph, functionOwnership: {} }), "utf-8")
 }
 
 function writeAggregatedTranslation(art: string, pkg: string, methods: Array<Record<string, unknown>>) {

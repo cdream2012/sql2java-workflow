@@ -278,7 +278,7 @@ persist(): void
 | 阶段 | 读取文件 | 提取字段 |
 |------|---------|---------|
 | inventory | `inventory-index.json` | packageCount=packages.length, tableCount=tables.length, triggerCount=triggers.length, viewCount=views.length, sequenceCount=sequences.length, standaloneProcedureCount=standaloneProcedures.length **(计算值)**, totalProcedureCount=sum(packages[].procedures.length)+standaloneProcedures.length **(计算值)** |
-| analyze | `analysis.json` + `analysis-packages/*.json` + `fsd/` 目录 | subprogramCount **(需聚合: sum(analysis-packages/*.json 的 subprograms.length)**, sccGroupCount=analysis.json.sccGroups.length, fsdFileCount **(需递归扫描 fsd/ 目录下 .md 文件数)** |
+| analyze | `dependency-graph.json` + `analysis-packages/*.json` + `fsd/` 目录 | subprogramCount **(需聚合: sum(analysis-packages/*.json 的 subprograms.length)**, sccGroupCount=dependency-graph.json.sccGroups.length, fsdFileCount **(需递归扫描 fsd/ 目录下 .md 文件数)** |
 | plan | `plan.json` | javaPackageCount, packageMappingsCount |
 | scaffold | `scaffold.json` | generatedFiles=generated.entities.length+generated.mapperInterfaces.length+generated.serviceShells.length+generated.commonClasses.length |
 | translate | `translations/*/translation.json`（逐包聚合） | translatedPackageCount=目录数, completedSubprogramCount=sum(completedSubprograms.length), totalSubprogramCount=sum(totalSubprograms), generatedJavaFileCount=sum(files.length), todoCount=sum(todos.length) |

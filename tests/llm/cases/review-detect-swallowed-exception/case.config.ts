@@ -63,8 +63,8 @@ const config: CaseConfig = {
       conventions: "Standard conventions",
     })
 
-    // analysis（AnalysisMetaSchema 形状）
-    writeArtifactJson(dir, "analysis.json", {
+    // analysis（DependencyGraphSchema 形状）
+    writeArtifactJson(dir, "dependency-graph.json", {
       callGraph: {},
       packageDependency: {},
       translationOrder: [[PACKAGE]],
