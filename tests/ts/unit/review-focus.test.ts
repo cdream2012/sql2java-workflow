@@ -73,7 +73,7 @@ beforeAll(() => {
   // plan.json
   writeFileSync(join(dir, "plan.json"), JSON.stringify({
     targetProject: { groupId: "com.x", artifactId: "app", packageBase: "com.x", javaVersion: "1.8", springBootVersion: "2.7" },
-    packageMappings: [{ oraclePackage: "PKG_A", javaPackage: "com.x", mapperInterface: "FooMapper", serviceClass: "FooService", serviceImplClass: "FooServiceImpl" }],
+    packageMappings: [{ oraclePackage: "PKG_A", javaPackage: "com.x", mapperInterface: "FooMapper", accessIntf: "FooAccessIntf", accessImpl: "FooAccessImpl", processor: "FooProcessor", aggregate: "FooAggregate", builder: "FooBuilder", validator: "FooValidator" }],
     rules: {}, typeMappings: {}, manualReviewList: [], conventions: "",
   }))
 
@@ -83,12 +83,12 @@ beforeAll(() => {
     packageName: "PKG_A", status: "done", completedSubprograms: ["get_item", "update_status", "create_order", "simple_crud"],
     totalSubprograms: 4,
     subprogramMethods: [
-      { oracleName: "get_item", javaClass: "FooServiceImpl", javaMethod: "getItem", javaFile: "src/main/java/com/x/FooServiceImpl.java" },
-      { oracleName: "update_status", javaClass: "FooServiceImpl", javaMethod: "updateStatus", javaFile: "src/main/java/com/x/FooServiceImpl.java" },
-      { oracleName: "create_order", javaClass: "FooServiceImpl", javaMethod: "createOrder", javaFile: "src/main/java/com/x/FooServiceImpl.java" },
-      { oracleName: "simple_crud", javaClass: "FooServiceImpl", javaMethod: "simpleCrud", javaFile: "src/main/java/com/x/FooServiceImpl.java" },
+      { oracleName: "get_item", javaClass: "FooAccessIntf", javaMethod: "getItem", javaFile: "src/main/java/com/x/access/FooAccessIntf.java" },
+      { oracleName: "update_status", javaClass: "FooAccessIntf", javaMethod: "updateStatus", javaFile: "src/main/java/com/x/access/FooAccessIntf.java" },
+      { oracleName: "create_order", javaClass: "FooAccessIntf", javaMethod: "createOrder", javaFile: "src/main/java/com/x/access/FooAccessIntf.java" },
+      { oracleName: "simple_crud", javaClass: "FooAccessIntf", javaMethod: "simpleCrud", javaFile: "src/main/java/com/x/access/FooAccessIntf.java" },
     ],
-    files: [{ path: "src/main/java/com/x/FooServiceImpl.java", role: "service-impl" }],
+    files: [{ path: "src/main/java/com/x/access/FooAccessIntf.java", role: "access-intf" }],
   }))
 
   // scaffold.json（testShells → #18/#20 测试审查）
@@ -96,7 +96,7 @@ beforeAll(() => {
     projectRoot: projectRoot,
     structure: { directories: [], pomXml: "" },
     generated: {
-      testShells: [{ file: "src/test/java/com/x/FooServiceImplTest.java", oraclePackage: "PKG_A", testClass: "FooServiceImplTest" }],
+      testShells: [{ file: "src/test/java/com/x/domain/aggregate/FooAggregateTest.java", oraclePackage: "PKG_A", testClass: "FooAggregateTest" }],
       mapperTestShells: [{ file: "src/test/java/com/x/FooMapperIntegrationTest.java", oraclePackage: "PKG_A", testClass: "FooMapperIntegrationTest", mapperInterface: "FooMapper" }],
     },
   }))
@@ -134,15 +134,15 @@ describe("buildReviewFocus 信号选点", () => {
   it("聚焦块含 Java 方法锚点 + PL/SQL sed -n 硬约束", () => {
     const s = block()
     expect(s).toContain("sed -n '1,4p'") // get_item lineRange
-    expect(s).toContain("FooServiceImpl.java")
+    expect(s).toContain("FooAccessIntf.java")
     expect(s).toContain("方法 `getItem`") // Java 方法锚点（软约束）
   })
 
-  it("测试审查段列出 ServiceImpl 测试 + Mapper 集成测试", () => {
+  it("测试审查段列出 Aggregate 单元测试 + Mapper 集成测试", () => {
     const s = block()
     expect(s).toContain("test-correctness(#18)")
     expect(s).toContain("mapper-test-correctness(#20)")
-    expect(s).toContain("FooServiceImplTest")
+    expect(s).toContain("FooAggregateTest")
     expect(s).toContain("FooMapperIntegrationTest")
   })
 })

@@ -59,13 +59,13 @@ describe("renderWorkerPrompt", () => {
       upstreamArtifactsList: "- `/proj/.workflow-artifacts/run-xyz/plan.json`",
       shardInfoBlock: "## 分片信息\n- 本分片序号: 2 / 13",
       scopeBlock: "## 单元读取清单\n- 切片目录：shard-inputs/CORE_PKG/create_item__1/",
-      depSignaturesBlock: "## 依赖签名\n- CORE_PKG.get_item → com.x.ItemService#getItem",
+      depSignaturesBlock: "## 依赖签名\n- CORE_PKG.get_item → com.x.ItemAccessIntf#getItem",
       schemaHint: "## Schema Hint\nsubprogramMethods 必填",
       rejectionErrorBlock: "",
     })
     expect(out).toContain("translate Worker 任务（分片 2/13）")
     expect(out).toContain("依赖签名")
-    expect(out).toContain("com.x.ItemService#getItem")
+    expect(out).toContain("com.x.ItemAccessIntf#getItem")
     expect(out).toContain("projectRoot: `/proj/generated/app`")
     expect(out).toContain("mainEntry: `CORE_PKG`")
     expect(out).not.toContain("{{")

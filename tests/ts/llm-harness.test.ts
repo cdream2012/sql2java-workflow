@@ -128,19 +128,19 @@ describe("assertJavaMatches / assertGeneratedFileExists", () => {
   const CATCH_JAVA = "public void doSomething() {\n  try { risky(); }\n  catch (Exception e) { log.error(\"x\", e); throw e; }\n}"
 
   it("含非空 catch → 通过", () => {
-    const ctx = makeCtx({ generatedFiles: { "generated/exc/src/ExcServiceImpl.java": CATCH_JAVA } })
-    expect(assertJavaMatches(ctx, "**/ExcServiceImpl.java", /catch\s*\([^)]+\)\s*\{[\s\S]*?\}/).passed).toBe(true)
-    expect(assertGeneratedFileExists(ctx, "**/ExcServiceImpl.java").passed).toBe(true)
+    const ctx = makeCtx({ generatedFiles: { "generated/exc/src/ExcAggregate.java": CATCH_JAVA } })
+    expect(assertJavaMatches(ctx, "**/ExcAggregate.java", /catch\s*\([^)]+\)\s*\{[\s\S]*?\}/).passed).toBe(true)
+    expect(assertGeneratedFileExists(ctx, "**/ExcAggregate.java").passed).toBe(true)
   })
 
   it("无 catch → 不通过", () => {
-    const ctx = makeCtx({ generatedFiles: { "generated/exc/src/ExcServiceImpl.java": "public void doSomething() {}\n" } })
-    expect(assertJavaMatches(ctx, "**/ExcServiceImpl.java", /catch\s*\([^)]+\)\s*\{[\s\S]*?\}/).passed).toBe(false)
+    const ctx = makeCtx({ generatedFiles: { "generated/exc/src/ExcAggregate.java": "public void doSomething() {}\n" } })
+    expect(assertJavaMatches(ctx, "**/ExcAggregate.java", /catch\s*\([^)]+\)\s*\{[\s\S]*?\}/).passed).toBe(false)
   })
 
   it("文件不存在 → 不通过", () => {
     const ctx = makeCtx({ generatedFiles: {} })
-    expect(assertGeneratedFileExists(ctx, "**/ExcServiceImpl.java").passed).toBe(false)
+    expect(assertGeneratedFileExists(ctx, "**/ExcAggregate.java").passed).toBe(false)
   })
 })
 

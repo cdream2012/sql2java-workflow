@@ -232,7 +232,11 @@ export function buildReviewFocus(
     lines.push(``, `### 测试审查（test-correctness #18 / mapper-test-correctness #20）`)
     for (const tf of testFocus) {
       const cat = tf.kind === "service" ? "test-correctness(#18)" : "mapper-test-correctness(#20)"
-      lines.push(`- ${tf.kind === "service" ? "ServiceImpl 测试" : "Mapper 集成测试"}: \`${tf.absFile}\` 类 \`${tf.testClass}\` → 审 ${cat}`)
+      // 标签按 testClass 实际命名派生，避免对遗留 ServiceImplTest 误标「Aggregate」
+      const unitLabel = /AggregateTest$/.test(tf.testClass) ? "单元测试（Aggregate）"
+        : /ServiceImplTest$/.test(tf.testClass) ? "单元测试（ServiceImpl）"
+        : "单元测试"
+      lines.push(`- ${tf.kind === "service" ? unitLabel : "Mapper 集成测试"}: \`${tf.absFile}\` 类 \`${tf.testClass}\` → 审 ${cat}`)
     }
   }
 

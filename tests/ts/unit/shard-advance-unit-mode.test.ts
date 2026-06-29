@@ -111,7 +111,7 @@ describe("engine.advance 分片推进 — unitMode 字段", () => {
     writeFileSync(join(txArtifactsDir, "translations", "CORE_PKG", "get_item.json"), JSON.stringify({
       unitRefName: "get_item", packageName: "CORE_PKG", status: "completed",
       completedSubprograms: ["get_item"], files: [], decisions: [], todos: [],
-      subprogramMethods: [{ oracleName: "get_item", javaClass: "com.x.ItemService", javaMethod: "getItem" }],
+      subprogramMethods: [{ oracleName: "get_item", javaClass: "com.x.ItemAccessIntf", javaMethod: "getItem" }],
     }), "utf-8")
 
     // 推进 shard 0 → shard 1（G1-unit 校验 + 跨 schema warning 自动接受）

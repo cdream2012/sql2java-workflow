@@ -141,7 +141,7 @@ describe("Schema 有效数据通过校验", () => {
       status: "completed",
       completedSubprograms: ["GET_ITEM"],
       totalSubprograms: 1,
-      files: [{ path: "service/ItemService.java", role: "service-impl" }],
+      files: [{ path: "core/domain/aggregate/ItemAggregate.java", role: "aggregate" }],
       decisions: [],
       todos: [],
     }
@@ -154,11 +154,11 @@ describe("Schema 有效数据通过校验", () => {
       status: "completed",
       completedSubprograms: ["GET_ITEM"],
       totalSubprograms: 1,
-      files: [{ path: "service/ItemService.java", role: "service-impl" }],
+      files: [{ path: "core/domain/aggregate/ItemAggregate.java", role: "aggregate" }],
       decisions: [],
       todos: [],
       subprogramMethods: [
-        { oracleName: "get_item", javaClass: "com.example.item.ItemService", javaMethod: "getItem", javaFile: "service/ItemService.java" },
+        { oracleName: "get_item", javaClass: "com.example.item.core.access.ItemAccessIntf", javaMethod: "getItem", javaFile: "core/access/ItemAccessIntf.java" },
       ],
     }
     expect(TranslationSchema.safeParse(data).success).toBe(true)
@@ -174,8 +174,8 @@ describe("Schema 有效数据通过校验", () => {
       decisions: [],
       todos: [],
       subprogramMethods: [
-        { oracleName: "get_param__1", javaClass: "com.example.item.ItemService", javaMethod: "getParamById" },
-        { oracleName: "get_param__2", javaClass: "com.example.item.ItemService", javaMethod: "getParamByName" },
+        { oracleName: "get_param__1", javaClass: "com.example.item.core.access.ItemAccessIntf", javaMethod: "getParamById" },
+        { oracleName: "get_param__2", javaClass: "com.example.item.core.access.ItemAccessIntf", javaMethod: "getParamByName" },
       ],
     }
     // 合法：两个不同 refName → 通过
@@ -209,7 +209,7 @@ describe("Schema 有效数据通过校验", () => {
       passed: false,
       overallScore: 50,
       procedureReviews: [],
-      mustFix: [{ file: "ItemService.java", line: 10, issue: "Missing null check" }],
+      mustFix: [{ file: "ItemAggregate.java", line: 10, issue: "Missing null check" }],
       suggestions: [],
       todoRemainingCount: 1,
     }
@@ -278,7 +278,7 @@ describe("Schema 有效数据通过校验", () => {
       allPassed: false,
       compilation: {
         success: false,
-        errors: [{ file: "ItemService.java", line: 10, message: "cannot find symbol" }],
+        errors: [{ file: "ItemAggregate.java", line: 10, message: "cannot find symbol" }],
       },
       packageResults: [{ packageName: "CORE_PKG", passed: false, mybatisValid: false }],
       testExecution: { executed: false, testFiles: [] },
@@ -442,6 +442,23 @@ describe("Schema 无效数据被拒绝", () => {
     }
     const result = PlanSchema.safeParse(planData)
     expect(result.success).toBe(true)
+  })
+
+  it("PlanSchema 拒绝无任何组件类名的 packageMapping（accessImpl/aggregate/serviceImplClass 全空）", () => {
+    const planData = {
+      targetProject: {
+        groupId: "com.example", artifactId: "item-service",
+        packageBase: "com.example.item", javaVersion: "1.8", springBootVersion: "2.7.x",
+      },
+      packageMappings: [
+        // 仅 oraclePackage/javaPackage/mapperInterface，无任何对外暴露组件类名
+        { oraclePackage: "PKG_A", javaPackage: "com.example.item.a", mapperInterface: "AMapper" },
+      ],
+      rules: { namingConvention: "camelCase", nullHandling: "optional", exceptionStrategy: "custom-business", logFramework: "common-log" },
+      typeMappings: {}, manualReviewList: [], conventions: "",
+    }
+    const result = PlanSchema.safeParse(planData)
+    expect(result.success).toBe(false)
   })
 })
 

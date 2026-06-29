@@ -65,7 +65,7 @@ permission:
 | `EXCEPTION WHEN NO_DATA_FOUND` | `catch (EmptyResultDataAccessException e)` |
 | `EXCEPTION WHEN TOO_MANY_ROWS` | `catch (IncorrectResultSizeDataAccessException e)` |
 | `EXCEPTION WHEN OTHERS` | `catch (Exception e)` |
-| `RAISE_APPLICATION_ERROR(-20001, msg)` | `throw new BusinessException(msg)` |
+| `RAISE_APPLICATION_ERROR(-20001, msg)` | `throw new TranFailException(msg)` |
 | `PRAGMA AUTONOMOUS_TRANSACTION` | `@Transactional(propagation = REQUIRES_NEW)` |
 | `DBMS_OUTPUT.PUT_LINE` | `log.info(...) / log.debug(...)` |
 | `v_count := SQL%ROWCOUNT` | `int count = mapper.updateXxx();` |
@@ -116,28 +116,32 @@ permission:
 
 - **对接跨包/同包跨单元调用**：调用边取自结构化的 `dependency-graph.json.callGraph`（key/value 均为 `PKG.refName`），**不解析 FSD 板块 3 的 markdown**。处理子程序 s 的调用：
   - 查 `callGraph["{PKG}.{s 的 refName}"]` 得其调用的 `[PKG.refName, ...]`（拓扑序保证被依赖 unit 先翻译）
-  - 对每个目标 `目标包.目标refName`：查 workOrder「依赖签名」预注入块（引擎已从已完成 unit 的聚合 translation.json 提取 `{目标包.目标refName → javaClass#javaMethod (file)}`），用真实 `javaClass`（Service 接口**全限定名**）和 `javaMethod`。⛔ **禁止 read `translations/{目标包}/translation.json`**——签名已预注入。
+  - 对每个目标 `目标包.目标refName`：查 workOrder「依赖签名」预注入块（引擎已从已完成 unit 的聚合 translation.json 提取 `{目标包.目标refName → javaClass#javaMethod (file)}`），用真实 `javaClass`（**AccessIntf 全限定名**——DDD 对外入口在接入层；调用方经 Spring DI 注入 AccessIntf 调用）和 `javaMethod`。⛔ **禁止 read `translations/{目标包}/translation.json`**——签名已预注入。
   - 用真实全限定名 import + 注入 + 调用，**不靠命名约定猜测**
   - **同单元内调用**（根 ↔ 其 cargo FUNCTION）：本地解析，无需跨文件 read
   - 预注入块中标 `// TODO: ... 待对接` 的（目标 unit 尚未翻译）：照抄 TODO 占位，由 review/fix 兜底
 
-**3. 生成/编辑 Java 文件**（同包多个 unit 共享 Service/ServiceImpl/Mapper 文件）
+**3. 生成/编辑 Java 文件**（同包多个 unit 共享本模块的 DDD 组件 / Mapper 文件）
 
-- 先 `read` 本包已有的 Mapper 接口 / Mapper XML / Service 接口 / ServiceImpl（若存在，由同包 prior unit 创建）；不存在则新建。**用 edit 追加本单元方法，勿覆盖已有内容**。
-- Mapper 接口（`@Mapper`）：追加本单元各子程序对应的 SQL 方法
-- Mapper XML：追加本单元 SQL 语句、parameterMap、resultMap
-- Service 接口：追加本单元业务方法签名
-- ServiceImpl：追加本单元业务逻辑实现（注入 Mapper）
-- DTO 类（OUT 参数、返回值包装）：本单元所需 DTO 若同包 prior unit 已生成则复用，否则新建
-- 异常类（如有自定义异常）
+按 DDD 分层落位（路径见 plan.json packageMapping + 规约 `## 工程结构`）：
+- 先 `read` 本包已有的 Mapper 接口 / Mapper XML / AccessIntf / AccessImpl / Processor / Aggregate / Builder / Validator（若存在，由同包 prior unit 创建）；不存在则新建。**用 edit 追加本单元方法，勿覆盖已有内容**。
+- Mapper 接口（`@Mapper`，项目级 `mapper/`）：追加本单元各子程序对应的 SQL 方法（存储过程用 `statementType=CALLABLE`，OUT 参数标 `mode=OUT`+`jdbcType`）
+- Mapper XML（`resources/mapper/`）：追加本单元 SQL 语句、resultMap
+- **Builder**：变量初始化/默认值 → `initXxx()`；参数组装 → `buildXxxParams()`；**OUT 参数预定义** → `buildXxxOutputParams()`（初始化为空字符串）；日期/字典转换
+- **Validator**：IF-THEN-ELSE 前置校验 → `validateXxx()`；存储过程 OUT 结果校验 → `processResult()`；校验失败设 `procStat="0"`+`expInfo` 后抛 `TranFailException`
+- **Aggregate**：核心业务逻辑 → 业务方法（声明 `throws TranFailException`，涉及数据修改标 `@Transactional(rollbackFor=Exception.class)`，编排 Builder+Validator+Mapper）
+- **Processor**：主流程编排（**不标 `@Transactional`**），批量循环 + 异常捕获（`CommonLog.error` + 截断 1000 字符 + 更新 `procStat`/`expInfo`）
+- **AccessIntf / AccessImpl**：对外入口方法签名 + 委托 Processor/Aggregate
+- Bean 类（OUT 参数、返回值包装）：本单元所需 Bean 若同包 prior unit 已生成则复用，否则新建（项目级 `beans/`）
+- 异常统一用 `TranFailException`（scaffold 已生成于 `common/infrastructure`，勿新建业务异常基类）；日志统一用 `CommonLog`
 
-**4. 生成测试代码**（填充 scaffold 生成的测试骨架）
+**4. 生成测试代码**（填充 scaffold 生成的测试骨架——DDD 下针对 Aggregate 单测）
 
-- 读取 scaffold 生成的测试骨架文件（路径从 `scaffold.json` 的 `testShells` 获取）
+- 读取 scaffold 生成的测试骨架文件（路径从 `scaffold.json` 的 `testShells` 获取，被测类为 Aggregate）
 - 为每个 `// TODO: [test]` 测试方法填写实际测试逻辑：
-  - **arrange**：构造输入参数，设置 Mock 返回值（`when(...).thenReturn(...)`）
-  - **act**：调用被测方法
-  - **assert**：验证返回值（`assertEquals`、`assertNotNull`）和副作用（`verify(mapper).insert(...)`）
+  - **arrange**：构造输入 Bean，设置 Mock 返回值（`when(...).thenReturn(...)`，mock Mapper/Builder/Validator 依赖）
+  - **act**：调用被测 Aggregate 方法
+  - **assert**：验证返回值（`assertEquals`、`assertNotNull`）和副作用（`verify(mapper).insert(...)`）；异常路径用 `assertThrows(TranFailException.class, ...)` 验证校验失败抛异常
 - 每个方法至少生成 happy path 测试；中/高复杂度方法额外生成 1-2 个异常路径测试
 - 测试方法命名：`methodName_scenario_expectedBehavior`
 - 所有注释使用中文
@@ -178,7 +182,7 @@ void selectItemById_shouldReturnCorrectlyMappedItem() {
         "INSERT INTO t_item (item_id, item_code, item_name, item_type, base_uom) "
         + "VALUES (10001, 'ITEM001', '测试物料', 'RAW', 'EA')");
     // act
-    ItemDO result = coreMapper.selectItemById(10001L);
+    ItemBean result = coreMapper.selectItemById(10001L);
     // assert
     assertNotNull(result);
     assertEquals(10001L, result.getItemId());
@@ -205,10 +209,10 @@ per-unit 文件字段：
 - `packageName`：Oracle 包名
 - `status`：`"completed"`（本单元根+cargo 全部完成）或 `"partial"`
 - `completedSubprograms`：本单元已完成的子程序 refName 列表（根 + cargo）
-- `files`：本单元生成/编辑的 Java 文件列表（path + role，含生产代码和测试文件）。`role` 推荐值 `"mapper-interface"` / `"mapper-xml"` / `"service"` / `"service-impl"` / `"dto"` / `"exception"` / `"test"` / `"mapper-integration-test"`
+- `files`：本单元生成/编辑的 Java 文件列表（path + role，含生产代码和测试文件）。`role` 推荐值 `"mapper-interface"` / `"mapper-xml"` / `"access-intf"` / `"access-impl"` / `"processor"` / `"aggregate"` / `"builder"` / `"validator"` / `"bean"` / `"test"` / `"mapper-integration-test"`
 - `decisions`：本单元翻译决策记录（line, oracleConstruct, javaConstruct, reason, confidence）。`confidence` 推荐 `"high"` / `"medium"` / `"low"`
 - `todos`：本单元 TODO 标记（file, issue, oracleLine, suggestion）
-- `subprogramMethods`：本单元子程序（根 + cargo）→ Java 调用入口索引，供「依赖本 unit 的后续 unit」对接跨包/同包跨单元调用。每项 `{ oracleName=refName, javaClass=Service 接口全限定名, javaMethod, javaFile?=接口文件路径 }`；重载子程序 `oracleName` 用 `{name}__{序号}`（与 refName 一致，禁止裸名重复）；必须覆盖本单元所有子程序
+- `subprogramMethods`：本单元子程序（根 + cargo）→ Java 调用入口索引，供「依赖本 unit 的后续 unit」对接跨包/同包跨单元调用。每项 `{ oracleName=refName, javaClass=AccessIntf 全限定名（DDD 对外入口）, javaMethod, javaFile?=AccessIntf 文件路径 }`；重载子程序 `oracleName` 用 `{name}__{序号}`（与 refName 一致，禁止裸名重复）；必须覆盖本单元所有子程序
 
 完整示例（unit `PKG_ORDER.create_order`，cargo FUNCTION `calc_total`）：
 
@@ -221,10 +225,14 @@ per-unit 文件字段：
   "files": [
     { "path": "src/main/java/com/example/ordersystem/mapper/OrderMapper.java", "role": "mapper-interface" },
     { "path": "src/main/resources/mapper/OrderMapper.xml", "role": "mapper-xml" },
-    { "path": "src/main/java/com/example/ordersystem/service/OrderService.java", "role": "service" },
-    { "path": "src/main/java/com/example/ordersystem/service/impl/OrderServiceImpl.java", "role": "service-impl" },
-    { "path": "src/main/java/com/example/ordersystem/dto/CreateOrderRequest.java", "role": "dto" },
-    { "path": "src/test/java/com/example/ordersystem/service/impl/OrderServiceImplTest.java", "role": "test" },
+    { "path": "src/main/java/com/example/ordersystem/order/access/OrderAccessIntf.java", "role": "access-intf" },
+    { "path": "src/main/java/com/example/ordersystem/order/access/impl/OrderAccessImpl.java", "role": "access-impl" },
+    { "path": "src/main/java/com/example/ordersystem/order/processor/OrderProcessor.java", "role": "processor" },
+    { "path": "src/main/java/com/example/ordersystem/order/domain/aggregate/OrderAggregate.java", "role": "aggregate" },
+    { "path": "src/main/java/com/example/ordersystem/order/domain/builder/OrderBuilder.java", "role": "builder" },
+    { "path": "src/main/java/com/example/ordersystem/order/domain/validator/OrderValidator.java", "role": "validator" },
+    { "path": "src/main/java/com/example/ordersystem/beans/CreateOrderBean.java", "role": "bean" },
+    { "path": "src/test/java/com/example/ordersystem/order/domain/aggregate/OrderAggregateTest.java", "role": "test" },
     { "path": "src/test/java/com/example/ordersystem/mapper/OrderMapperIntegrationTest.java", "role": "mapper-integration-test" }
   ],
   "decisions": [
@@ -232,11 +240,11 @@ per-unit 文件字段：
     { "line": 32, "oracleConstruct": "EXECUTE IMMEDIATE", "javaConstruct": "// TODO: [translate]", "reason": "动态 SQL 需手动审查", "confidence": "low" }
   ],
   "todos": [
-    { "file": "src/main/java/.../OrderServiceImpl.java", "issue": "动态 SQL 需手动实现", "oracleLine": 32, "suggestion": "考虑使用 MyBatis 动态 SQL 替代" }
+    { "file": "src/main/java/.../order/domain/aggregate/OrderAggregate.java", "issue": "动态 SQL 需手动实现", "oracleLine": 32, "suggestion": "考虑使用 MyBatis 动态 SQL 替代" }
   ],
   "subprogramMethods": [
-    { "oracleName": "create_order", "javaClass": "com.example.ordersystem.order.OrderService", "javaMethod": "createOrder", "javaFile": "src/main/java/com/example/ordersystem/order/service/OrderService.java" },
-    { "oracleName": "calc_total", "javaClass": "com.example.ordersystem.order.OrderService", "javaMethod": "calcTotal", "javaFile": "src/main/java/com/example/ordersystem/order/service/OrderService.java" }
+    { "oracleName": "create_order", "javaClass": "com.example.ordersystem.order.access.OrderAccessIntf", "javaMethod": "createOrder", "javaFile": "src/main/java/com/example/ordersystem/order/access/OrderAccessIntf.java" },
+    { "oracleName": "calc_total", "javaClass": "com.example.ordersystem.order.access.OrderAccessIntf", "javaMethod": "calcTotal", "javaFile": "src/main/java/com/example/ordersystem/order/access/OrderAccessIntf.java" }
   ]
 }
 ```
@@ -256,9 +264,9 @@ per-unit 文件字段：
 - [ ] 每个 SQL 语句都有对应的 MyBatis 映射；OUT/IN OUT 参数通过 DTO 传递
 - [ ] 不确定的构造标记了 `// TODO: [translate] 标记人 标记时间 中文说明`
 - [ ] 跨包/同包跨单元调用用了真实方法名（查依赖签名块），非命名猜测；预注入块标 TODO 的已照抄占位
-- [ ] per-unit 文件的 `subprogramMethods` 覆盖本单元所有子程序（根 + cargo）：`oracleName` 用 refName（重载带 `__序号`）、`javaClass` 用 Service 接口全限定名
-- [ ] 同包多 unit 共享的 Service/ServiceImpl/Mapper 文件用 edit 追加方法，未覆盖 prior unit 内容
-- [ ] 每个 ServiceImpl 方法都有对应的测试方法（含完整 arrange→act→assert 逻辑），测试文件标记 role `"test"`
+- [ ] per-unit 文件的 `subprogramMethods` 覆盖本单元所有子程序（根 + cargo）：`oracleName` 用 refName（重载带 `__序号`）、`javaClass` 用 AccessIntf 全限定名
+- [ ] 同包多 unit 共享的 DDD 组件/Mapper 文件用 edit 追加方法，未覆盖 prior unit 内容
+- [ ] 每个 Aggregate 业务方法都有对应的测试方法（含完整 arrange→act→assert 逻辑），测试文件标记 role `"test"`
 - [ ] 每个 Mapper XML 的 SQL statement 都有对应的集成测试方法，标记 role `"mapper-integration-test"`；H2 不兼容的 SQL 已标 `@Disabled`（生产 Mapper XML 保持不变）；测试数据 INSERT 用硬编码 ID（不用 SEQ.NEXTVAL）
 - [ ] Java 代码规约已全面遵守；注释使用中文
 

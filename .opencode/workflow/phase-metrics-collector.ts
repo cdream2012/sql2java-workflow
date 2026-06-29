@@ -500,11 +500,15 @@ function extractScaffoldData(data: PhaseBusinessData, dir: string): void {
   try {
     const gen = json.generated as Record<string, unknown> | undefined
     if (gen) {
+      // commonClasses 与 commonModules.classes 结构重叠（TODO F8），同一批文件可能两处都落——
+      // 优先计 commonModules.classes（带 category 的超集），缺失时回退 commonClasses，避免双计。
+      const infraClasses = (gen.commonModules as { classes?: unknown[] } | undefined)?.classes
+      const commonCount = safeArrayLen(infraClasses) > 0 ? safeArrayLen(infraClasses) : safeArrayLen(gen.commonClasses)
       data.generatedFiles =
         safeArrayLen(gen.entities) +
         safeArrayLen(gen.mapperInterfaces) +
         safeArrayLen(gen.serviceShells) +
-        safeArrayLen(gen.commonClasses)
+        commonCount
     }
   } catch { /* skip */ }
 }
