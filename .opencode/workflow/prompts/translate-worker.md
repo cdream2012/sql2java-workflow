@@ -27,7 +27,7 @@
 ## 输出
 
 - per-unit 翻译产物：`translations/{pkg}/{ref}.json`（符合 UnitTranslationSchema；聚合 `translations/{pkg}/translation.json` 由 engine 自动 merge，**不直接写**）
-- Java 文件：写入 Runtime Context 中 `projectRoot` 指定的目录（绝对路径，与 scaffold 阶段同目录）。同包多 unit 共享的 Service/ServiceImpl/Mapper 文件用 **read 已有 + edit 追加方法**，勿覆盖 prior unit 内容。
+- Java 文件：写入 Runtime Context 中 `projectRoot` 指定的目录（绝对路径，与 scaffold 阶段同目录）。同包多 unit 共享的 DDD 组件（Access/Processor/Aggregate/Builder/Validator）/Mapper 文件用 **read 已有 + edit 追加方法**，勿覆盖 prior unit 内容。
 - Worker Status：`{{artifactsDir}}/status/translate.json`（**最后一步写**，须含 `shardIndex` = 分片信息里的 shardIndex（1-based，与「本分片序号」一致）—— advance 完成门控，未写/不匹配则 advance 被拒）
 
 ## 硬约束

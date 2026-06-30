@@ -50,7 +50,7 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
 - **summary 不手写**：review.json 更新后调 `generateReviewSummary`，由代码合并 review.json（语义）+ review-static.json（静态）生成 review-summary.json，确保 `allPassed` 反映全部包真实状态。
 - **核对旧问题**（`incrementalContext.previousFindings` 存在）：先逐项核对 previousFindings 列出的上次 mustFix 是否已修复，再审 targetPackages 找新问题。未修复的旧问题必须再次列入本次 mustFix（不能因"上次报过"就略过）；已修复的不再列入。这保证 fix 没修好的问题不会被遗忘。
 
-## 20 类审查清单
+## 21 类审查清单
 
 > **Step A 工具已扫项（确定性，勿重复查）**：#10/#11/#12/#15/#16/#17/#19/#20-completeness 已由引擎在 dispatch 前
 > 跑 checkstyle + pmd + grep 脚本扫过，结果在 `review-static.json`。你**不要**再用 LLM 逐过程重复查这些机械类项。
@@ -71,16 +71,17 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
 | 8 | parameter-direction | 参数方向：IN/OUT/IN OUT 参数是否通过正确方式传递 |
 | 9 | naming-consistency | 命名一致性：Java 方法名是否与 Oracle 子程序名有可追溯的映射关系 |
 | 10 | todo-remaining | 【Step A 工具扫】TODO 残留：统计未解决的 `// TODO: [translate]` 数量 |
-| 11 | naming-convention | 【Step A 工具扫，toolSkipped.checkstyle 时回退】命名规约：类名 UpperCamelCase、方法名 lowerCamelCase、常量全大写下划线、包名全小写、布尔属性无 is 前缀、ServiceImpl 后缀 |
+| 11 | naming-convention | 【Step A 工具扫，toolSkipped.checkstyle 时回退】命名规约：类名 UpperCamelCase、方法名 lowerCamelCase、常量全大写下划线、包名全小写、布尔属性无 is 前缀、DDD 组件后缀（AccessIntf/AccessImpl/Processor/Aggregate/Builder/Validator/Bean/Mapper）、数据对象用 `XxxBean` 后缀（禁用 `XxxDO`/`XxxPOJO`） |
 | 12 | code-format | 【Step A 工具扫，toolSkipped.checkstyle 时回退】代码格式：4 空格缩进、单行不超过 120 字符、大括号风格、运算符空格、方法参数逗号后空格 |
-| 13 | oop-convention | OOP 规约：@Override 注解、POJO 包装类型、toString 方法、BigDecimal 精度、构造方法无业务逻辑 |
-| 14 | comment-convention | 注释规约：中文注释、Javadoc 格式、@author/@date、枚举注释、TODO 格式 |
+| 13 | oop-convention | OOP 规约：@Override 注解、POJO 包装类型、toString 方法、BigDecimal 精度、构造方法无业务逻辑；DDD：@Component 注解、@Autowired 字段注入、Aggregate `implements Serializable`+`serialVersionUID`、`@Transactional(rollbackFor=Exception.class)` 仅标在 Aggregate 业务方法（Processor 不标事务） |
+| 14 | comment-convention | 注释规约：中文注释、Javadoc 格式、`@author`/`@version`/`@since`、枚举注释、TODO 格式、复杂逻辑用 `<ol>`/`<ul>` 列表 |
 | 15 | collection-exception | 【Step A 工具扫，toolSkipped.pmd 时回退】集合与异常：集合初始化大小、entrySet 遍历、try-with-resources、禁止空 catch、自定义异常 |
 | 16 | version-compliance | 【Step A 工具扫 grep】**版本合规性**：代码、pom.xml、依赖必须完全符合注入的 Java 代码规约中"Java 版本与框架配置"段落。对照"禁止的 Java 9+ 语法和 API"逐项检查代码，对照"pom.xml 构建配置"检查构建配置，对照"依赖命名空间"检查命名空间和依赖版本。**违反此项标记为 critical** |
 | 17 | test-completeness | 【Step A 工具扫】测试完整性：测试方法是否有真实逻辑（无空方法体、无 `// TODO: [test]` 残留）、arrange→act→assert 结构完整、断言有意义 |
 | 18 | test-correctness | 测试正确性：Mock 设置与生产代码逻辑匹配、@InjectMocks 目标正确、测试覆盖 happy path 和异常路径 |
 | 19 | mapper-test-completeness | 【Step A 工具扫】Mapper 集成测试完整性：每个 Mapper XML 的 `<select>/<insert>/<update>/<delete>` 是否都有对应集成测试方法、无空方法体（除 `@Disabled` 外）、无 `// TODO: [mapper-test]` 残留、arrange→act→assert 结构完整 |
 | 20 | mapper-test-correctness | Mapper 集成测试正确性：测试数据 INSERT 与 `schema-h2.sql` 表结构一致、`@MybatisTest` + `@AutoConfigureTestDatabase` 配置正确、H2 不兼容 SQL 已标 `@Disabled`、测试数据使用硬编码 ID 值（不使用 NEXTVAL） |
+| 21 | ddd-architecture | 【Step B 语义】DDD 分层职责合规：Access 层不含业务逻辑（仅参数接收/委托）、Aggregate 持有 Builder/Validator/Mapper 引用并编排、Processor 不标 `@Transactional`、跨包调用经 OutService 不直引他包 Mapper、OUT 参数在 Builder 预定义、异常统一 `TranFailException`、日志统一 `CommonLog` |
 
 ### 严重级别定义
 
@@ -122,8 +123,8 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
 读取 `${artifactsDir}/review-static.json`（引擎 dispatch 前已用 checkstyle + pmd + grep 脚本确定性扫好，零 LLM）。
 - 其中 `findings[]` 是机械类规约问题（#10/#11/#12/#15/#16/#17/#19/#20-completeness），**已归因到包**——这些静态问题你**不要**再用 LLM 重复查。
 - 记下 `toolSkipped.checkstyle` / `toolSkipped.pmd`：为 `true` 表示该工具不可用，对应清单项（#11/#12 或 #15）**回退你按清单审**。
-- 静态 finding 不进你写的 `review.json`（走独立通道进 fix）；你只在 `review.json` 记录 **语义** 审查结果（#1-#9 + #13/#14/#18/#20-correctness）。
-- 若 `review-static.json` 不存在（老 run / 扫描失败）：按完整 20 类清单审，不跳过。
+- 静态 finding 不进你写的 `review.json`（走独立通道进 fix）；你只在 `review.json` 记录 **语义** 审查结果（#1-#9 + #13/#14/#18/#20-correctness + #21 ddd-architecture）。
+- 若 `review-static.json` 不存在（老 run / 扫描失败）：按完整 21 类清单审，不跳过。
 
 #### Step 1: 确定审查范围
 
@@ -137,12 +138,12 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
 对每个待审查的包：
 
 1. **读取数据**：读取该包的 translation.json、`analysis-packages/{package}.json` 中对应的子程序结构、原始 PL/SQL 源码
-2. **聚焦语义审查（按 Step B 聚焦清单）**：workOrder 里若注入了 `## Step B 聚焦语义审查清单`，**只审清单列出的过程/点**——这些是有信号（高风险/游标/异常/出参/NVL/AUTONOMOUS）的过程。按清单给每个聚焦点的 PL/SQL 源码段（引擎已按行范围切好注入 workOrder）+ Java 方法锚点，对照审其触发的语义类别（#1-#9）+ 工具未覆盖的 #13 OOP / #14 注释。
+2. **聚焦语义审查（按 Step B 聚焦清单）**：workOrder 里若注入了 `## Step B 聚焦语义审查清单`，**只审清单列出的过程/点**——这些是有信号（高风险/游标/异常/出参/NVL/AUTONOMOUS）的过程。按清单给每个聚焦点的 PL/SQL 源码段（引擎已按行范围切好注入 workOrder）+ Java 方法锚点，对照审其触发的语义类别（#1-#9）+ 工具未覆盖的 #13 OOP / #14 注释 / #21 DDD 分层职责。
    - **无信号的过程跳过语义审**（清单末尾会注明跳过数）——它们靠 Step A 静态扫描兜底，不要逐个全审，省 LLM。
    - 若 workOrder **未注入**聚焦清单（老 run / 无信号 / 无聚焦点）：回退全量逐子程序语义审 #1-#9 + #13/#14。
    - **机械类（#10/#11/#12/#15/#16/#17/#19）已由 Step A 工具扫过（见 review-static.json），勿重复查**（toolSkipped 对应项除外，回退手审）。Java 文件路径基于 `projectRoot`（如 `{projectRoot}/src/main/java/...`）
-3. **审查 ServiceImpl 测试代码**（聚焦清单「测试审查」段列出的测试类）：读取测试类 Java 文件
-   - 按 test-correctness（#18）检查：Mock 设置与 ServiceImpl 依赖一致、断言覆盖关键逻辑
+3. **审查 Aggregate 测试代码**（聚焦清单「测试审查」段列出的测试类）：读取测试类 Java 文件
+   - 按 test-correctness（#18）检查：Mock 设置与 Aggregate 依赖（Mapper/Builder/Validator）一致、断言覆盖关键逻辑
    - test-completeness（#17）已由 Step A 工具扫（空方法体/TODO残留），勿重复
    - 空 TODO 测试方法标记为 mustFix（severity: major）
 4. **审查 Mapper 集成测试代码**（聚焦清单「测试审查」段列出的 Mapper 测试类）：读取 Mapper 集成测试文件
@@ -177,7 +178,7 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
        }
      ],
      "mustFix": [
-       { "file": "src/main/java/.../OrderServiceImpl.java", "line": 45, "issue": "NVL 未映射：p_status 可能为 null，需用 Optional.ofNullable 或默认值" }
+       { "file": "src/main/java/.../order/domain/aggregate/OrderAggregate.java", "line": 45, "issue": "NVL 未映射：p_status 可能为 null，需用 Optional.ofNullable 或默认值" }
      ],
      "suggestions": [
        "考虑在 OrderMapper.xml 中使用 <if> 标签处理动态条件"
@@ -189,7 +190,7 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
    **关键字段说明**：
    - `passed=true` 时 `mustFix` **必须为空数组 `[]`**；`passed=false` 时 `mustFix` **必须非空** — 这是最常见的被拒原因
    - `overallScore` 范围 0-100，`passed=true` 时必须 ≥ 70
-   - `procedureReviews[].checks[].category`：推荐全小写，如 `"logic-equivalence"` / `"null-handling"` / `"exception-mapping"` 等（与 20 类审查清单对应，不限死）
+   - `procedureReviews[].checks[].category`：推荐全小写，如 `"logic-equivalence"` / `"null-handling"` / `"exception-mapping"` 等（与 21 类审查清单对应，不限死）
    - `procedureReviews[].checks[].severity`：推荐 `"critical"` / `"major"` / `"minor"` / `"info"`
    - `mustFix[].line`：可选（`null` 或数字），无法确定行号时省略或写 `null`
    - `suggestions`：可以是字符串数组或对象数组

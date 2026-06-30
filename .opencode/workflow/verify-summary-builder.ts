@@ -19,7 +19,8 @@
 
 import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { VerifySummarySchema } from "./artifact-schemas"
+import { z } from "zod"
+import { PlanSchema, VerifySummarySchema } from "./artifact-schemas"
 import { formatZodIssues } from "./engine-core"
 import { getLogger } from "./workflow-logger"
 
@@ -130,9 +131,11 @@ function readPackageList(artifactsDir: string): string[] {
   return names.filter((n): n is string => typeof n === "string" && n.length > 0)
 }
 
-function readPackageMappings(artifactsDir: string): Array<{ oraclePackage: string; serviceClass?: string; serviceImplClass?: string }> {
+type PkgMappingLite = z.infer<typeof PlanSchema>["packageMappings"][number]
+
+function readPackageMappings(artifactsDir: string): PkgMappingLite[] {
   const plan = readJson(join(artifactsDir, "plan.json"))
-  return (plan?.packageMappings as Array<{ oraclePackage: string; serviceClass?: string; serviceImplClass?: string }>) ?? []
+  return (plan?.packageMappings as PkgMappingLite[]) ?? []
 }
 
 function readJson(path: string): any {
@@ -238,19 +241,23 @@ function fileBelongsToPkg(errFile: string, files: PkgFiles): boolean {
   return false
 }
 
-/** 测试类是否属于本包（按 plan.json packageMappings 的 serviceImplClass/serviceClass 前缀匹配简单类名） */
+/** 测试类是否属于本包（按 plan.json packageMappings 的组件类名 + Test/IntegrationTest 后缀精确匹配） */
 function testBelongsToPkg(
   testClass: string,
-  mappings: Array<{ oraclePackage: string; serviceClass?: string; serviceImplClass?: string }>,
+  mappings: PkgMappingLite[],
   pkg: string,
 ): boolean {
   const m = mappings.find(mp => mp.oraclePackage?.toUpperCase() === pkg.toUpperCase())
   if (!m) return false
-  // Surefire 的 <<< FAILURE! - [Class.method] 中 Class 可能是全限定名（com.a.AServiceImplTest），
-  // 取简单类名再与服务实现类前缀匹配。
+  // Surefire 的 <<< FAILURE! - [Class.method] 中 Class 可能是全限定名（com.a.AAccessImplTest），
+  // 取简单类名。测试类命名约定：单元测试 = {组件类}Test，Mapper 集成测试 = {MapperInterface}IntegrationTest。
+  // 用精确后缀匹配（组件类名 + Test/IntegrationTest），避免 startsWith 跨包前缀碰撞
+  // （如 ItemAggregate 误命中 ItemAggregateV2Test）。
   const simple = testClass.slice(testClass.lastIndexOf(".") + 1).toLowerCase()
-  for (const c of [m.serviceImplClass, m.serviceClass]) {
-    if (typeof c === "string" && c !== "N/A" && simple.startsWith(c.toLowerCase())) return true
+  for (const c of [m.accessImpl, m.accessIntf, m.aggregate, m.processor, m.builder, m.validator, m.serviceImplClass, m.serviceClass]) {
+    if (typeof c !== "string" || c === "N/A") continue
+    const base = c.toLowerCase()
+    if (simple === base + "test" || simple === base + "integrationtest") return true
   }
   return false
 }

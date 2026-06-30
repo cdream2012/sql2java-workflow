@@ -40,15 +40,16 @@ function ciEnumLower<T extends readonly [string, ...string[]]>(values: T) {
 // ============================================================================
 
 /**
- * 模块类别 — ScaffoldSchema.commonModules.classes.category 与
- * DedupSchema.extractedModules.category 共用，确保跨阶段一致性。
+ * 模块类别 — 仅 ScaffoldSchema.commonModules.classes.category 使用（受控值域）。
+ * DedupSchema.extractedModules.category 不用此枚举（其值由 translation.json files[].role
+ * 派生，如 "service"/"unknown"/"aggregate" 等，是自由字符串）。
  *
  * 合并自两个原始枚举：Scaffold 侧重骨架分类，Dedup 侧重抽取分类。
  */
 const ModuleCategoryValues = [
   "exception", "config", "type-mapper", "dto",
   "constants", "util", "mybatis", "mybatis-fragment",
-  "mapper-interface", "test-base",
+  "mapper-interface", "test-base", "infrastructure",
 ] as const
 const ModuleCategorySchema = z.enum(ModuleCategoryValues)
 
@@ -333,9 +334,29 @@ export const PlanSchema = z.object({
     oraclePackage: z.string(),
     javaPackage: z.string(),
     mapperInterface: z.string(),
-    serviceClass: z.string(),
-    serviceImplClass: z.string(),
-  })),
+    /** @deprecated 三层架构遗留字段；DDD 改用 accessImpl。保留以兼容历史 run resume。 */
+    serviceClass: z.string().optional(),
+    /** @deprecated 三层架构遗留字段；DDD 改用 accessImpl。保留以兼容历史 run resume。 */
+    serviceImplClass: z.string().optional(),
+    /** DDD 接入层接口——对外暴露入口，跨包调用索引（subprogramMethods.javaClass）指向此类。 */
+    accessIntf: z.string().optional(),
+    /** DDD 接入层实现（@Component）。 */
+    accessImpl: z.string().optional(),
+    /** DDD 处理器（流程编排，不标 @Transactional）。 */
+    processor: z.string().optional(),
+    /** DDD 聚合根（业务逻辑编排，标 @Transactional）。 */
+    aggregate: z.string().optional(),
+    /** DDD 构建器（参数/数据构建、OUT 参数预定义）。 */
+    builder: z.string().optional(),
+    /** DDD 验证器（业务规则校验）。 */
+    validator: z.string().optional(),
+  })).refine(
+    (mappings) => mappings.every(m =>
+      [m.accessIntf, m.accessImpl, m.processor, m.aggregate, m.builder, m.validator, m.serviceClass, m.serviceImplClass]
+        .some(v => typeof v === "string" && v.trim().length > 0)
+    ),
+    { message: "每个 packageMapping 至少需要一个组件类名（DDD: accessImpl/accessIntf/aggregate/processor/builder/validator；遗留: serviceImplClass/serviceClass）——下游 verify 归因 / translate 跨包索引 / 测试骨架生成均依赖此锚点" },
+  ),
 
   rules: z.object({
     namingConvention: z.string(),
@@ -365,6 +386,7 @@ export const ScaffoldSchema = z.object({
     pomXml: z.string(),
   }),
   generated: z.object({
+    /** 数据对象 Bean（XxxBean，tableName → Bean；DDD 下数据对象统一用 XxxBean 后缀）。 */
     entities: z.array(z.object({
       file: z.string(),
       tableName: z.string(),
@@ -373,6 +395,7 @@ export const ScaffoldSchema = z.object({
       file: z.string(),
       oraclePackage: z.string(),
     })),
+    /** DDD 组件壳（AccessIntf/AccessImpl/Processor/Aggregate/Builder/Validator 等，每包可多条）。 */
     serviceShells: z.array(z.object({
       file: z.string(),
       oraclePackage: z.string(),
@@ -404,7 +427,7 @@ export const ScaffoldSchema = z.object({
       classes: z.array(z.object({
         file: z.string(),
         purpose: z.string(),
-        category: z.string(),
+        category: ModuleCategorySchema,
       })),
       directories: z.array(z.string()),
     }).optional(),
@@ -461,10 +484,11 @@ export const TranslationSchema = z.object({
    * - oracleName：唯一引用名（refName）。非重载=Oracle 原始名；重载=`{name}__{序号}`（1-based，全部带序号），
    *   与 callGraph key 的 refName、FSD 文件名一致。**唯一性由 refine 强制**（大小写不敏感去重），
    *   避免重载裸名重复导致跨包查找歧义。
-   * - javaClass：调用入口的**全限定名**，即对外暴露的 Service 接口（调用方经 Spring DI 注入它），
-   *   如 "com.example.util.BService"。全限定以便调用方直接 import，无需再查 plan。
-   * - javaMethod：Java 方法名（Service 接口上的方法名）。
-   * - javaFile：Service 接口文件相对路径（可选，便于定位）。
+   * - javaClass：调用入口的**全限定名**，即对外暴露的 AccessIntf（DDD 接入层接口；调用方经 Spring DI
+   *   注入它），如 "com.example.app.deal.access.BAccessIntf"。全限定以便调用方直接 import，无需再查 plan。
+   *   （三层架构遗留 run 中此字段为 Service 接口全限定名，向后兼容。）
+   * - javaMethod：Java 方法名（AccessIntf 上的方法名）。
+   * - javaFile：AccessIntf 文件相对路径（可选，便于定位）。
    */
   subprogramMethods: z.array(z.object({
     oracleName: z.string(),

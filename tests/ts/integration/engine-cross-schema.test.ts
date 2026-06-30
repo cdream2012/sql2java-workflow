@@ -172,16 +172,16 @@ describe("validateCrossSchema — plan 映射覆盖", () => {
     writeArtifact(ctx.dir, RUN_ID, "plan.json", {
       targetProject: {
         groupId: "com.example", artifactId: "myapp",
-        packageBase: "com.example", javaVersion: "17", springBootVersion: "3.2",
+        packageBase: "com.example", javaVersion: "1.8", springBootVersion: "2.7.x",
       },
       packageMappings: [
         { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
-          mapperInterface: "CoreMapper", serviceClass: "CoreService", serviceImplClass: "CoreServiceImpl" },
+          mapperInterface: "CoreMapper", accessIntf: "CoreAccessIntf", accessImpl: "CoreAccessImpl", aggregate: "CoreAggregate" },
         // 缺少 EXTRA_PKG 映射
       ],
       rules: {
         namingConvention: "camelCase", nullHandling: "optional",
-        exceptionStrategy: "spring-data", logFramework: "slf4j",
+        exceptionStrategy: "custom-business", logFramework: "common-log",
       },
       typeMappings: {}, manualReviewList: [], conventions: "",
     })
@@ -201,14 +201,14 @@ describe("validateCrossSchema — plan 映射覆盖", () => {
     writeArtifact(ctx.dir, RUN_ID, "plan.json", {
       targetProject: {
         groupId: "com.example", artifactId: "myapp",
-        packageBase: "com.example", javaVersion: "17", springBootVersion: "3.2",
+        packageBase: "com.example", javaVersion: "1.8", springBootVersion: "2.7.x",
       },
       // scope 只覆盖 CORE_PKG，但 plan 把 out-of-scope 的 EXTRA_PKG 也映射了
       packageMappings: [
         { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
-          mapperInterface: "CoreMapper", serviceClass: "CoreService", serviceImplClass: "CoreServiceImpl" },
+          mapperInterface: "CoreMapper", accessIntf: "CoreAccessIntf", accessImpl: "CoreAccessImpl", aggregate: "CoreAggregate" },
         { oraclePackage: "EXTRA_PKG", javaPackage: "com.example.extra",
-          mapperInterface: "ExtraMapper", serviceClass: "ExtraService", serviceImplClass: "ExtraServiceImpl" },
+          mapperInterface: "ExtraMapper", accessIntf: "ExtraAccessIntf", accessImpl: "ExtraAccessImpl", aggregate: "ExtraAggregate" },
       ],
       rules: { namingConvention: "camelCase", nullHandling: "optional", exceptionStrategy: "spring-data", logFramework: "slf4j" },
       typeMappings: {}, manualReviewList: [], conventions: "",
@@ -232,12 +232,12 @@ describe("validateCrossSchema — plan 映射覆盖", () => {
     writeArtifact(ctx.dir, RUN_ID, "plan.json", {
       targetProject: {
         groupId: "com.example", artifactId: "myapp",
-        packageBase: "com.example", javaVersion: "17", springBootVersion: "3.2",
+        packageBase: "com.example", javaVersion: "1.8", springBootVersion: "2.7.x",
       },
       // scope 只覆盖 CORE_PKG，plan 正确地只映射 CORE_PKG（EXTRA_PKG 不映射）
       packageMappings: [
         { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
-          mapperInterface: "CoreMapper", serviceClass: "CoreService", serviceImplClass: "CoreServiceImpl" },
+          mapperInterface: "CoreMapper", accessIntf: "CoreAccessIntf", accessImpl: "CoreAccessImpl", aggregate: "CoreAggregate" },
       ],
       rules: { namingConvention: "camelCase", nullHandling: "optional", exceptionStrategy: "spring-data", logFramework: "slf4j" },
       typeMappings: {}, manualReviewList: [], conventions: "",

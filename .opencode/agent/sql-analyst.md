@@ -222,7 +222,7 @@ workflow({ action: "generateDependencyGraph", runId: "<runId>" })
 3. **依赖分析**：表格（`目标包` | `目标子程序 (refName)` | `功能`）+ 序列/常量依赖。无依赖写"无"即可。**只记客观调用关系**（目标包 + 目标子程序），**不预估 Java 映射**
 4. **业务规则**：编号列表或表格列出校验规则、计算逻辑、边界条件。简单子程序可合并为一段
 5. **控制流与异常**：简单子程序用文字描述；复杂子程序（>3 个分支或含循环）用 Mermaid 流程图 + 异常路径表格
-6. **特殊语法转化规约**：转化映射表格（Oracle 构造 | 位置 | Java/MyBatis 等价 | 风险）+ 事务边界 + "需手动审查的构造"表格（列：构造 | 位置 | 原因 | 建议）。全部安全时最后一表写"（无）"
+6. **特殊语法转化规约**：转化映射表格（Oracle 构造 | 位置 | Java/MyBatis 等价 | 风险）+ 事务边界 + "需手动审查的构造"表格（列：构造 | 位置 | 原因 | 建议）。全部安全时最后一表写"（无）"。**存储过程调用**（CALL 存储过程 / 跨包 PROCEDURE 调用）单独列出：标明 OUT/IN OUT 参数清单（参数名 | 方向 | Oracle 类型 | Java 类型），对应 Mapper `statementType=CALLABLE` + `mode=OUT`+`jdbcType`，OUT 参数须在 Builder 预定义；事务边界（`COMMIT`/`ROLLBACK`/`PRAGMA AUTONOMOUS_TRANSACTION`）对应 Aggregate `@Transactional`。
 
 ⛔ **板块 6 固定收尾格式**（每个 FSD 必须严格遵守）：
 
