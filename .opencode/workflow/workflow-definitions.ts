@@ -135,7 +135,9 @@ const _FSD = ["fsd/*/*.md"] as const
 
 /** 每个 phase 需要读取的上游 artifact 路径模板 */
 export const UPSTREAM_ARTIFACTS: Record<string, string[]> = {
-  inventory: ["inventory-index.json"],
+  // inventory-index.json 现由 inventory worker 第 0 步调 workflow({action:"scan"}) 自产，
+  // 不再是 start 预生成的 upstream。generateInventory 从 artifactsDir 自行读取。
+  inventory: [],
   // analyze 不注入 inventory-index.json：本包源码路径从 inventory-packages/{PKG}.json 的
   // specFile/bodyFile 取（已收窄到本分片）；表结构从 inventory.json，callGraph 从 dependency-graph.json。
   analyze: ["inventory.json", "inventory-packages/*.json", "dependency-graph.json"],

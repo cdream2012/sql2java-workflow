@@ -183,15 +183,12 @@ describe("UPSTREAM_ARTIFACTS", () => {
     expect(UPSTREAM_ARTIFACTS.plan).toContain("analysis-packages/*.json")
   })
 
-  it("inventory-index.json 仅 inventory 阶段注入；其余下游阶段都不读它", () => {
-    // inventory-index 是预扫描源，仅 inventory 阶段代码生成 + 边界校验消费；下游 worker
-    // 读精炼后的 inventory.json / inventory-packages / dependency-graph.json 即可。
+  it("inventory-index.json 不在任意阶段的 UPSTREAM_ARTIFACTS（inventory 自产，下游走 INJECTION_ARTIFACTS）", () => {
+    // inventory-index 由 inventory worker 第 0 步调 workflow({action:"scan"}) 自产，不再是
+    // start 预生成的 upstream。下游 analyze/plan/scaffold/translate 通过 INJECTION_ARTIFACTS
+    // 注入它（在 inventory 阶段之后已存在），UPSTREAM_ARTIFACTS 里任何阶段都不应再列它。
     for (const [phase, artifacts] of Object.entries(UPSTREAM_ARTIFACTS)) {
-      if (phase === "inventory") {
-        expect(artifacts, "inventory 阶段读 inventory-index.json").toContain("inventory-index.json")
-      } else {
-        expect(artifacts, `${phase} 不应注入 inventory-index.json`).not.toContain("inventory-index.json")
-      }
+      expect(artifacts, `${phase} 不应在 UPSTREAM_ARTIFACTS 注入 inventory-index.json`).not.toContain("inventory-index.json")
     }
   })
 })

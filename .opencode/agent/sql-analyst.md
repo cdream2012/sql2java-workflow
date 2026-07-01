@@ -94,16 +94,16 @@ permission:
 
 ## Phase: inventory
 
-> inventory 阶段：调用 `generateInventory` 把 `inventory-index.json` 转成下游产物 → 调用 `advance` 推进。仅在 advance 失败时做**最小修复**（见 Step 2）。
+> inventory 阶段：先调 `scan` 扫描源码生成 `inventory-index.json` → 调用 `generateInventory`/`generateDependencyGraph` 转成下游产物 → 调用 `advance` 推进。仅在 advance 失败时做**最小修复**（见 Step 2）。
 
 ### 目标
 
-把 prescan 产出的 `inventory-index.json`（全字段）转换为下游消费的
+把 `inventory-index.json`（全字段）转换为下游消费的
 `inventory-packages/{PKG_NAME}.json` + `inventory.json`。这一步由代码（`generateInventory` action）完成，你不读源码、不做 LLM 抽取。
 
 ### 输入
 
-- `inventory-index.json`：prescan 全字段索引（由 `start` 生成）
+- `inventory-index.json`：全字段索引——**由本阶段 Step 0 调 `scan` action 生成**（不再由 `start` 预生成）
 
 ### 输出
 
@@ -112,6 +112,19 @@ permission:
 - **格式**：逐包文件符合 InventoryPackageSchema，索引符合 InventorySchema
 
 ### 工作步骤
+
+#### Step 0：扫描源码生成 inventory-index.json（首要）
+
+inventory-index.json 不再由 `start` 预生成，由本步调 `scan` action 产出（确定性扫描，零 LLM）：
+
+```
+workflow({ action: "scan", runId: "<runId>" })
+```
+
+按返回文本（`✔` 开头=成功，`✖` 开头=失败）判断：
+- `✔ Scan Done` → `inventory-index.json` 已写入 artifacts 目录，继续 Step 1。
+- `✔ Scan Skipped`（已存在）→ 复用，继续 Step 1。
+- `✖ Empty Source` 或 `✖ Scan Error` → 源码不可处理，**不要继续 Step 1**。输出 `WORKER_SUMMARY`（Status: failed）+ `TASK_STATUS` `{"status":"failed","notes":"empty source / scan error"}` 结束，由编排者按失败重试机制处理。
 
 #### Step 1：代码生成 inventory + dependency-graph.json（核心）
 
@@ -159,7 +172,7 @@ workflow({ action: "generateDependencyGraph", runId: "<runId>" })
 
 如果 inventory 阶段被中断后恢复（retry）：
 - 先试 `generateInventory`（幂等，覆盖写盘）；成功后 advance。
-- 若 advance 仍因旧残留文件失败，按 Step 3 最小修复。
+- 若 advance 仍因旧残留文件失败，按 Step 2 最小修复。
 
 ### 质量检查
 

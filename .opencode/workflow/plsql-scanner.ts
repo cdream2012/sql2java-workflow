@@ -1,7 +1,7 @@
 /**
  * PL/SQL Structural Scanner — AST + regex 双模式
  *
- * 在 workflow start 时确定性扫描 PL/SQL 源码目录，产出 inventory-index.json。
+ * 在 inventory worker 第 0 步（workflow scan action）确定性扫描 PL/SQL 源码目录，产出 inventory-index.json。
  * 不依赖 LLM，不占用上下文窗口。
  *
  * AST 模式：@griffithswaite/ts-plsql-parser（ANTLR4 生成）

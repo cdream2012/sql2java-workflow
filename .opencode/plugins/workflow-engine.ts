@@ -3068,7 +3068,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
         "Deterministic multi-phase workflow engine for SQL→Java translation.",
       args: {
         action: zFn.enum([
-          "start", "advance", "confirm", "retry", "abort", "status", "list",
+          "start", "scan", "advance", "confirm", "retry", "abort", "status", "list",
           "prerequisites", "resume", "fixContinue", "dispatch", "progress",
         ]),
         runId: zFn.string().optional(),
@@ -3212,49 +3212,9 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               }
             }
 
-            // 预扫描：在 engine.start 之前扫描源码生成 inventory-index.json
-            let scanStatus = "skipped"
-            if (args.sourcePath) {
-              try {
-                const index = await scanSource(args.sourcePath as string)
-                const artifactsDir = join(ARTIFACT_DIR, runId)
-                if (!existsSync(artifactsDir)) {
-                  mkdirSync(artifactsDir, { recursive: true })
-                }
-                writeFileSync(
-                  join(artifactsDir, "inventory-index.json"),
-                  JSON.stringify(index, null, 2),
-                  "utf-8",
-                )
-
-                // F4: 校验扫描结果非空
-                const total = index.packages.length + index.tables.length
-                  + index.triggers.length + index.standaloneProcedures.length
-                  + index.views.length + index.sequences.length
-                if (total === 0) {
-                  if (fetchStatus !== "skipped") cleanupDdl(args.sourcePath as string)
-                  return {
-                    title: "Empty Source",
-                    output: `源码目录 "${args.sourcePath}" 未找到任何可处理的 PL/SQL 对象（package、table、trigger、standalone procedure）。请确认目录下包含 .sql/.pks/.pkb/.pls 文件。`,
-                    metadata: { runId, error: "empty_source", dispatch: false },
-                  }
-                }
-
-                scanStatus = `${index.scannerUsed} | ${index.packages.length} pkgs | ${index.tables.length} tables | ${index.triggers.length} triggers`
-                if (fetchStatus !== "skipped") {
-                  scanStatus = `fetch: ${fetchStatus} | scan: ${scanStatus}`
-                }
-              } catch (e: any) {
-                if (fetchStatus !== "skipped") cleanupDdl(args.sourcePath as string)
-                return {
-                  title: "Scan Error",
-                  output: `源码扫描失败: ${e.message}`,
-                  metadata: { runId, error: e.message, dispatch: false },
-                }
-              }
-            }
-
             // 写入 run-context.json：输入参数 + 目录的稳固快照，resume 兜底事实源
+            // scanSource 已移至 inventory worker（见 case "scan"），start 不再扫描——
+            // run 立即落盘可 resume，inventory-index.json 由 inventory worker 第 0 步产出。
             writeRunContext({
               runId,
               originalInput: (args.originalInput as string) ?? "",
@@ -3273,13 +3233,17 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             })
 
             const run = engine.start("sql2java", runId, metadata)
-            getLogger().info("[workflow]", `工作流启动: runId=${runId} sourcePath=${args.sourcePath ?? "N/A"} scan=${scanStatus}`)
+            const startScan = "deferred to inventory worker"
+            const startStatus = fetchStatus !== "skipped"
+              ? `fetch: ${fetchStatus} | scan: ${startScan}`
+              : `scan: ${startScan}`
+            getLogger().info("[workflow]", `工作流启动: runId=${runId} sourcePath=${args.sourcePath ?? "N/A"} ${startStatus}`)
             setWorkflowContext(run)
             const banner = formatPhaseStartBanner(run.currentPhase)
             return {
               title: "Started",
-              output: `${runId} | ${run.currentPhase} | scan: ${scanStatus}${banner}\n📌 调用 todowrite 创建主线阶段进度（${run.currentPhase}=in_progress，其余=pending，所有 priority="medium"）\n\n✔ 工作流已启动，${run.currentPhase} 阶段就绪。\n⏹ 请输出 WORKER_SUMMARY + TASK_STATUS 并结束——编排者会调度执行。`,
-              metadata: { runId, phase: run.currentPhase, scanStatus, nextAction: "dispatch" },
+              output: `${runId} | ${run.currentPhase} | ${startStatus}${banner}\n📌 调用 todowrite 创建主线阶段进度（${run.currentPhase}=in_progress，其余=pending，所有 priority="medium"）\n\n✔ 工作流已启动，${run.currentPhase} 阶段就绪。\n⏹ 请输出 WORKER_SUMMARY + TASK_STATUS 并结束——编排者会调度执行。`,
+              metadata: { runId, phase: run.currentPhase, fetchStatus, nextAction: "dispatch" },
             }
           }
 
@@ -3537,6 +3501,69 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
               title: `→ ${adv.run.currentPhase}`,
               output: advanceOutput,
               metadata: { runId, phase: adv.run.currentPhase, agent: nextAgentName, crossSchemaWarnings: adv.crossSchemaWarnings, reportPath: phaseReportText ? join(ARTIFACT_DIR, runId, "reports", `${completedPhase || "unknown"}-report.txt`) : undefined, nextAction: "dispatch" },
+            }
+          }
+
+          // ── scan — inventory worker 第 0 步：扫描源码生成 inventory-index.json（由 sql-analyst agent 调用）──
+          // scanSource 从 start 搬到此处的产物：worker 在 generateInventory 之前调本 action，
+          // 跑确定性扫描写出 inventory-index.json，下游 generateInventory/generateDependencyGraph 读它。
+          // 幂等：inventory-index.json 已存在则跳过（resume 重入复用）；空源不写文件以便重试。
+          // 不在 ORCHESTRATOR_ONLY_ACTIONS 内 → worker 可调；sourcePath 缺省时从 run-context 恢复。
+          case "scan": {
+            if (!args.runId) throw new Error("runId required")
+            const runId = args.runId
+            const artifactsDir = join(ARTIFACT_DIR, runId)
+            const indexPath = join(artifactsDir, "inventory-index.json")
+
+            // 幂等：resume 重入时复用已扫结果（仿 review 预扫描"已存在则复用"语义）
+            if (existsSync(indexPath)) {
+              return {
+                title: "Scan Skipped",
+                output: `✔ Scan Skipped | inventory-index.json 已存在，复用: ${indexPath}`,
+                metadata: { runId, skipped: true },
+              }
+            }
+
+            // sourcePath 缺省从 run-context 恢复（仿 dispatch 的恢复逻辑）
+            let srcPath = args.sourcePath as string | undefined
+            if (!srcPath) {
+              const ctx = loadRunContext(runId)
+              srcPath = ctx?.params.path ? resolve(ctx.params.path) : undefined
+            }
+            if (!srcPath) {
+              return {
+                title: "Scan Error",
+                output: "✖ Scan Error | 缺少 sourcePath（run metadata 未记录）",
+                metadata: { runId, error: "no_source_path" },
+              }
+            }
+
+            try {
+              const index = await scanSource(srcPath)
+              const total = index.packages.length + index.tables.length
+                + index.triggers.length + index.standaloneProcedures.length
+                + index.views.length + index.sequences.length
+              if (total === 0) {
+                // 空源不写 index → 重试可重扫（幂等）
+                return {
+                  title: "Empty Source",
+                  output: `✖ Empty Source | 源码目录 "${srcPath}" 未找到任何可处理的 PL/SQL 对象（package、table、trigger、standalone procedure）。请确认目录下包含 .sql/.pks/.pkb/.pls 文件。`,
+                  metadata: { runId, error: "empty_source" },
+                }
+              }
+              if (!existsSync(artifactsDir)) mkdirSync(artifactsDir, { recursive: true })
+              writeFileSync(indexPath, JSON.stringify(index, null, 2), "utf-8")
+              return {
+                title: "Scan Done",
+                output: `✔ Scan Done | ${index.scannerUsed} | ${index.packages.length} pkgs | ${index.tables.length} tables | ${index.triggers.length} triggers | ${index.views.length} views | ${index.sequences.length} seqs\ninventory-index.json → ${indexPath}`,
+                metadata: { runId, scannerUsed: index.scannerUsed, indexPath },
+              }
+            } catch (e: any) {
+              return {
+                title: "Scan Error",
+                output: `✖ Scan Error | 源码扫描失败: ${e.message}`,
+                metadata: { runId, error: e.message },
+              }
             }
           }
 
