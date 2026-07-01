@@ -2711,6 +2711,50 @@ export function narrowUpstreamForShard(
 }
 
 /**
+ * 增量回环（fix→review/verify，非分片）upstream 收窄：按 fixedPackages 把 per-package
+ * glob 展开为具体包路径，压缩 worker 可见视野（不读无关包的 analysis/translation/verify）。
+ *
+ * 与 narrowUpstreamForShard 互斥：分片模式（有 shardIndex）走 shard 那套（含 completedPkgs
+ * 跨包依赖、unit 切片）；增量回环 entry 无 shardIndex，仅按 fixedPackages 收窄 per-package glob，
+ * 全局只读 artifact 不动。fix 修一个包就不必读全量 translations/analysis-packages。
+ *
+ * 规则（per-package glob 展开为具体包路径）：
+ *  - analysis-packages/<pkg>.json        → fixedPackages 各包
+ *  - translations/<pkg>/translation.json → fixedPackages 各包
+ *  - translations/<pkg>/verify.json      → fixedPackages 各包（fix 专属）
+ *  - inventory-packages/<pkg>.json       → fixedPackages 各包（防御性，当前 fix/review/verify upstream 无此 glob）
+ *  - 其余（plan.json/scaffold.json/dedup.json/dependency-graph.json/review-static.json/
+ *    review.json/各 summary）原样保留
+ *
+ * 大小写约定同 narrowUpstreamForShard：直接拼 ${pkg}，目录名一致性由 translate 写入时保证
+ * （D12 已校验 fixedPackages 属于 inventory，engine-core.ts:1493-1508）。
+ */
+export function narrowUpstreamForIncremental(
+  upstream: readonly string[],
+  fixedPackages: readonly string[],
+): string[] {
+  if (fixedPackages.length === 0) return [...upstream]
+  const pkgs = fixedPackages
+    .filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+    .map(p => p.trim())
+  if (pkgs.length === 0) return [...upstream]
+  return upstream.flatMap(a => {
+    switch (a) {
+      case "inventory-packages/*.json":
+        return pkgs.map(p => `inventory-packages/${p}.json`)
+      case "analysis-packages/*.json":
+        return pkgs.map(p => `analysis-packages/${p}.json`)
+      case "translations/*/translation.json":
+        return pkgs.map(p => `translations/${p}/translation.json`)
+      case "translations/*/verify.json":
+        return pkgs.map(p => `translations/${p}/verify.json`)
+      default:
+        return [a]
+    }
+  })
+}
+
+/**
  * 本分片某 unit 的切片相对路径（artifactsDir 相对）。narrowUpstreamForShard 用——只算路径字符串，
  * 不读不写（实际落盘由 generateUnitSlices 在 dispatch 时完成）。phase 决定注入哪些切片：
  *  - analyze: source.sql + inventory-slice.json + meta.json（结构来自 inventory-packages）
@@ -4550,6 +4594,12 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                   functionOwnership,
                   scopeConstOnlyPkgs: constOnlyScopePkgs(readScope(run.metadata as Record<string, unknown>), shardTargetUnits),
                 })
+              } else if (currentEntry?.incrementalContext?.targetPackages?.length) {
+                // 增量回环（fix→review/verify，非分片）：按 fixedPackages 收窄 per-package glob，
+                // 压缩 worker 可见视野（不读无关包的 analysis/translation/verify）。与 shard 分支互斥
+                // （增量 entry 无 shardIndex）。第一次 review（主线，无 targetPackages）不进此分支，保持全量。
+                upstream = narrowUpstreamForIncremental(
+                  upstream, currentEntry.incrementalContext.targetPackages as string[])
               }
               workOrderParts.push(`- upstreamArtifacts:`)
               for (const a of upstream) {
