@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# 从 grammar/ 重新生成 antlr4ts PL/SQL parser 到 generated/plsql/。
-# 依赖：antlr4ts-cli（需 Java 8+，本机 Java 1.8 可用）。运行时不重新生成，产物已入库。
+# 从 grammar/ 重新生成 antlr4ts PL/SQL parser 到 .opencode/workflow/plsql-ast/（插件源码一部分）。
+# 依赖：antlr4ts-cli（仅生成时需 Java 8+）。运行态不重新生成、不依赖 Java，只用入库的生成 TS。
 #
-# 用法：从仓库根目录执行  bash .opencode/workflow/generated/plsql/regen.sh
+# 用法：从仓库根目录执行  bash .opencode/workflow/plsql-ast/regen.sh
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-OUT=.opencode/workflow/generated/plsql
+OUT=.opencode/workflow/plsql-ast
 echo "[regen] antlr4ts 生成 → $OUT"
 # antlr4ts-cli 仅生成时需要（依赖 Java 8+），按需 npx 拉取，不入库。
 npx -y -p antlr4ts-cli@0.5.0-alpha.4 antlr4ts \
