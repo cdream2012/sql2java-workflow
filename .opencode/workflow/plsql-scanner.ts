@@ -472,8 +472,12 @@ function extractParams(params: ParameterContext[]): ParamInfo[] {
     const name = cleanName(p.parameter_name()?.text ?? p.text ?? "")
     if (!name) continue
     const type = normalizeTypeText(ctxText(p.type_spec())) || "unknown"
-    const hasIn = !!p.IN()
-    const hasOut = !!p.OUT()
+    // antlr4ts 生成的 IN()/OUT()/INOUT() 返回 TerminalNode[]——空数组 [] 在 JS 中是 truthy，
+    // 须用 .length > 0 判定（旧实现 !!p.OUT() 恒 true，导致所有参数 mode 误判为 "IN OUT"）。
+    // grammar: parameter_name (IN | OUT | INOUT | NOCOPY)* type_spec? —— INOUT 单 token 等同 IN OUT。
+    const inout = p.INOUT().length > 0
+    const hasIn = p.IN().length > 0 || inout
+    const hasOut = p.OUT().length > 0 || inout
     let mode: ParamInfo["mode"]
     if (hasIn && hasOut) mode = "IN OUT"
     else if (hasOut) mode = "OUT"
@@ -671,15 +675,21 @@ function extractTableFromText(code: string, tables: TableIndex[], relPath: strin
     const startIdx = m.index ?? 0
     // 表体到匹配的 ')' —— 简化：取到下一个 '\n/\n' 或下一个 CREATE 前
     const bodyEnd = nextStatementBoundary(code, startIdx)
-    const body = code.slice(startIdx, bodyEnd)
+    const fullBody = code.slice(startIdx, bodyEnd)
+    // 列定义从表头的 '(' 之后开始——否则首行 "CREATE TABLE T_ITEM (" 会被列正则误匹配为
+    // 列名 CREATE / 类型 TABLE（旧实现 body 从 CREATE 起切，首列产出垃圾 "CREATE"）。
+    const parenIdx = fullBody.indexOf("(")
+    const body = parenIdx >= 0 ? fullBody.slice(parenIdx + 1) : fullBody
     const columns: ColumnIndex[] = []
     const pkCols = new Set<string>()
     const foreignKeys: ForeignKeyInfo[] = []
-    // 列定义行（粗提取）
-    for (const colMatch of body.matchAll(/^\s*([\w]+)\s+([\w()]+(?:\s+[\w()]+)*?)(\s+DEFAULT\s+[^,]+)?(\s*,)?/gim)) {
+    // 列定义行（粗提取）。类型字符集含逗号/点，容纳 NUMBER(20,6) 等带精度的类型
+    //（旧 [\w()] 遇精度逗号截断成 "NUMBER(20"）。
+    for (const colMatch of body.matchAll(/^\s*([\w]+)\s+([\w(),.]+(?:\s+[\w(),.]+)*?)(\s+DEFAULT\s+[^,]+)?(\s*,)?/gim)) {
       const colName = cleanName(colMatch[1])
       if (!colName || /^(CONSTRAINT|PRIMARY|FOREIGN|UNIQUE|CHECK|KEY|NOT|NULL)\b/i.test(colName)) continue
-      const type = normalizeTypeText(colMatch[2])
+      // 去尾逗号：类型正则的字符集含逗号（为 NUMBER(20,6) 精度），UDT 列 "t_dimension," 会误带列分隔逗号
+      const type = normalizeTypeText(colMatch[2].replace(/,\s*$/, ""))
       const rest = colMatch[0]
       const notNull = /\bNOT\s+NULL\b/i.test(rest)
       const inlinePk = /\bPRIMARY\s+KEY\b/i.test(rest)
