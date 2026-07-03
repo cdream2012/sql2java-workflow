@@ -22,6 +22,7 @@ import { PlSqlParser } from "./plsql-ast/PlSqlParser"
 import { PlSqlParserListener } from "./plsql-ast/PlSqlParserListener"
 import type { Procedure_specContext, Function_specContext, Procedure_bodyContext, Function_bodyContext, Create_packageContext, Create_package_bodyContext, Create_function_bodyContext, Create_procedure_bodyContext, Variable_declarationContext, Exception_declarationContext, Type_declarationContext, Call_statementContext, Standard_functionContext, Routine_nameContext } from "./plsql-ast/PlSqlParser"
 import { CharStreams, CommonTokenStream, Interval } from "antlr4ts"
+import type { CharStream } from "antlr4ts/CharStream"
 import { ParseTreeWalker } from "antlr4ts/tree/ParseTreeWalker"
 import { ParserRuleContext } from "antlr4ts/ParserRuleContext"
 import { TerminalNode } from "antlr4ts/tree/TerminalNode"
@@ -129,6 +130,39 @@ export interface InventoryIndex {
 }
 
 // ── 通用辅助 ────────────────────────────────────────────────────────────────────
+
+/**
+ * 大小写不敏感 CharStream 包装器。
+ *
+ * grammar 声明了 `caseInsensitive=true`，但 antlr4ts 4.7.2 不支持该选项（4.13+ 才有）——
+ * 被忽略，生成的 lexer 大小写敏感（关键字 token 是大写 'CREATE' 等）。真实项目 PL/SQL 常用
+ * 小写关键字（create/package/procedure），会解析失败。
+ *
+ * 解法：包装 CharStream，把 LA()（lookahead）返回的 a-z 转成 A-Z，让 lexer 按大写关键字匹配。
+ * **只转 LA，不转 getText**——故字符串字面量 / 标识符 / 类型定义的原文大小写保留（通过
+ * tokens.getText(sourceInterval) 取到原始文本），仅 token 匹配大小写不敏感。
+ *
+ * 注意：antlr4ts IntStream 的 `index` / `size` / `sourceName` 是 readonly **属性**（getter），
+ * `consume`/`LA`/`mark`/`release`/`seek` 是方法——不能用方法形式实现 index/size，否则 lexer
+ * 的 `this._input.index`（属性访问）取到方法函数，比较 `index < size` 变 NaN → 死循环。
+ */
+class UpperCaseCharStream implements CharStream {
+  constructor(private readonly src: CharStream) {}
+  LA(i: number): number {
+    const c = this.src.LA(i)
+    // a-z (0x61-0x7A) → A-Z；EOF(-1) 与其他字符不变
+    if (c >= 0x61 && c <= 0x7a) return c - 0x20
+    return c
+  }
+  getText(interval: Interval): string { return this.src.getText(interval) }
+  consume(): void { this.src.consume() }
+  mark(): number { return this.src.mark() }
+  release(marker: number): void { this.src.release(marker) }
+  seek(index: number): void { this.src.seek(index) }
+  get index(): number { return this.src.index }
+  get size(): number { return this.src.size }
+  get sourceName(): string { return this.src.sourceName }
+}
 
 /** 规范化标识符：去引号、去空白、大写、保留点（包名 fm.xxx 的点编码子目录路径） */
 function cleanName(name: string): string {
@@ -564,7 +598,7 @@ export async function scanWithAST(roots: string[], primaryBase: string): Promise
 
     // 包/子程序/独立过程走 AST
     try {
-      const lex = new PlSqlLexer(CharStreams.fromString(code))
+      const lex = new PlSqlLexer(new UpperCaseCharStream(CharStreams.fromString(code)))
       const tokens = new CommonTokenStream(lex)
       const parser = new PlSqlParser(tokens)
       // 默认错误恢复：不清空 error listener 的话默认 ConsoleErrorListener 会打印；

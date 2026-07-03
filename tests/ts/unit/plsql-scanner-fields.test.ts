@@ -208,3 +208,39 @@ describe("plsql-scanner AST 字段抽取 (tiny fixture)", () => {
     })
   })
 })
+
+// ═══════════════════════════════════════════════════════════════
+// 大小写不敏感关键字（真实项目常用小写关键字 create/package/procedure）
+// grammar 声明 caseInsensitive=true 但 antlr4ts 4.7.2 忽略；scanner 用 UpperCaseCharStream
+// 包装 lexer 输入（只转 LA，保留原文）实现大小写不敏感匹配。
+// ═══════════════════════════════════════════════════════════════
+
+describe("plsql-scanner 大小写不敏感关键字", () => {
+  it("小写关键字 + 小写字符串值：结构抽取正常，字符串原文保留", async () => {
+    const tmp = await import("node:fs/promises").then(fs => fs.mkdtemp(import.meta.dirname + "/../../../.tmp-lower-"))
+    const { writeFileSync } = await import("node:fs")
+    writeFileSync(`${tmp}/lower_pkg.sql`, `create or replace package body lower_pkg as
+  c_msg constant varchar2(20) := 'hello world';
+  procedure entry_proc is
+  begin
+    helper_proc('test');
+  end;
+  procedure helper_proc(p_msg varchar2) is begin null; end;
+end;
+/`, "utf-8")
+    try {
+      const inv = await scanWithAST([tmp], tmp)
+      expect(inv.scannerUsed).toBe("ast")
+      const pkg = inv.packages.find(p => p.packageName === "LOWER_PKG")
+      expect(pkg, "小写关键字包应被识别").toBeDefined()
+      // 字符串常量值原文保留（getText 取原文，仅 LA 转大写）
+      const c = pkg!.constants.find(x => x.name === "C_MSG")
+      expect(c?.value).toBe("'hello world'")
+      // 同包裸名调用边
+      const entry = inv.subprograms.find(s => s.name === "ENTRY_PROC")
+      expect(entry?.directCalls.some(d => d.name === "HELPER_PROC")).toBe(true)
+    } finally {
+      await import("node:fs/promises").then(fs => fs.rm(tmp, { recursive: true, force: true }))
+    }
+  }, 30000)
+})
