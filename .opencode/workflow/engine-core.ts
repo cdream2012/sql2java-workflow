@@ -23,6 +23,26 @@ import { z } from "zod"
 import { parseQualified, pkgOf, refOf } from "./refname"
 import { buildDependencyGraph } from "./dependency-graph"
 import { parseInventoryPackage } from "./package-parser"
+import { readScope } from "./scope-computer"
+
+/**
+ * 从 artifactsDir/run.json 读 scoped run 的「期望覆盖包」集（metadata.scopePackages）。
+ * 非 scoped run（无 scopePackages）返回 null，调用方回退到 inventory.packageNames。
+ *
+ * lazy inventory 下 inventory.json.packageNames 是入口包闭包（⊇ scope.scopePackages），
+ * review/verify 的覆盖检查须以 scope.scopePackages 为期望集，否则会误报闭包内但 scope 外的包「缺失」。
+ */
+export function readScopePackagesFromArtifacts(artifactsDir: string): string[] | null {
+  try {
+    const runPath = join(artifactsDir, "run.json")
+    if (!existsSync(runPath)) return null
+    const run = JSON.parse(readFileSync(runPath, "utf-8")) as { metadata?: Record<string, unknown> | undefined }
+    const scope = readScope(run.metadata)
+    return scope && scope.scopePackages.length > 0 ? scope.scopePackages : null
+  } catch {
+    return null
+  }
+}
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────
 

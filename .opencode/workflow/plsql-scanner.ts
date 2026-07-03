@@ -17,6 +17,7 @@ import { readFileSync, readdirSync, existsSync } from "node:fs"
 import { join, extname, relative, sep } from "node:path"
 import { GENERATED_OUTPUT_DIR, GENERATED_MARKER, VALID_SOURCE_EXTENSIONS } from "./constants"
 import { getLogger } from "./workflow-logger"
+import { parseMainEntry } from "./scope-computer"
 import { PlSqlLexer } from "./plsql-ast/PlSqlLexer"
 import { PlSqlParser } from "./plsql-ast/PlSqlParser"
 import { PlSqlParserListener } from "./plsql-ast/PlSqlParserListener"
@@ -655,24 +656,62 @@ export async function scanWithAST(roots: string[], primaryBase: string): Promise
     extractSequenceFromText(code, sequences, relPath)
 
     // 包/子程序/独立过程走 AST
-    try {
-      const lex = new PlSqlLexer(new UpperCaseCharStream(CharStreams.fromString(code)))
-      const tokens = new CommonTokenStream(lex)
-      const parser = new PlSqlParser(tokens)
-      // 默认错误恢复：不清空 error listener 的话默认 ConsoleErrorListener 会打印；
-      // 挂一个收集 warning 的 listener，不抛。
-      lex.removeErrorListeners()
-      parser.removeErrorListeners()
-      const tree = parser.sql_script()
-      const listener = new PlSqlStructListener(relPath, packages, subprograms, standaloneProcedures, warnings, tokens)
-      ParseTreeWalker.DEFAULT.walk(listener as any, tree)
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      warnings.push(`AST 解析失败，跳过该文件的包结构: ${relPath} — ${msg}`)
-      getLogger().warn("[plsql-scanner]", `AST 解析失败: ${relPath} — ${msg}`)
-    }
+    parseFileAst(code, relPath, packages, subprograms, standaloneProcedures, warnings)
   }
 
+  return finalizeInventoryIndex(primaryBase, packages, subprograms, standaloneProcedures, tables, triggers, views, sequences, warnings, "ast")
+}
+
+/**
+ * 单文件 AST 解析：lex/parse/walk，把包结构累积进共享 Map。
+ * scanWithAST（全量）与 scanSourceLazy（闭包 BFS）复用同一份每文件解析逻辑。
+ * 失败不抛：收集 warning 跳过该文件（默认错误恢复，与原内联 try 行为一致）。
+ */
+function parseFileAst(
+  code: string,
+  relPath: string,
+  packages: Map<string, PackageInfo>,
+  subprograms: Map<string, SubprogramInfo[]>,
+  standaloneProcedures: StandaloneProcIndex[],
+  warnings: string[],
+): void {
+  try {
+    const lex = new PlSqlLexer(new UpperCaseCharStream(CharStreams.fromString(code)))
+    const tokens = new CommonTokenStream(lex)
+    const parser = new PlSqlParser(tokens)
+    // 默认错误恢复：不清空 error listener 的话默认 ConsoleErrorListener 会打印；
+    // 挂一个收集 warning 的 listener，不抛。
+    lex.removeErrorListeners()
+    parser.removeErrorListeners()
+    const tree = parser.sql_script()
+    const listener = new PlSqlStructListener(relPath, packages, subprograms, standaloneProcedures, warnings, tokens)
+    ParseTreeWalker.DEFAULT.walk(listener as any, tree)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    warnings.push(`AST 解析失败，跳过该文件的包结构: ${relPath} — ${msg}`)
+    getLogger().warn("[plsql-scanner]", `AST 解析失败: ${relPath} — ${msg}`)
+  }
+}
+
+/**
+ * scanWithAST / scanSourceLazy 共用的后处理 + 装配 InventoryIndex：
+ * 扁平化 subprograms + overloadIndex + standalone 虚拟包注入 + directCalls/packageRefs 后过滤去重
+ * + 回填包 functions/procedures 名索引。
+ * 在 lazy 模式下，subprograms 仅为闭包内子程序——后过滤按已知（闭包内）包名收窄，
+ * out-of-closure 引用被丢弃，正是 scoped run 想要的行为。
+ */
+function finalizeInventoryIndex(
+  primaryBase: string,
+  packages: Map<string, PackageInfo>,
+  subprograms: Map<string, SubprogramInfo[]>,
+  standaloneProcedures: StandaloneProcIndex[],
+  tables: TableIndex[],
+  triggers: TriggerIndex[],
+  views: ViewIndex[],
+  sequences: SequenceIndex[],
+  warnings: string[],
+  scannerUsed: "ast" | "regex",
+): InventoryIndex {
   // 扁平化 subprograms，赋 overloadIndex（同名>1 才标序）
   const subprogramList: SubprogramInfo[] = []
   for (const slots of subprograms.values()) {
@@ -745,7 +784,7 @@ export async function scanWithAST(roots: string[], primaryBase: string): Promise
   return {
     sourcePath: primaryBase,
     scannedAt: new Date().toISOString(),
-    scannerUsed: "ast",
+    scannerUsed,
     warnings,
     packages: pkgList,
     subprograms: subprogramList,
@@ -1070,8 +1109,8 @@ export async function scanSource(sourceOrOpts: string | ScanSourceOpts): Promise
   const roots = twoDir ? [headerPath!, bodyPath!] : [primaryBase]
 
   if (entry) {
-    // Phase 2.5 入口范围扫描尚未实现；当前退化为全量 + warning
-    getLogger().warn("[plsql-scanner]", `entry=${entry} 入口范围扫描尚未实现，退化为全量扫描`)
+    // entry 全量扫描已被 scanSourceLazy 取代；保留参数向后兼容，忽略并 warning。
+    getLogger().warn("[plsql-scanner]", `scanSource 收到 entry=${entry}，入口范围扫描请改用 scanSourceLazy；此处忽略，按全量扫描`)
   }
 
   try {
@@ -1080,4 +1119,114 @@ export async function scanSource(sourceOrOpts: string | ScanSourceOpts): Promise
     getLogger().error("[plsql-scanner]", `AST scan failed, falling back to regex: ${e}`)
     return scanWithRegex(roots, primaryBase)
   }
+}
+
+export type ScanSourceLazyOpts = { sourcePath?: string; headerPath?: string; bodyPath?: string; mainEntry: string }
+
+/**
+ * 入口闭包惰性扫描：只为 mainEntry 过程级入口的可达闭包解析包/子程序 artifact，
+ * 避免大项目全量 antlr 解析（4M 行全量 ~40min → 闭包 30% ~13min）。
+ *
+ * - Phase 0（regex，不碰 antlr）：遍历全部源文件，建 `包名→文件` 完整映射 + 全量抽
+ *   tables/triggers/views/sequences（DDL 不在包体，BFS 跟不到，须全量）。实测 ~1.2M lines/s。
+ * - Phase 1（antlr BFS，文件粒度）：入口包文件入队 → 解析得 directCalls/packageRefs →
+ *   跟限定名 `pkg.X` 查 Phase 0 映射找文件，未访问则解析，展开到队空。
+ *   裸名 `proc(x)` 归同包不展开（跨包调用 PL/SQL 须限定，非回归）。
+ *
+ * 非过程级 mainEntry（包级/无点）/ 入口包不在源码 → 回退全量 scanSource 或硬失败。
+ * 失败由调用方 catch 回退 scanSource（与 AST→regex 回退语义一致）。
+ *
+ * **闭包 ⊇ scope.scopePackages**：BFS 解析整入口包（所有子程序）的可达包，
+ * ensureRunScope 的 computeClosure 在此部分产物上算 METHOD 闭包子集，一致无循环依赖。
+ */
+export async function scanSourceLazy(opts: ScanSourceLazyOpts): Promise<InventoryIndex> {
+  const { sourcePath, headerPath, bodyPath, mainEntry } = opts
+  const twoDir = !!(headerPath && bodyPath)
+  const primaryBase = twoDir ? headerPath! : (sourcePath ?? headerPath ?? bodyPath)
+  if (!primaryBase) throw new Error("scanSourceLazy 需要 sourcePath 或 (headerPath + bodyPath)")
+  const roots = twoDir ? [headerPath!, bodyPath!] : [primaryBase]
+
+  const parsed = parseMainEntry(mainEntry)
+  if (!parsed) {
+    // 非过程级（纯包名/无点）→ 无闭包概念，回退全量
+    getLogger().warn("[plsql-scanner]", `scanSourceLazy: mainEntry=${mainEntry} 非过程级，回退全量 scanSource`)
+    return scanSource({ sourcePath, headerPath, bodyPath })
+  }
+  const entryPkgUpper = parsed.pkg.toUpperCase()
+
+  // ── Phase 0: regex 全量扫，建 包→文件 映射 + 全量抽 table/trigger/view/sequence ──
+  const files = collectSourceFiles(roots)
+  const packageFileMap = new Map<string, { files: string[] }>()
+  const tables: TableIndex[] = []
+  const triggers: TriggerIndex[] = []
+  const views: ViewIndex[] = []
+  const sequences: SequenceIndex[] = []
+  const pkgDeclRe = /CREATE\s+(?:OR\s+REPLACE\s+)?PACKAGE\s+(BODY\s+)?([A-Za-z_][\w.]*)/gi
+  // collectSourceFiles 不去重，双目录重叠时会返回重复文件 → 须按路径去重（与 scanWithAST 的 processed Set 一致）
+  const seenFiles = new Set<string>()
+  for (const filePath of files) {
+    if (seenFiles.has(filePath)) continue
+    seenFiles.add(filePath)
+    const rawCode = readFileSync(filePath, "utf-8").replace(/\r\n?/g, "\n")
+    const relPath = storedFilePath(filePath, primaryBase)
+    const code = stripSqlPlusCommands(rawCode)
+    extractTableFromText(code, tables, relPath)
+    extractTriggerFromText(code, triggers, relPath)
+    extractViewFromText(code, views, relPath)
+    extractSequenceFromText(code, sequences, relPath)
+    for (const m of code.matchAll(pkgDeclRe)) {
+      const name = cleanName(m[2])
+      if (!name) continue
+      let entry = packageFileMap.get(name)
+      if (!entry) { entry = { files: [] }; packageFileMap.set(name, entry) }
+      if (!entry.files.includes(filePath)) entry.files.push(filePath)
+    }
+  }
+
+  const entryMap = packageFileMap.get(entryPkgUpper)
+  if (!entryMap) {
+    throw new Error(`scanSourceLazy: 入口包 ${parsed.pkg} 未在源码中找到 CREATE PACKAGE 声明（检查包名拼写 / 大小写 / mainEntry 格式）`)
+  }
+
+  // ── Phase 1: antlr BFS，文件粒度，只解析闭包内文件 ──
+  const packages = new Map<string, PackageInfo>()
+  const subprograms = new Map<string, SubprogramInfo[]>()
+  const standaloneProcedures: StandaloneProcIndex[] = []
+  const warnings: string[] = [`lazy 扫描：仅解析入口 ${parsed.pkg}.${parsed.refName} 的可达闭包，out-of-closure 包未落盘`]
+  const visited = new Set<string>()
+  const queue: string[] = [...entryMap.files]
+  while (queue.length > 0) {
+    const filePath = queue.shift()!
+    if (visited.has(filePath)) continue
+    visited.add(filePath)
+    const rawCode = readFileSync(filePath, "utf-8").replace(/\r\n?/g, "\n")
+    const code = stripSqlPlusCommands(rawCode)
+    const relPath = storedFilePath(filePath, primaryBase)
+    parseFileAst(code, relPath, packages, subprograms, standaloneProcedures, warnings)
+    // 从已解析子程序的原始 directCalls/packageRefs 抽目标包，展开闭包。
+    // directCalls/packageRefs 的 package 字段已 cleanName（大写），与 packageFileMap 键一致。
+    // 每解析一个文件就扫全部子程序：直接调用边可能在 body 文件解析后才出现（spec 先入队时无 directCalls），
+    // visited 去重避免重复解析；子程序遍历开销远小于 antlr，可接受。
+    const targetPkgs = new Set<string>()
+    for (const slots of subprograms.values()) {
+      for (const s of slots) {
+        const selfPkg = s.belongToPackage.toUpperCase()
+        for (const c of s.directCalls) {
+          const p = c.package.toUpperCase()
+          if (p !== selfPkg) targetPkgs.add(p)
+        }
+        for (const r of s.packageRefs) {
+          const p = r.package.toUpperCase()
+          if (p !== selfPkg) targetPkgs.add(p)
+        }
+      }
+    }
+    for (const p of targetPkgs) {
+      const em = packageFileMap.get(p)
+      if (!em) continue  // 非项目包（SQL 内建 / 外部），跳过
+      for (const f of em.files) if (!visited.has(f)) queue.push(f)
+    }
+  }
+
+  return finalizeInventoryIndex(primaryBase, packages, subprograms, standaloneProcedures, tables, triggers, views, sequences, warnings, "ast")
 }

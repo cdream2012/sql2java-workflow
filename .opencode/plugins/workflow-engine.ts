@@ -24,7 +24,7 @@ import {
   getArtifactFilename,
   PackageArtifactSchema, SubprogramArtifactSchema, TableArtifactSchema,
 } from "../workflow/artifact-schemas"
-import { scanSource } from "../workflow/plsql-scanner"
+import { scanSource, scanSourceLazy } from "../workflow/plsql-scanner"
 import { refNamesForPackage, pkgOf, refOf } from "../workflow/refname"
 import { parseInventoryPackage, parseAnalysisPackage, type InventoryPackageParsed } from "../workflow/package-parser"
 import { buildInventoryFromIndex } from "../workflow/inventory-builder"
@@ -3602,12 +3602,15 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             let srcPath = args.sourcePath as string | undefined
             let headerPath = args.headerPath as string | undefined
             let bodyPath = args.bodyPath as string | undefined
+            // mainEntry 从 run-context 取（start 时写入）；args 可覆盖。用于 scanSourceLazy 闭包扫描。
+            let mainEntry = (args.mainEntry as string | undefined) ?? undefined
+            const ctx = loadRunContext(runId)
             if (!srcPath && (!headerPath || !bodyPath)) {
-              const ctx = loadRunContext(runId)
               if (ctx?.params.path) srcPath = resolve(ctx.params.path)
               if (ctx?.params.headerPath) headerPath = resolve(ctx.params.headerPath)
               if (ctx?.params.bodyPath) bodyPath = resolve(ctx.params.bodyPath)
             }
+            if (!mainEntry) mainEntry = ctx?.mainEntry
             if (!srcPath && !headerPath && !bodyPath) {
               return {
                 title: "Scan Error",
@@ -3617,7 +3620,20 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             }
 
             try {
-              const index = await scanSource({ sourcePath: srcPath, headerPath, bodyPath })
+              // 过程级 mainEntry → 仅解析入口闭包（scanSourceLazy 内部判定过程级，
+              // 非过程级/无点自动回退全量 scanSource）。lazy 失败（如入口包不在源码）回退全量，
+              // 让 advance 期 ensureRunScope 兜底报「入口不可解析」。
+              let index
+              if (mainEntry) {
+                try {
+                  index = await scanSourceLazy({ sourcePath: srcPath, headerPath, bodyPath, mainEntry })
+                } catch (e: any) {
+                  getLogger().warn("[scan]", `scanSourceLazy 失败，回退全量 scanSource: ${e?.message ?? e}`)
+                  index = await scanSource({ sourcePath: srcPath, headerPath, bodyPath })
+                }
+              } else {
+                index = await scanSource({ sourcePath: srcPath, headerPath, bodyPath })
+              }
               const total = index.packages.length + index.tables.length
                 + index.triggers.length + index.standaloneProcedures.length
                 + index.views.length + index.sequences.length

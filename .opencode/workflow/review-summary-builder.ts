@@ -13,7 +13,7 @@
 import { readFileSync, existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { ReviewSchema, ReviewSummarySchema, ReviewStaticSchema } from "./artifact-schemas"
-import { formatZodIssues } from "./engine-core"
+import { formatZodIssues, readScopePackagesFromArtifacts } from "./engine-core"
 import { getLogger } from "./workflow-logger"
 
 interface StaticFindingLite {
@@ -47,19 +47,30 @@ function loadStaticFindings(artifactsDir: string): StaticFindingLite[] {
 
 const BLOCKING_SEVERITY = new Set(["critical", "major"])
 
-/** 对照 inventory.json.packageNames 检查 review.json 是否覆盖全部包；缺则返回缺失列表（大小写不敏感） */
+/**
+ * 检查 review.json 是否覆盖「期望包集」；缺则返回缺失列表（大小写不敏感）。
+ * 期望集：scoped run 用 metadata.scopePackages（lazy inventory 下 inventory.packageNames
+ * 是入口包闭包 ⊇ scope，须以 scope 为准，否则闭包内但 scope 外的包会被误报缺失）；
+ * 非 scoped run 回退 inventory.json.packageNames。
+ */
 function findMissingPackages(artifactsDir: string, presentPackages: string[]): string[] {
-  const invPath = join(artifactsDir, "inventory.json")
-  if (!existsSync(invPath)) return [] // inventory 缺失时不阻断（由 prerequisite/validateArtifactOnDisk 兜底）
-  try {
-    const inv = JSON.parse(readFileSync(invPath, "utf-8")) as { packageNames?: unknown }
-    const expected = Array.isArray(inv.packageNames)
-      ? inv.packageNames.filter((n): n is string => typeof n === "string" && n.length > 0)
-      : []
+  const scopePkgs = readScopePackagesFromArtifacts(artifactsDir)
+  let expected: string[]
+  if (scopePkgs) {
+    expected = scopePkgs
+  } else {
+    const invPath = join(artifactsDir, "inventory.json")
+    if (!existsSync(invPath)) return [] // inventory 缺失时不阻断（由 prerequisite/validateArtifactOnDisk 兜底）
+    try {
+      const inv = JSON.parse(readFileSync(invPath, "utf-8")) as { packageNames?: unknown }
+      expected = Array.isArray(inv.packageNames)
+        ? inv.packageNames.filter((n): n is string => typeof n === "string" && n.length > 0)
+        : []
+    } catch { return [] }
     if (expected.length === 0) return []
-    const presentUpper = new Set(presentPackages.map(p => p.toUpperCase()))
-    return expected.filter(p => !presentUpper.has(p.toUpperCase()))
-  } catch { return [] }
+  }
+  const presentUpper = new Set(presentPackages.map(p => p.toUpperCase()))
+  return expected.filter(p => !presentUpper.has(p.toUpperCase()))
 }
 
 export function buildReviewSummary(artifactsDir: string): {

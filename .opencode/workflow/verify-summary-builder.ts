@@ -21,7 +21,7 @@ import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs"
 import { join, relative } from "node:path"
 import { z } from "zod"
 import { PlanSchema, VerifySummarySchema } from "./artifact-schemas"
-import { formatZodIssues } from "./engine-core"
+import { formatZodIssues, readScopePackagesFromArtifacts } from "./engine-core"
 import { getLogger } from "./workflow-logger"
 import { COVERAGE_LINE_THRESHOLD, COVERAGE_BRANCH_THRESHOLD } from "./constants"
 
@@ -183,7 +183,13 @@ function readProjectRoot(artifactsDir: string): string {
   return pr
 }
 
+/**
+ * 期望覆盖包集：scoped run 用 metadata.scopePackages（lazy inventory 下 inventory.packageNames
+ * 是入口包闭包 ⊇ scope，verify 只须校验 scope 闭包被翻译/验证）；非 scoped 回退 inventory.packageNames。
+ */
 function readPackageList(artifactsDir: string): string[] {
+  const scopePkgs = readScopePackagesFromArtifacts(artifactsDir)
+  if (scopePkgs) return scopePkgs
   const inv = readJson(join(artifactsDir, "inventory.json"))
   const names = (inv?.packageNames as string[]) ?? []
   return names.filter((n): n is string => typeof n === "string" && n.length > 0)
