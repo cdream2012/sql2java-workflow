@@ -99,7 +99,7 @@ permission:
 ### 目标
 
 把 `inventory-index.json`（全字段）转换为下游消费的
-`inventory-packages/{PKG_NAME}.json` + `inventory.json`。这一步由代码（`generateInventory` action）完成，你不读源码、不做 LLM 抽取。
+`packages/{PKG_NAME}.json` + `subprograms/{PKG.METHOD}.json` + `tables/{TABLE}.json` + `inventory.json`。这一步由代码（`generateInventory` action）完成，你不读源码、不做 LLM 抽取。
 
 ### 输入
 
@@ -107,9 +107,9 @@ permission:
 
 ### 输出
 
-- **逐包 artifact**：`${artifactsDir}/inventory-packages/{PKG_NAME}.json`
-- **索引 artifact**：`${artifactsDir}/inventory.json`（sourcePath + packageNames + tables/triggers/views/sequences/standaloneProcedures）
-- **格式**：逐包文件符合 InventoryPackageSchema，索引符合 InventorySchema
+- **逐包 artifact**：`${artifactsDir}/packages/{PKG_NAME}.json`（+ `subprograms/{PKG.METHOD}.json` 逐子程序 + `tables/{TABLE}.json` 逐表）
+- **索引 artifact**：`${artifactsDir}/inventory.json`（sourcePath + packageNames + tableNames + triggers/views/sequences）
+- **格式**：逐包符合 PackageArtifactSchema、逐子程序符合 SubprogramArtifactSchema、逐表符合 TableArtifactSchema、索引符合 InventorySchema
 
 ### 工作步骤
 
@@ -126,45 +126,47 @@ workflow({ action: "scan", runId: "<runId>" })
 - `✔ Scan Skipped`（已存在）→ 复用，继续 Step 1。
 - `✖ Empty Source` 或 `✖ Scan Error` → 源码不可处理，**不要继续 Step 1**。输出 `WORKER_SUMMARY`（Status: failed）+ `TASK_STATUS` `{"status":"failed","notes":"empty source / scan error"}` 结束，由编排者按失败重试机制处理。
 
-#### Step 1：代码生成 inventory + dependency-graph.json（核心）
+#### Step 1：代码生成 inventory + complexity/analysis-packages 兜底（核心）
 
 inventory 阶段产出两类代码 artifact（都零 LLM，调 action 即可）：
 
-1. 生成 inventory 产物（`buildInventoryFromIndex`，内部 Zod 校验）：
+1. 生成 inventory 产物（`buildInventoryFromIndex`，内部 Zod 校验）：`packages/{PKG}.json` + `subprograms/{PKG.METHOD}.json` + `tables/{TABLE}.json` + `inventory.json`。
 
 ```
 workflow({ action: "generateInventory", runId: "<runId>" })
 ```
 
-2. 生成 dependency-graph.json（依赖图 meta：callGraph / packageDependency / translationOrder / sccGroups / complexity，`buildDependencyGraphFromIndex` 内部 Zod 校验）+ 无子程序包的空 `analysis-packages/{PKG}.json`：
+2. 生成 complexity（写入 `packages/{PKG}.json`）+ 无子程序包的空 `analysis-packages/{PKG}.json` 兜底（`buildDependencyGraphFromIndex`，内部 Zod 校验）：
 
 ```
 workflow({ action: "generateDependencyGraph", runId: "<runId>" })
 ```
+
+> 依赖图本身（callGraph / packageDependency / translationOrder / sccGroups / procedureOrder / functionOwnership）**不落盘**，由下游 `buildDependencyGraph` 从 `subprograms/*.json` directCalls 按需推导（inventory 阶段不产出 dependency-graph.json）。
 
 两者都读 `inventory-index.json`，互不依赖，顺序无关。**两个都成功**后输出 WORKER_SUMMARY 结束——编排者会调 advance 推进到 analyze。
 - 任一失败（`... Generation Failed`）→ 可重试该 action 一次；仍失败则回退到下方"fallback：手工生成"。
 
 #### Step 2：被重新 dispatch 时（advance 校验失败修复）
 
-如果你被再次调度到 inventory 阶段，说明编排者调 advance 时校验被拒，workOrder 中会注入校验错误（`validateInventoryPackages` 的 Zod 报错 / packageName↔文件名不一致 / dependency-graph.json 的 Zod 或 callGraph refName 报错）。此时**优先只修复涉事 JSON 文件，不要重新跑 generateInventory/generateDependencyGraph、不要读源码**：
+如果你被再次调度到 inventory 阶段，说明编排者调 advance 时校验被拒，workOrder 中会注入校验错误（`validateInventoryPackages` 的 Zod 报错 / packageName↔文件名不一致 / callGraph refName 报错——refName 校验在 inventory 边界由引擎对 subprograms directCalls 推导的图做）。此时**优先只修复涉事 JSON 文件，不要重新跑 generateInventory/generateDependencyGraph、不要读源码**：
 
-1. 读 workOrder 中的校验错误，定位是哪个文件（`inventory-packages/{PKG}.json` / `inventory.json` / `dependency-graph.json`）、哪个字段。
-2. `read` 该文件，**最小修正**该字段（如补缺省值、修 direction 枚举、修 packageName 大小写、修 callGraph refName 带 `__序号`），用 `write` 写回。
+1. 读 workOrder 中的校验错误，定位是哪个文件（`packages/{PKG}.json` / `subprograms/{PKG.METHOD}.json` / `inventory.json`）、哪个字段。
+2. `read` 该文件，**最小修正**该字段（如补缺省值、修 direction 枚举、修 packageName 大小写、修 directCalls refName 带 `__序号`），用 `write` 写回。
 3. 输出 WORKER_SUMMARY 结束（编排者会再次 advance）。
-4. 若同一问题反复出现或属于结构性缺失（如缺整个包的文件、packageNames 未覆盖、callGraph 大面积错）——**无法局部修复**——才重新 `workflow({ action: "generateInventory" })` + `workflow({ action: "generateDependencyGraph" })`，再输出 WORKER_SUMMARY。
+4. 若同一问题反复出现或属于结构性缺失（如缺整个包的文件、packageNames 未覆盖）——**无法局部修复**——才重新 `workflow({ action: "generateInventory" })` + `workflow({ action: "generateDependencyGraph" })`，再输出 WORKER_SUMMARY。
 
 > 修复原则：**能改 JSON 就改 JSON，改不动才重跑代码**。绝不在 inventory 阶段读 PL/SQL 源码（除非 generateInventory 反复失败的极端 fallback）。绝不调用 advance / dispatch 等编排者专属 action。
 
 ### fallback：手工生成（仅当 generateInventory 反复失败）
 
-`generateInventory` 反复失败（prescan index 本身异常）时，才读 `inventory-index.json` 的包名 + 源码，按运行时注入的 InventoryPackageSchema / InventorySchema 字段要求手工写 `inventory-packages/{PKG}.json` + `inventory.json`。此为最后手段，正常路径不应走到。
+`generateInventory` 反复失败（prescan index 本身异常）时，才读 `inventory-index.json` 的包名 + 源码，按运行时注入的 PackageArtifactSchema / SubprogramArtifactSchema / InventorySchema 字段要求手工写 `packages/{PKG}.json` + `subprograms/{PKG.METHOD}.json` + `inventory.json`。此为最后手段，正常路径不应走到。
 
 ### ⛔ 关键约束（代码路径下多数自动满足）
 
-- `inventory-packages/{PKG}.json` 的 `packageName` 与文件名一致（大小写不敏感）
+- `packages/{PKG}.json` 的 `packageName` 与文件名一致（大小写不敏感）
 - `inventory.json` 的 `packageNames` 覆盖 inventory-index 中所有包
-- header-only 包（无 procedures）也写入，`procedures: []`、`bodyFile: null`
+- header-only 包（无 procedures/functions）也写入，`procedures: []`、`functions: []`、`bodyPath: null`
 - direction 只用 `"IN"` / `"OUT"` / `"IN OUT"`
 - 表的 columns 标注 `isPrimaryKey` 和 `nullable`
 
@@ -176,7 +178,7 @@ workflow({ action: "generateDependencyGraph", runId: "<runId>" })
 
 ### 质量检查
 
-- [ ] `inventory-packages/` 下文件数 = inventory-index 包数
+- [ ] `packages/` 下文件数 = inventory-index 包数
 - [ ] 每个 per-package 文件 packageName 与文件名一致
 - [ ] `inventory.json` 的 packageNames 覆盖 inventory-index 所有包
 - [ ] header-only 包也写入
@@ -185,15 +187,15 @@ workflow({ action: "generateDependencyGraph", runId: "<runId>" })
 
 ## Phase: analyze
 
-> 范围、硬约束、分片数据（targetUnits / 切片路径 / 上游 artifact）、流程骨架、rejection 错误由 dispatch workOrder（`prompts/analyze-worker.md` 渲染并注入系统提示）提供。本 section 只给**方法论**：unit/refName 语义、子程序结构解析字段、FSD 6 板块结构、文件命名规则。worker 模板的硬约束（只处理本分片 targetUnits / 源码只读 `shard-inputs` / 禁止 read 整包与 `inventory-packages`/`analysis-packages` / `dependency-graph.json` 只是参考 / refName 由 targetUnits+functionOwnership 给出）不在此重复。
+> 范围、硬约束、分片数据（targetUnits / 切片路径 / 上游 artifact）、流程骨架、rejection 错误由 dispatch workOrder（`prompts/analyze-worker.md` 渲染并注入系统提示）提供。本 section 只给**方法论**：unit/refName 语义、子程序结构解析字段、FSD 6 板块结构、文件命名规则。worker 模板的硬约束（只处理本分片 targetUnits / 源码只读 `shard-inputs` / 禁止 read 整包与 `packages`/`analysis-packages` / refName 由 targetUnits+meta.json cargoFuncs 给出）不在此重复。依赖图（callGraph/procedureOrder/functionOwnership）由引擎从 `subprograms/*.json` directCalls 按需推导（buildDependencyGraph），**不落盘 dependency-graph.json**。
 
 ### unit 与 refName 语义
 
-- **unit** = 一个根子程序（PROCEDURE，或孤儿 FUNCTION）+ 其 cargo FUNCTION（`dependency-graph.json.functionOwnership` 中 owner 等于本 unit id 的 FUNCTION，随 owner 一起处理）。本分片要处理的 unit 清单 = Runtime Context 的 `targetUnits`（形如 `PKG.refName`）。
-- `callGraph` / `translationOrder` / `procedureOrder` / `sccGroups` / `complexity` 读 `dependency-graph.json`，**不要自己计算**。`callGraph` 仅用于 FSD 板块 3 引用客观调用关系，**不是工作清单**——禁止遍历它生成 FSD。
-- **refName 规范**：非重载=裸名；重载=`{name}__{序号}`（1-based，全部带序号）。FSD 文件名、FSD 板块 3 目标子程序须用同一 refName。unit 模式下 refName 已由 inventory 算好（根 ref = `targetUnits` 里的 `PKG.refName`，cargo ref = `functionOwnership` 的 key `PKG.funcRef`），直接用，无需自己数重载。
+- **unit** = 一个根子程序（PROCEDURE，或孤儿 FUNCTION）+ 其 cargo FUNCTION（`shard-inputs/{pkg}/{ref}/meta.json` 的 `cargoFuncs` 列出的 FUNCTION，随 owner 一起处理）。本分片要处理的 unit 清单 = Runtime Context 的 `targetUnits`（形如 `PKG.refName`）。
+- `callGraph` / `translationOrder` / `procedureOrder` / `sccGroups` / `functionOwnership` 由引擎按需推导（不落盘），**不要自己计算**。`callGraph` 仅用于 FSD 板块 3 引用客观调用关系（由 workOrder 注入相关边），**不是工作清单**——禁止遍历它生成 FSD。`complexity` 在 `packages/{pkg}.json`。
+- **refName 规范**：非重载=裸名；重载=`{name}__{序号}`（1-based，全部带序号）。FSD 文件名、FSD 板块 3 目标子程序须用同一 refName。unit 模式下 refName 已由 inventory 算好（根 ref = `targetUnits` 里的 `PKG.refName`，cargo ref = `meta.json` 的 `cargoFuncs`），直接用，无需自己数重载。
 - `__STANDALONE_*__` 是独立存储过程的虚拟包，`headerFile` 为空属正常（只有 body/源文件），切片已从源文件抽取，按正常 unit 流程处理。
-- **包级回退**（`dependency-graph.json` 无 `procedureOrder` 的旧 run）：Runtime Context 给 `targetPackages`（包级）而非 `targetUnits`，按整包处理——读该包 header+body，写聚合 `analysis-packages/{pkg}.json`（`{packageName, subprograms}`，全包子程序）+ 全包子程序 FSD。此模式下 refName 需读整包按同名出现次数判断序号。
+- **包级回退**（workOrder 给 `targetPackages` 而非 `targetUnits` 的旧 run）：按整包处理——读该包 header+body，写聚合 `analysis-packages/{pkg}.json`（`{packageName, subprograms}`，全包子程序）+ 全包子程序 FSD。此模式下 refName 需读整包按同名出现次数判断序号。
 
 ### 切片字段（`shard-inputs/{PKG}/{unitRef}/`，引擎预切，取代整包文件）
 
@@ -293,6 +295,6 @@ workflow({ action: "generateDependencyGraph", runId: "<runId>" })
 
 ### 增量恢复
 
-- `dependency-graph.json` 由 inventory 阶段产出，始终存在，**不要重建**
+- 依赖图由引擎按需推导（不落盘 dependency-graph.json），**不要重建任何 dependency-graph 文件**
 - 检查本分片已完成的 unit（用 Read 工具读文件是否存在）：`analysis-packages/{PKG}/{unitRef}.json` 已有 + `fsd/{PKG}/` 下已有 FSD
 - 跳过已生成且**内容完整**（无"详见"占位符）的 FSD；含占位符的重新生成；缺失的补齐

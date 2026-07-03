@@ -91,14 +91,14 @@ permission:
 
 ## Phase: translate
 
-> 范围、硬约束、分片数据（targetUnits / 切片路径 / 上游 artifact / 依赖签名预注入块）、流程骨架、rejection 错误由 dispatch workOrder（`prompts/translate-worker.md` 渲染并注入系统提示）提供。本 section 只给**方法论**：unit 语义、逐子程序翻译步骤、跨包调用对接规则、Java 文件生成/编辑规范、测试生成策略、per-unit JSON 字段定义。worker 模板的硬约束（只翻译本分片 targetUnits / 源码只读 `shard-inputs` / 禁止 read 整包与 `inventory-packages`/`analysis-packages`/`translations/{pkg}/translation.json` / 跨包签名查依赖签名块 / `dependency-graph.json` 只是参考）不在此重复。
+> 范围、硬约束、分片数据（targetUnits / 切片路径 / 上游 artifact / 依赖签名预注入块）、流程骨架、rejection 错误由 dispatch workOrder（`prompts/translate-worker.md` 渲染并注入系统提示）提供。本 section 只给**方法论**：unit 语义、逐子程序翻译步骤、跨包调用对接规则、Java 文件生成/编辑规范、测试生成策略、per-unit JSON 字段定义。worker 模板的硬约束（只翻译本分片 targetUnits / 源码只读 `shard-inputs` / 禁止 read 整包与 `packages`/`analysis-packages`/`translations/{pkg}/translation.json` / 跨包签名查依赖签名块）不在此重复。依赖图（callGraph/procedureOrder/functionOwnership）由引擎从 `subprograms/*.json` directCalls 按需推导（buildDependencyGraph），**不落盘 dependency-graph.json**；agent 通过 workOrder 注入的 targetUnits / `shard-inputs/{pkg}/{ref}/meta.json` 的 cargoFuncs / 依赖签名预注入块获取所需数据。
 
 ### unit 与翻译顺序语义
 
-- **unit** = 一个根子程序（PROCEDURE，或孤儿 FUNCTION）+ 其 cargo FUNCTION（`dependency-graph.json.functionOwnership` 中 owner 等于本 unit id 的 FUNCTION，随 owner 一起翻译，不独立翻译）。unit id 形如 `PKG.refName`（重载带 `__序号`）。
-- 翻译顺序取自 `dependency-graph.json.procedureOrder`（PROCEDURE 级，依赖在前；SCC 组内 unit 必须同 session 翻译，按数组内顺序依次）。`procedureOrder` 缺失（旧 run）走包级回退（见下）。
-- 本分片要翻译的 unit 清单 = Runtime Context 的 `targetUnits`；按 `procedureOrder` 顺序处理其中列出的 unit，跳过不在 `targetUnits` 中的。
-- **翻译闭包 scope（若 workOrder 注入 `## 翻译闭包 scope` 段）**：`targetUnits` 已是入口 PROCEDURE 的调用闭包（`scopeUnits`），只译这些。闭包内**仅常量/类型被引用**的包（在 `scopePackages` 但其 unit 不在 `scopeUnits`）会以整包 `inventory-packages/{pkg}.json` 形式出现在上游 artifact 中——**这是允许的例外**（取常量/类型定义用），但**不得翻译这些包的 PROCEDURE**（它们无 unit 在 `targetUnits`）。
+- **unit** = 一个根子程序（PROCEDURE，或孤儿 FUNCTION）+ 其 cargo FUNCTION（`shard-inputs/{pkg}/{ref}/meta.json` 的 `cargoFuncs` 列出的 FUNCTION，随 owner 一起翻译，不独立翻译）。unit id 形如 `PKG.refName`（重载带 `__序号`）。
+- 翻译顺序：`procedureOrder`（PROCEDURE 级，依赖在前；SCC 组内 unit 必须同 session 翻译）由引擎按需推导并已反映在 workOrder 注入的 `targetUnits` 顺序中。本分片按 `targetUnits` 列出顺序处理；包级模式（workOrder 给 `targetPackages` 而非 `targetUnits`）按整包处理。
+- 本分片要翻译的 unit 清单 = Runtime Context 的 `targetUnits`；按其顺序处理，跳过不在 `targetUnits` 中的。
+- **翻译闭包 scope（若 workOrder 注入 `## 翻译闭包 scope` 段）**：`targetUnits` 已是入口 PROCEDURE 的调用闭包（`scopeUnits`），只译这些。闭包内**仅常量/类型被引用**的包（在 `scopePackages` 但其 unit 不在 `scopeUnits`）会以整包 `packages/{pkg}.json` 形式出现在上游 artifact 中——**这是允许的例外**（取常量/类型定义用），但**不得翻译这些包的 PROCEDURE**（它们无 unit 在 `targetUnits`）。
 
 ### 方法论：逐 unit 翻译
 
@@ -107,16 +107,16 @@ permission:
 **1. 确定单元子程序集**
 
 - 根子程序 = unit id 的 refName 部分
-- cargo FUNCTION = `dependency-graph.json.functionOwnership` 中 value 等于本 unit id 的所有 key 的 refName 部分
-- 例：unit `PKG_A.create_order`，`functionOwnership` 含 `PKG_A.calc_total → PKG_A.create_order`，则本单元子程序 = `{create_order, calc_total}`
+- cargo FUNCTION = `shard-inputs/{pkg}/{ref}/meta.json` 的 `cargoFuncs`（引擎已按 functionOwnership 归属预计算）
+- 例：unit `PKG_A.create_order`，`meta.json.cargoFuncs` 含 `calc_total`，则本单元子程序 = `{create_order, calc_total}`
 
 **2. 逐子程序翻译**（根 + cargo FUNCTION）
 
 参考切片 `analysis-slice.json` 的 blocks/variables/cursors/exceptionHandlers/translationNotes + 本 unit FSD，按五原则翻译为 Java。
 
-- **对接跨包/同包跨单元调用**：调用边取自结构化的 `dependency-graph.json.callGraph`（key/value 均为 `PKG.refName`），**不解析 FSD 板块 3 的 markdown**。处理子程序 s 的调用：
-  - 查 `callGraph["{PKG}.{s 的 refName}"]` 得其调用的 `[PKG.refName, ...]`（拓扑序保证被依赖 unit 先翻译）
-  - 对每个目标 `目标包.目标refName`：查 workOrder「依赖签名」预注入块（引擎已从已完成 unit 的聚合 translation.json 提取 `{目标包.目标refName → javaClass#javaMethod (file)}`），用真实 `javaClass`（**AccessIntf 全限定名**——DDD 对外入口在接入层；调用方经 Spring DI 注入 AccessIntf 调用）和 `javaMethod`。⛔ **禁止 read `translations/{目标包}/translation.json`**——签名已预注入。
+- **对接跨包/同包跨单元调用**：调用边由引擎按 callGraph（buildDependencyGraph 按需推导，不落盘）内联到 workOrder「依赖签名」预注入块，**不解析 FSD 板块 3 的 markdown**。处理子程序 s 的调用：
+  - 查「依赖签名」预注入块中本 unit 的调用目标 `[目标包.目标refName, ...]`（拓扑序保证被依赖 unit 先翻译）
+  - 对每个目标 `目标包.目标refName`：用预注入块的真实 `javaClass`（**AccessIntf 全限定名**——DDD 对外入口在接入层；调用方经 Spring DI 注入 AccessIntf 调用）和 `javaMethod`。⛔ **禁止 read `translations/{目标包}/translation.json`**——签名已预注入。
   - 用真实全限定名 import + 注入 + 调用，**不靠命名约定猜测**
   - **同单元内调用**（根 ↔ 其 cargo FUNCTION）：本地解析，无需跨文件 read
   - 预注入块中标 `// TODO: ... 待对接` 的（目标 unit 尚未翻译）：照抄 TODO 占位，由 review/fix 兜底
@@ -288,7 +288,7 @@ per-unit 文件字段：
 ### 输入
 
 - **上游 artifact**：
-  - `${artifactsDir}/dependency-graph.json` — 全局元数据
+  - `${artifactsDir}/packages/{pkg}.json` — 逐包 inventory + complexity（依赖图由引擎按需推导，不落盘）
   - `${artifactsDir}/analysis-packages/{pkg}.json` — 逐包子程序结构参考
   - `${artifactsDir}/plan.json` — 映射规则
   - `${artifactsDir}/scaffold.json` — 项目结构
@@ -323,7 +323,7 @@ per-unit 文件字段：
 4. 更新受影响 unit 的 per-unit 文件元数据（unit 模式：edit `translations/{pkg}/{unitRef}.json` 的
    decisions/todos/files，若方法签名变更则同步 subprogramMethods；engine 自动 re-merge 聚合
    translation.json。包级回退模式：直接更新 `translations/{pkg}/translation.json`）。判断 unit 归属：
-   mustFix 项的 file/方法对应哪个 unit（按 `dependency-graph.json.functionOwnership` + 子程序→方法映射）。
+   mustFix 项的 file/方法对应哪个 unit（按 `shard-inputs/{pkg}/{ref}/meta.json` 的 cargoFuncs + 子程序→方法映射；functionOwnership 由引擎按需推导，不落盘）。
 
 **静态 finding**（来自 review-static.json，review 触发）：对每个静态项：
 1. 按 `file` + `line` 直接定位 Java 文件（路径基于 `projectRoot`）
