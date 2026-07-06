@@ -77,7 +77,7 @@ export const NON_ZOD_VALIDATION_RULES: { phases: string[]; message: string }[] =
   },
   {
     phases: ["scaffold"],
-    message: "scaffold.json 的 projectRoot 必须是 Runtime Context 注入的 projectRoot 值（绝对路径，原样使用，勿自行编造。注：跨 run 撞同一 artifactId 时引擎会改用 generated/{artifactId}-{runId} 目录，以注入值为准）",
+    message: "scaffold.json 的 projectRoot 必须是 Runtime Context / workOrder 注入的 projectRoot 值（绝对路径 generated/{artifactId}，原样使用，勿自行编造）",
   },
   {
     phases: ["translate", "review", "verify"],
@@ -196,7 +196,7 @@ export const COMMON_PITFALLS: Record<string, string[]> = {
   ],
   scaffold: [
     'commonModules.classes.category 推荐全小写，如 "type-mapper" / "mybatis-fragment" / "mapper-interface" / "test-base"（不限死）',
-    'projectRoot 为绝对路径，必须原样使用 Runtime Context 注入的 projectRoot 值，勿自行编造路径（跨 run 撞目录时注入值可能带 -{runId} 后缀，以注入值为准）',
+    'projectRoot 为绝对路径（generated/{artifactId}），必须原样使用 Runtime Context / workOrder 注入的 projectRoot 值，勿自行编造路径',
     'mapperTestShells 中的 testClass 命名必须为 {MapperInterface}IntegrationTest',
     'mapperTestShells 中的 oraclePackage 必须与 plan.json 的 packageMappings 一致',
     'h2SchemaFile 指向的文件必须存在于磁盘（src/test/resources/schema-h2.sql）',

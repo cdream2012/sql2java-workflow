@@ -598,7 +598,7 @@ mybatis:
 #### Step 7: 写入 scaffold.json
 
 组装符合 ScaffoldSchema 的 JSON，包含：
-- `projectRoot`：**必须原样使用 Runtime Context 中注入的 `projectRoot` 值**（绝对路径，勿自行编造。跨 run 撞同一 artifactId 时引擎会改用 `generated/{artifactId}-{runId}` 目录，以注入值为准）
+- `projectRoot`：**必须原样使用 Runtime Context / workOrder 中注入的 `projectRoot` 值**（绝对路径 `generated/{artifactId}`，勿自行编造）
 - `structure`：目录列表和 pomXml 内容
 - `generated`：所有生成的文件清单（entities、mapperInterfaces、serviceShells、testShells、mapperTestShells、h2SchemaFile、testApplicationConfig、commonClasses）
 - `conventions`：从 plan.json 复制

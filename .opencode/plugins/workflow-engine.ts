@@ -10,7 +10,7 @@
  *   - 大输出截断
  *   - 依赖自动安装（node_modules 缺失时自动 npm/bun install）
  */
-import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, statSync, realpathSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, statSync, realpathSync, rmSync } from "node:fs"
 import { join, dirname, resolve, sep, relative, isAbsolute, basename } from "node:path"
 import { safeWriteFile, extractLineRange } from "../workflow/cross-platform"
 import { WorkflowEngine, WorkflowEngineError, formatZodIssues, type WorkflowRun } from "../workflow/engine-core"
@@ -692,56 +692,52 @@ function resolveProjectRoot(): string {
   return resolve(process.cwd())
 }
 
-/** 标记文件：记录 generated/<artifactId>/ 归属的 runId，用于跨 run 撞目录检测。 */
+/** 标记文件：记录 generated/<artifactId>/ 归属的 runId，用于跨 run 撞目录检测（同 run 续跑保留 / 换 run 清空）。 */
 const GENERATED_RUN_ID_MARKER = ".sql2java-run-id"
 
-/** 解析本 run 的 Java 项目输出根目录。
+/** 解析本 run 的 Java 项目输出根目录——**永远返回 base `generated/<artifactId>/`**。
  *
- * 默认 generated/<artifactId>/。若该目录已存在且不归属本 runId（读 .sql2java-run-id 标记；
- * 无标记视为他 run 占用），改用 generated/<artifactId>-<runId>/，避免不同 run 撞同一目标目录
- * 导致旧产物堆积（实测：mfg_erp_sql_tiny 用 com.example、MFG_ERP 用 com.icbc，两 run 都落到
- * generated/mfg-erp/，旧 com.example 类残留与新 com.icbc 类并存，verify 时全归因到 GLOBAL）。 */
+ * 不再有 fallback（`<artifactId>-<runId>`）设计：带 runId 后缀的路径 agent 无法可靠遵循（总是按
+ * `generated/{artifactId}/` 自然写），且旧 resolveGeneratedRoot 依赖 existsSync(base)+marker，
+ * agent 一写文件 base 就从"不存在"变"存在无 marker"，使期望值 base↔fallback 翻转，advance 反复拒绝。
+ * 跨 run 撞目录的旧产物残留问题改由 {@link claimGeneratedRoot} 在 scaffold 时清空解决（比换目录更干净）。
+ * 路径确定性 = 仅 artifactId，跨 session 可复现，不依赖 session 内存或 metadata 持久化。 */
 export function resolveGeneratedRoot(runId: string, artifactId: string, repoRoot: string = resolveProjectRoot()): string {
-  const base = join(repoRoot, "generated", artifactId)
-  if (!existsSync(base)) return base
-  let ownerRunId = ""
-  try { ownerRunId = readFileSync(join(base, GENERATED_RUN_ID_MARKER), "utf-8").trim() } catch {}
-  if (ownerRunId && ownerRunId === runId) return base
-  return join(repoRoot, "generated", `${artifactId}-${runId}`)
+  return join(repoRoot, "generated", artifactId)
 }
 
-/** scaffold 首次派发前锁定目标目录：确保目录存在并写入 runId 标记。
- *  仅 scaffold 阶段调用（projectRoot 首次确定时刻）；其余阶段用 resolveGeneratedRoot 只读解析。 */
+/** scaffold 首次派发前锁定目标目录：确保 base 存在并写入 runId 标记，处理跨 run 撞目录。
+ *  仅 scaffold 阶段调用；其余阶段用 resolveGeneratedRoot 只读解析（base 已由 scaffold claim 就绪）。
+ *
+ *  - base 不存在 → 新建 + 写 marker。
+ *  - base 存在且 marker === runId → **同 run 续跑，保留半成品**（agent 上次失败留下的产物）。
+ *  - base 存在但 marker ≠ runId / 无 marker（遗留目录）→ **清空重建**，避免旧 run 产物与新 run 混存
+ *    （实测 com.example 与 com.icbc 撞 generated/mfg-erp/ 残留并存，verify 全归因 GLOBAL）。
+ *  永远返回 base（无 fallback）。 */
 export function claimGeneratedRoot(runId: string, artifactId: string, repoRoot: string = resolveProjectRoot()): string {
   const base = join(repoRoot, "generated", artifactId)
-  const root = resolveGeneratedRoot(runId, artifactId, repoRoot)
-  const markerPath = join(root, GENERATED_RUN_ID_MARKER)
-  if (!existsSync(markerPath)) {
-    mkdirSync(root, { recursive: true })
-    try {
-      writeFileSync(markerPath, runId, "utf-8")
-    } catch {
-      // marker 写失败（磁盘满/权限/AV 拦截）：若 root 是 base，后续 resolveGeneratedRoot 会因
-      // 无标记把 base 当外来占用 → 返回 fallback，与本次 scaffold 写 base 错位。改用 fallback
-      // 保证一致。root 已是 fallback（他 run 占用 base）时无法再换，原样返回（标记缺失但路径一致）。
-      if (root === base) {
-        const fallback = join(repoRoot, "generated", `${artifactId}-${runId}`)
-        mkdirSync(fallback, { recursive: true })
-        return fallback
-      }
-    }
+  const markerPath = join(base, GENERATED_RUN_ID_MARKER)
+  if (existsSync(markerPath)) {
+    let ownerRunId = ""
+    try { ownerRunId = readFileSync(markerPath, "utf-8").trim() } catch {}
+    if (ownerRunId === runId) return base  // 同 run 续跑，保留
+    rmSync(base, { recursive: true, force: true })  // 换 run，清空旧产物
+  } else if (existsSync(base)) {
+    rmSync(base, { recursive: true, force: true })  // 无 marker 遗留目录，清空
   }
-  return root
+  mkdirSync(base, { recursive: true })
+  try {
+    writeFileSync(markerPath, runId, "utf-8")
+  } catch (e: any) {
+    // marker 写失败（磁盘满/权限/AV）：路径仍用 base（正确），但下次换 run 可能无法识别归属而漏清。
+    getLogger().warn("[scaffold]", `marker 写失败 (${markerPath}): ${e?.message ?? e}`)
+  }
+  return base
 }
 
-/** 取本 run 的 Java 项目输出根（单一真相源）。
- *  scaffold 首次 claim 时持久化到 run.metadata.generatedRoot，后续阶段（含 resume）直接读，
- *  不再各自 re-derive——否则 buildRuntimeContext（系统提示）与 dispatch projectRootLine（workOrder）
- *  在 base 被他 run 占用、claimGeneratedRoot 返回 fallback 时会给 agent 两条不一致路径，
- *  导致 scaffold 写错目录、resume 时子 agent 在 fallback 找不到产物。 */
+/** 取本 run 的 Java 项目输出根——永远 base（= resolveGeneratedRoot），不读 metadata。
+ *  保留 run 入参形态以兼容大量调用点；runId 仅用于 resolveGeneratedRoot 签名兼容。 */
 export function generatedRootFor(run: { runId: string; metadata: Record<string, unknown> }, artifactId: string, repoRoot: string = resolveProjectRoot()): string {
-  const md = run.metadata as Record<string, unknown>
-  if (typeof md.generatedRoot === "string" && md.generatedRoot) return md.generatedRoot
   return resolveGeneratedRoot(run.runId, artifactId, repoRoot)
 }
 
@@ -755,10 +751,9 @@ function buildRuntimeContext(run: WorkflowRun): string {
   if (mainEntry) lines.push(`mainEntry: ${mainEntry}`)
   lines.push(`artifactsDir: ${ARTIFACT_DIR}/${run.runId}`)
 
-  // projectRoot: scaffold 及后续阶段从 plan.json 的 targetProject.artifactId 推导。
-  // 用 generatedRootFor（优先 metadata.generatedRoot，回退 resolveGeneratedRoot）与 dispatch
-  // projectRootLine、claimGeneratedRoot 一致——不能直接拼 generated/<artifactId>：base 被他 run
-  // 占用时 claimGeneratedRoot 返回 fallback，两处路径不一致会让 agent 写错目录。
+  // projectRoot: 永远 = generated/<artifactId>/（去 fallback 设计，路径仅由 artifactId 决定）。
+  // generatedRootFor 即 resolveGeneratedRoot（base），与 dispatch projectRootLine、claimGeneratedRoot、
+  // saveArtifact P3b、validation 全部同源 base，无翻转。
   const planArtifact = engine.loadArtifactJson(`${ARTIFACT_DIR}/${run.runId}`, "plan")
   if (planArtifact) {
     const targetProject = planArtifact.targetProject as { artifactId: string } | undefined
@@ -1062,20 +1057,8 @@ export function buildShardedWorkerOrder(
   // 4) projectRoot（translate 在 plan 之后，有；analyze 在 plan 之前，无）
   const planArt = engine.loadArtifactJson(artDir, "plan")
   const artifactId = (planArt?.targetProject as any)?.artifactId
-  // scaffold 首次 claim（建目录+写 marker）并持久化到 metadata.generatedRoot；后续阶段读单一真相源。
-  // 各阶段不再各自 resolveGeneratedRoot，避免与 buildRuntimeContext 不一致。
-  let projectRoot: string | null = null
-  if (artifactId) {
-    const md = run.metadata as Record<string, unknown>
-    if (phase === "scaffold" && !(typeof md.generatedRoot === "string" && md.generatedRoot)) {
-      // 首次 scaffold claim（建目录+写 marker）并持久化，作为全阶段单一真相源
-      projectRoot = claimGeneratedRoot(run.runId, artifactId)
-      md.generatedRoot = projectRoot
-      engine.persist(run)
-    } else {
-      projectRoot = generatedRootFor(run, artifactId)
-    }
-  }
+  // scaffold 在 else 分支（非分片）派发时 claim；此处 analyze/translate 只读解析 base。
+  const projectRoot = artifactId ? resolveGeneratedRoot(run.runId, artifactId) : null
   const projectRootLine = projectRoot ? `- projectRoot: \`${projectRoot}\`  ← Java/项目文件写入此目录` : ""
   const mainEntry = (run.metadata as Record<string, unknown>).mainEntry
   const mainEntryLine = mainEntry ? `- mainEntry: \`${mainEntry}\`` : ""
@@ -4539,6 +4522,17 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             {
               const md = run.metadata as Record<string, unknown>
               if (md.mainEntry) workOrderParts.push(`- mainEntry: ${md.mainEntry}`)
+              // projectRoot（scaffold 及之后阶段）：scaffold 调 claimGeneratedRoot 锁定目录（建 base + 写 marker，
+              // 同 run 续跑保留 / 换 run 清空）；其余阶段只读解析 base。必须注入 workOrder——scaffold 不走
+              // buildShardedWorkerOrder，否则 agent 只能从系统提示拿 projectRoot，且无 claim 则 base 无 marker。
+              const planForRoot = engine.loadArtifactJson(artifactsDir, "plan")
+              const artifactIdForRoot = (planForRoot?.targetProject as { artifactId?: string })?.artifactId
+              if (artifactIdForRoot) {
+                const pr = run.currentPhase === "scaffold"
+                  ? claimGeneratedRoot(run.runId, artifactIdForRoot)
+                  : resolveGeneratedRoot(run.runId, artifactIdForRoot)
+                workOrderParts.push(`- projectRoot: ${pr}  ← Java/项目文件写入此目录（绝对路径，原样使用）`)
+              }
               // 过程级入口闭包 scope 指令（所有阶段注入；非分片阶段 plan/scaffold/review/dedup/verify 靠此知范围）
               const scopeBannerText = buildScopeBanner(run)
               if (scopeBannerText) workOrderParts.push("", scopeBannerText)
