@@ -1104,9 +1104,15 @@ export async function scanSource(sourceOrOpts: string | ScanSourceOpts): Promise
   const opts = typeof sourceOrOpts === "string" ? { sourcePath: sourceOrOpts } : sourceOrOpts
   const { sourcePath, headerPath, bodyPath, entry } = opts
   const twoDir = !!(headerPath && bodyPath)
-  const primaryBase = twoDir ? headerPath! : (sourcePath ?? headerPath ?? bodyPath)
+  // primaryBase 优先 sourcePath：三路径(sourcePath+headerPath+bodyPath)时用它做相对路径基准，
+  // 让 type/schema 等非包文件也存成可移植相对路径（TABLE/ITEM.sql 而非绝对路径）。
+  const primaryBase = sourcePath ?? (twoDir ? headerPath! : (headerPath ?? bodyPath))
   if (!primaryBase) throw new Error("scanSource 需要 sourcePath 或 (headerPath + bodyPath)")
-  const roots = twoDir ? [headerPath!, bodyPath!] : [primaryBase]
+  // 双目录模式 header/body 优先（保 header-first）；同时给了 sourcePath 则追加为额外 root，
+  // collectSourceFiles 递归扫到 type/schema 等非包 DDL，重复文件按绝对路径去重（processed 集合）。
+  const roots = twoDir
+    ? [headerPath!, bodyPath!, ...(sourcePath ? [sourcePath] : [])]
+    : [primaryBase]
 
   if (entry) {
     // entry 全量扫描已被 scanSourceLazy 取代；保留参数向后兼容，忽略并 warning。
@@ -1142,9 +1148,14 @@ export type ScanSourceLazyOpts = { sourcePath?: string; headerPath?: string; bod
 export async function scanSourceLazy(opts: ScanSourceLazyOpts): Promise<InventoryIndex> {
   const { sourcePath, headerPath, bodyPath, mainEntry } = opts
   const twoDir = !!(headerPath && bodyPath)
-  const primaryBase = twoDir ? headerPath! : (sourcePath ?? headerPath ?? bodyPath)
+  // primaryBase 优先 sourcePath：三路径(sourcePath+headerPath+bodyPath)时用它做相对路径基准。
+  const primaryBase = sourcePath ?? (twoDir ? headerPath! : (headerPath ?? bodyPath))
   if (!primaryBase) throw new Error("scanSourceLazy 需要 sourcePath 或 (headerPath + bodyPath)")
-  const roots = twoDir ? [headerPath!, bodyPath!] : [primaryBase]
+  // 双目录模式 header/body 优先（保 header-first）；同时给了 sourcePath 则追加为额外 root，
+  // 让闭包扫描的 Phase 0 全量抽表也能覆盖到 sourcePath 下的 type/schema（重复文件去重）。
+  const roots = twoDir
+    ? [headerPath!, bodyPath!, ...(sourcePath ? [sourcePath] : [])]
+    : [primaryBase]
 
   const parsed = parseMainEntry(mainEntry)
   if (!parsed) {

@@ -3605,10 +3605,12 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
             // mainEntry 从 run-context 取（start 时写入）；args 可覆盖。用于 scanSourceLazy 闭包扫描。
             let mainEntry = (args.mainEntry as string | undefined) ?? undefined
             const ctx = loadRunContext(runId)
-            if (!srcPath && (!headerPath || !bodyPath)) {
-              if (ctx?.params.path) srcPath = resolve(ctx.params.path)
-              if (ctx?.params.headerPath) headerPath = resolve(ctx.params.headerPath)
-              if (ctx?.params.bodyPath) bodyPath = resolve(ctx.params.bodyPath)
+            // 逐字段从 run-context 补齐：三路径模式(sourcePath+headerPath+bodyPath)下三者独立恢复，
+            // 避免 worker 只传 header/body 时把 sourcePath（承载 type/schema 的父目录）漏掉。
+            if (ctx) {
+              if (!srcPath && ctx.params.path) srcPath = resolve(ctx.params.path)
+              if (!headerPath && ctx.params.headerPath) headerPath = resolve(ctx.params.headerPath)
+              if (!bodyPath && ctx.params.bodyPath) bodyPath = resolve(ctx.params.bodyPath)
             }
             if (!mainEntry) mainEntry = ctx?.mainEntry
             if (!srcPath && !headerPath && !bodyPath) {
