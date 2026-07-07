@@ -49,6 +49,7 @@ src/test/java/{packageBase}/{module}                   # 测试代码
 3. 【强制】Processor 层负责流程编排与异常捕获，**不标注 `@Transactional`**；事务边界由 Aggregate 层控制。
 4. 【强制】主存储过程含多个子流程（子程序调用 / 顺序逻辑段 / 跨包调用）时，**Processor 必须按原 PL/SQL 调用顺序编排多个 Aggregate 步骤方法 / 跨单元 `AccessIntf` 调用 / `OutService` 调用**，体现"主存储过程调用链"，**禁止将整条流程折叠为单个 Aggregate 方法**；Aggregate 每个步骤一个方法，Processor 不含业务逻辑。步骤单一的主存储过程保持 Aggregate 单方法，不强拆。拆分依据是原 SP 的调用结构（调用语句边界），属忠实呈现而非重构，不违反"不重构"原则。
 5. 【强制】跨包/跨 schema 调用必须封装为 OutService，不得在 Aggregate 中直接引用他包 Mapper。
+6. 【强制】接入层接口 `AccessIntf` 方法签名统一 `Map<String,Object> xxx(Map<String,Object> inputMap)`，返回 `Map<String,Object>`（含 `oiFlag`/`osMsg` + 业务结果键），禁止 `void` 返回、禁止 Bean 暴露到接入层；`AccessImpl` 负责 Map↔Bean 适配（委托 `Builder` 转换），内部 Processor/Aggregate 保持 Bean。
 
 ## 二、核心设计模式
 
