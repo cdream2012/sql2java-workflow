@@ -55,128 +55,22 @@ const ModuleCategorySchema = z.enum(ModuleCategoryValues)
 
 // ============================================================================
 // Inventory Index Schema（预扫描索引，machine-generated）
+// 定义移至 PackageArtifactSchema/SubprogramArtifactSchema/TableArtifactSchema 之后（复用它们）
 // ============================================================================
 
-export const InventoryIndexSchema = z.object({
-  sourcePath: z.string(),
-  scannedAt: z.string(),
-  scannerUsed: ciEnumLower(["ast", "regex"]),
-
-  packages: z.array(z.object({
-    name: z.string(),
-    specFile: z.string().nullable().optional(),
-    bodyFile: z.string().nullable().optional(),
-    procedures: z.array(z.object({
-      name: z.string(),
-      type: ciEnumLower(["procedure", "function"]),
-      lineRange: z.tuple([z.number(), z.number()]).optional(),
-    })),
-    estimatedLoc: z.number(),
-  })),
-
-  tables: z.array(z.object({
-    name: z.string(),
-    ddlFile: z.string().nullable().optional(),
-  })),
-
-  triggers: z.array(z.object({
-    name: z.string(),
-    sourceFile: z.string(),
-  })),
-
-  views: z.array(z.object({
-    name: z.string(),
-    ddlFile: z.string().nullable().optional(),
-  })),
-
-  sequences: z.array(z.object({
-    name: z.string(),
-    ddlFile: z.string().nullable().optional(),
-  })),
-
-  standaloneProcedures: z.array(z.object({
-    name: z.string(),
-    type: ciEnumLower(["procedure", "function"]),
-    sourceFile: z.string(),
-  })),
-
-  callGraph: z.record(z.string(), z.array(z.string())).optional(),
-}).passthrough()
-
 // ============================================================================
-// Inventory Package Schema（逐包 inventory，LLM enriched）
-// ============================================================================
-
-/** 逐包 inventory 的 procedure 结构 — 与 InventorySchema 旧格式兼容 */
-const InventoryProcedureSchema = z.object({
-  name: z.string(),
-  type: ciEnumLower(["procedure", "function"]),
-  params: z.array(z.object({
-    name: z.string(),
-    oracleType: z.string(),
-    direction: ciEnumUpper(["IN", "OUT", "IN OUT"]),
-  })),
-  returnType: z.string().nullable().optional(),
-  lineRange: z.tuple([z.number(), z.number()]),
-  loc: z.number(),
-})
-
-export const InventoryPackageSchema = z.object({
-  packageName: z.string(),
-  specFile: z.string().nullable().optional(),
-  bodyFile: z.string().nullable().optional(),
-  procedures: z.array(InventoryProcedureSchema),
-  types: z.array(z.object({
-    name: z.string(),
-    kind: z.string(),
-    definition: z.string(),
-  })),
-  variables: z.array(z.object({
-    name: z.string(),
-    type: z.string(),
-    defaultValue: z.string().nullable().optional(),
-  })),
-  constants: z.array(z.object({
-    name: z.string(),
-    type: z.string(),
-    value: z.string(),
-  })),
-}).passthrough().refine(
-  pkg => pkg.procedures.length === 0 || pkg.bodyFile !== undefined,
-  { message: "有 procedures 的包必须有 bodyFile（procedure 实现体在 body 中）" }
-)
-// ============================================================================
-// Inventory Schema（索引模式：packages 拆分为 per-package 文件，DDL 保留在此）
+// Inventory Schema（顶层轻量索引：packageNames + tableNames + triggers/views/sequences + 元信息）
+// tables 列结构拆到 tables/{TABLE}.json（TableArtifactSchema）；包过程详情拆到 packages/+subprograms/
 // ============================================================================
 
 export const InventorySchema = z.object({
   sourcePath: z.string(),
+  scannedAt: z.string().optional(),
+  scannerUsed: ciEnumLower(["ast", "regex"]).optional(),
+  warnings: z.array(z.string()).default([]),
+
   packageNames: z.array(z.string()),
-
-  tables: z.array(z.object({
-    name: z.string(),
-    ddlFile: z.string().nullable().optional(),
-    columns: z.array(z.object({
-      name: z.string(),
-      oracleType: z.string(),
-      nullable: z.boolean(),
-      isPrimaryKey: z.boolean(),
-      defaultValue: z.string().nullable().optional(),
-    })),
-  })),
-
-  standaloneProcedures: z.array(z.object({
-    name: z.string(),
-    type: ciEnumLower(["procedure", "function"]),
-    params: z.array(z.object({
-      name: z.string(),
-      oracleType: z.string(),
-      direction: ciEnumUpper(["IN", "OUT", "IN OUT"]),
-    })),
-    returnType: z.string().nullable().optional(),
-    sourceFile: z.string(),
-    lineRange: z.tuple([z.number(), z.number()]),
-  })),
+  tableNames: z.array(z.string()),
 
   triggers: z.array(z.object({
     name: z.string(),
@@ -209,6 +103,132 @@ export const InventorySchema = z.object({
 }).passthrough()
 
 // ============================================================================
+// 新版按实体落盘 schema（packages/{PKG}.json + subprograms/{PKG.METHOD}.json + tables/{TABLE}.json）
+// ============================================================================
+
+const LocationInfoSchema = z.object({
+  absolutePath: z.string(),
+  lineRange: z.tuple([z.number(), z.number()]),
+})
+
+/** packages/{PKG}.json — 包容器（procedures/functions 仅名字索引，详情在 subprograms/） */
+export const PackageArtifactSchema = z.object({
+  packageName: z.string(),                         // 大写、保留点（FM.XXX）
+  absolutePaths: z.array(z.string()),
+  headerPath: z.string().nullable(),
+  bodyPath: z.string().nullable(),
+  constants: z.array(z.object({ name: z.string(), type: z.string(), value: z.string() })).default([]),
+  variables: z.array(z.object({ name: z.string(), type: z.string(), defaultValue: z.string().nullable() })).default([]),
+  exceptions: z.array(z.object({ name: z.string() })).default([]),
+  types: z.array(z.object({ name: z.string(), kind: z.string(), definition: z.string() })).default([]),
+  functions: z.array(z.string()).default([]),
+  procedures: z.array(z.string()).default([]),
+  estimatedLoc: z.number().default(0),
+  complexity: z.object({
+    score: z.number().min(1).max(10),
+    patterns: z.array(z.string()),
+    riskLevel: ciEnumLower(["low", "medium", "high"]),
+  }).optional(),
+}).passthrough()
+
+/** subprograms/{PKG.METHOD}.json — 原子子程序（header/body 双定位 + per-method directCalls） */
+export const SubprogramArtifactSchema = z.object({
+  name: z.string(),
+  type: z.enum(["PROCEDURE", "FUNCTION"]),
+  belongToPackage: z.string(),
+  overloadIndex: z.number().nullable(),
+  isPrivate: z.boolean(),
+  headerLocation: LocationInfoSchema.nullable(),
+  bodyLocation: LocationInfoSchema.nullable(),
+  parameters: z.array(z.object({
+    name: z.string(),
+    type: z.string(),
+    mode: ciEnumUpper(["IN", "OUT", "IN OUT"]),
+    defaultExpression: z.string().nullable(),
+  })).default([]),
+  returnType: z.string().nullable(),
+  loc: z.number().default(0),
+  directCalls: z.array(z.object({
+    package: z.string(),
+    name: z.string(),
+    line: z.number(),
+    kind: z.enum(["function", "procedure"]),
+  })).default([]),
+  packageRefs: z.array(z.object({
+    package: z.string(),
+    name: z.string(),
+    line: z.number(),
+  })).default([]),
+}).passthrough()
+
+/** tables/{TABLE}.json — 单表列结构 + 主键 + 外键 */
+export const TableArtifactSchema = z.object({
+  name: z.string(),
+  ddlFile: z.string().nullable().optional(),
+  columns: z.array(z.object({
+    name: z.string(),
+    oracleType: z.string(),
+    nullable: z.boolean(),
+    isPrimaryKey: z.boolean(),
+    defaultValue: z.string().nullable().optional(),
+  })).default([]),
+  primaryKey: z.array(z.string()).optional(),
+  foreignKeys: z.array(z.object({
+    name: z.string(),
+    columns: z.array(z.string()),
+    refTable: z.string(),
+    refColumns: z.array(z.string()),
+  })).optional(),
+}).passthrough()
+
+// ── InventoryIndexSchema（scanner 产出的预扫描索引，machine-generated）──────────
+// 新形状：packages[]（PackageArtifactSchema 全字段）+ 顶层 subprograms[]（SubprogramArtifactSchema）
+// + tables/triggers/views/sequences/standaloneProcedures。不再有 callGraph（依赖图按需推导）。
+// 旧 schema 声明 name/headerFile/bodyFile/procedures[对象] + callGraph，与实际产出脱节，
+// 致 stripNullsAndRewrite(idxPath, InventoryIndexSchema) 校验失败、null 修复被静默跳过。
+export const InventoryIndexSchema = z.object({
+  sourcePath: z.string(),
+  scannedAt: z.string(),
+  scannerUsed: ciEnumLower(["ast", "regex"]),
+  warnings: z.array(z.string()).default([]),
+  packages: z.array(PackageArtifactSchema),
+  subprograms: z.array(SubprogramArtifactSchema),
+  tables: z.array(TableArtifactSchema),
+  triggers: z.array(z.object({
+    name: z.string(),
+    timing: ciEnumLower(["before", "after", "instead-of", "compound"]).optional(),
+    level: ciEnumLower(["statement", "row"]).optional(),
+    targetTable: z.string().optional(),
+    events: z.array(ciEnumLower(["insert", "update", "delete"])).optional(),
+    sourceFile: z.string(),
+    lineRange: z.tuple([z.number(), z.number()]).optional(),
+    condition: z.string().nullable().optional(),
+  }).passthrough()).default([]),
+  views: z.array(z.object({
+    name: z.string(),
+    ddlFile: z.string().nullable().optional(),
+    sourceFile: z.string().nullable().optional(),
+    columns: z.array(z.string()).optional(),
+    underlyingTables: z.array(z.string()).nullable().optional(),
+  }).passthrough()).default([]),
+  sequences: z.array(z.object({
+    name: z.string(),
+    ddlFile: z.string().nullable().optional(),
+    sourceFile: z.string().nullable().optional(),
+    startWith: z.number().nullable().optional(),
+    incrementBy: z.number().nullable().optional(),
+    minValue: z.number().nullable().optional(),
+    maxValue: z.number().nullable().optional(),
+    cycle: z.boolean().nullable().optional(),
+  }).passthrough()).default([]),
+  standaloneProcedures: z.array(z.object({
+    name: z.string(),
+    type: ciEnumLower(["procedure", "function"]),
+    sourceFile: z.string(),
+  }).passthrough()).default([]),
+}).passthrough()
+
+// ============================================================================
 // Analysis Schema（拆分为 Meta + Per-Package）
 // ============================================================================
 
@@ -238,43 +258,6 @@ const SubprogramSchema = z.object({
   translationNotes: z.array(z.string()),
 })
 
-/** dependency-graph.json — 全局元数据（不含逐包子程序数据） */
-export const DependencyGraphSchema = z.object({
-  /**
-   * 调用图：key = 限定名 `PKG.refName`，value = 被调用的 `PKG.refName` 数组（与 key 同规范）。
-   * refName 规范：非重载子程序=Oracle 原始名；重载子程序=`{name}__{序号}`（1-based，全部带序号），
-   * 与 FSD 文件名、translation.json.subprogramMethods.oracleName 一致（修现行裸名撞重载的缺陷）。
-   */
-  callGraph: z.record(z.string(), z.array(z.string())),
-  packageDependency: z.record(z.string(), z.array(z.string())),
-  translationOrder: z.array(z.array(z.string())),
-  complexity: z.record(z.string(), z.object({
-    score: z.number().min(1).max(10),
-    patterns: z.array(z.string()),
-    riskLevel: ciEnumLower(["low", "medium", "high"]),
-  })),
-  sccGroups: z.array(z.array(z.string())),
-  packageNames: z.array(z.string()),
-
-  /**
-   * PROCEDURE 级拓扑序（翻译单元层）。每层是一组 unit id（`PKG.refName`），依赖在前。
-   * unit = 一个 PROCEDURE，或一个「孤儿 FUNCTION」（同包内无 PROCEDURE 经 function 链调用它）。
-   * 被 owner PROCEDURE 拥有的 FUNCTION 不是独立 unit，不在本表，随 owner 翻译（见 functionOwnership）。
-   * translate 分片按本字段调度（取代包级 translationOrder）。optional：旧 run 无此字段时
-   * engine 回退到包级 translationOrder（向后兼容）。
-   */
-  procedureOrder: z.array(z.array(z.string())).optional(),
-
-  /**
-   * FUNCTION 属主归属：`PKG.funcRefName` → `PKG.ownerProcRefName`（同包内）。
-   * 仅含「被某个 PROCEDURE 拥有」的 FUNCTION；孤儿 FUNCTION 不入表（它们自身是 unit）。
-   * 属主判定：同包内反向可达的 PROCEDURE 集合；恰 1 个→归它，≥2 个→调用次数最多者
-   * （并列取 refName 字典序最小），0 个→孤儿。跨包调用不建立属主。
-   * 供 translate 收窄 FSD（owner 单元的 cargo FUNCTION）+ 审计。
-   */
-  functionOwnership: z.record(z.string(), z.string()).optional(),
-}).passthrough()
-
 /** analysis-packages/{pkg}.json — 逐包子程序结构（聚合，由 engine mergeUnitAnalysis 产出） */
 export const AnalysisPackageSchema = z.object({
   packageName: z.string(),
@@ -299,23 +282,8 @@ export const UnitAnalysisSchema = z.object({
   subprograms: z.array(SubprogramSchema),
 }).passthrough()
 
-/** @deprecated 旧格式兼容，仅用于跨 Schema 校验的 fallback */
-export const AnalysisSchema = z.object({
-  callGraph: z.record(z.string(), z.array(z.string())),
-  packageDependency: z.record(z.string(), z.array(z.string())),
-  translationOrder: z.array(z.array(z.string())),
-  complexity: z.record(z.string(), z.object({
-    score: z.number().min(1).max(10),
-    patterns: z.array(z.string()),
-    riskLevel: ciEnumLower(["low", "medium", "high"]),
-  })),
-  sccGroups: z.array(z.array(z.string())),
-  packages: z.array(z.object({
-    name: z.string(),
-    subprograms: z.array(SubprogramSchema),
-  })).optional(),
-  packageNames: z.array(z.string()).optional(),
-}).passthrough()
+//（旧 AnalysisSchema 已删：dependency-graph.json 落盘移除后无活跃消费者，仅残留旧字段定义。
+//  调用图/complexity 等改由 dependency-graph.ts 按需推导 + packages/{PKG}.json.complexity 承载。）
 
 // ============================================================================
 // Plan Schema
@@ -746,12 +714,42 @@ export const VerifySummarySchema = z.object({
     packageName: z.string(),
     issue: z.string(),
   })).optional(),
+  // JaCoCo 覆盖率结果（verify 阶段解析 jacoco.xml 产出）。环境不可用时 executed=false，
+  // passed 置 true 不阻断（与 mvn 不可用跳过语义一致）。
+  coverage: z.object({
+    /** jacoco.xml 是否成功解析到 */
+    executed: z.boolean(),
+    /** 未解析原因（executed=false 时使用，如环境不可用/无 jacoco.xml） */
+    skipReason: z.string().optional(),
+    lineRate: z.coerce.number().nullable().optional(),
+    branchRate: z.coerce.number().nullable().optional(),
+    lineThreshold: z.coerce.number(),
+    branchThreshold: z.coerce.number(),
+    /** 覆盖率是否达标（executed=false 时为 true，不阻断） */
+    passed: z.boolean(),
+    /** 每包覆盖率明细 + 未覆盖 gaps（供 fix 注入「未覆盖行清单」段） */
+    packageCoverage: z.array(z.object({
+      packageName: z.string(),
+      lineRate: z.coerce.number().nullable().optional(),
+      branchRate: z.coerce.number().nullable().optional(),
+      passed: z.boolean(),
+      gaps: z.array(z.object({
+        className: z.string(),
+        line: z.coerce.number().nullable().optional(),
+        type: z.enum(["line", "branch"]),
+      })).optional(),
+    })),
+  }),
 }).passthrough().refine(
   allPassedRefine.check,
   { message: allPassedRefine.message }
 ).refine(
   data => data.compilation.success === true || data.compilation.skipped === true || data.compilation.errors !== undefined,
   { message: "compilation.success=false 时 errors 必须存在（允许空数组），除非 skipped=true" }
+).refine(
+  // 单向蕴含：覆盖率未达标时 allPassed 必须为 false（覆盖率达标时 allPassed 由编译/测试/包归因决定，可真可假）
+  data => data.coverage.passed === true || data.allPassed === false,
+  { message: "覆盖率未达标时 allPassed 必须为 false" }
 )
 
 // ============================================================================
@@ -906,11 +904,6 @@ export function getSchemaForPhase(phase: string): ZodType | null {
     fix: FixArtifactSchema,
   }
   return schemaMap[phase] ?? null
-}
-
-/** 查找 inventory per-package schema（inventory 阶段拆分校验用） */
-export function getInventoryPackageSchema(): ZodType {
-  return InventoryPackageSchema
 }
 
 /** 根据阶段名查找 per-package schema */

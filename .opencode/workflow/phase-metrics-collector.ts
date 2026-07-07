@@ -20,6 +20,7 @@ import { join } from "node:path"
 import { safeWriteFile } from "./cross-platform"
 import type { PhaseHistoryEntry, WorkflowRun } from "./engine-core"
 import { getLogger } from "./workflow-logger"
+import { buildDependencyGraph } from "./dependency-graph"
 
 // ── Type Definitions ──────────────────────────────────────────────────────────
 
@@ -430,37 +431,43 @@ function extractBusinessData(phase: string, artifactsDir: string): PhaseBusiness
 }
 
 function extractInventoryData(data: PhaseBusinessData, dir: string): void {
-  const json = readJsonSafe(join(dir, "inventory-index.json"))
+  // 顶层索引 inventory.json（轻量：packageNames/tableNames + triggers/views/sequences）
+  const json = readJsonSafe(join(dir, "inventory.json"))
   if (!json) return
 
-  try { data.packageCount = safeArrayLen(json.packages) } catch { /* skip */ }
-  try { data.tableCount = safeArrayLen(json.tables) } catch { /* skip */ }
+  try { data.packageCount = safeArrayLen(json.packageNames) } catch { /* skip */ }
+  try { data.tableCount = safeArrayLen(json.tableNames) } catch { /* skip */ }
   try { data.triggerCount = safeArrayLen(json.triggers) } catch { /* skip */ }
   try { data.viewCount = safeArrayLen(json.views) } catch { /* skip */ }
   try { data.sequenceCount = safeArrayLen(json.sequences) } catch { /* skip */ }
-  try { data.standaloneProcedureCount = safeArrayLen(json.standaloneProcedures) } catch { /* skip */ }
 
-  // totalProcedureCount = sum(packages[].procedures.length)
-  // 注：standalone 过程已以 __STANDALONE_*__ 虚拟包形式注入 packages（见 plsql-scanner），
-  // procInPackages 已涵盖它们，不再额外加 standaloneProcedureCount（否则重复计数）。
-  // standaloneProcedureCount 仅作辅助指标（独立过程数）。
+  // standalone 过程以 __STANDALONE_*__ 虚拟包形式落盘 packages/（见 plsql-scanner）。
+  // standaloneProcedureCount 仅作辅助指标：统计 __STANDALONE_ 前缀虚拟包数。
   try {
-    const pkgs = json.packages
-    if (Array.isArray(pkgs)) {
-      data.totalProcedureCount = pkgs.reduce(
-        (sum: number, pkg: unknown) => sum + safeArrayLen((pkg as Record<string, unknown>).procedures),
-        0,
+    const pkgDir = join(dir, "packages")
+    if (existsSync(pkgDir)) {
+      const standalones = readdirSync(pkgDir).filter(
+        f => f.endsWith(".json") && f.startsWith("__STANDALONE_"),
       )
+      data.standaloneProcedureCount = standalones.length
+    }
+  } catch { /* skip */ }
+
+  // totalProcedureCount = subprograms/*.json 文件数（每个子程序一文件）
+  try {
+    const subpDir = join(dir, "subprograms")
+    if (existsSync(subpDir)) {
+      data.totalProcedureCount = readdirSync(subpDir).filter(f => f.endsWith(".json")).length
     }
   } catch { /* skip */ }
 }
 
 function extractAnalyzeData(data: PhaseBusinessData, dir: string): void {
-  // 全局元数据
-  const meta = readJsonSafe(join(dir, "dependency-graph.json"))
-  if (meta) {
-    try { data.sccGroupCount = safeArrayLen(meta.sccGroups) } catch { /* skip */ }
-  }
+  // 全局元数据：依赖图按需从 subprograms.directCalls 推导（dependency-graph.json 已删）
+  try {
+    const graph = buildDependencyGraph(dir)
+    data.sccGroupCount = graph.sccGroups.length
+  } catch { /* skip */ }
 
   // 逐包子程序聚合
   try {

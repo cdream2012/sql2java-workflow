@@ -155,7 +155,6 @@ describe("prepareExecutionPoint（真实引擎推进，不调 opencode）", () =
           writeFileSync(join(dir, "inventory-index.json"), '{"packages":[{"name":"BAD_PKG"}]}')
           writeFileSync(join(dir, "plan.json"), '{"x":1}')
           writeFileSync(join(dir, "scaffold.json"), '{"x":1}')
-          writeFileSync(join(dir, "dependency-graph.json"), '{"x":1}')
         },
       })
       const runDir = join(workDir, ".workflow-artifacts", RUN_ID)

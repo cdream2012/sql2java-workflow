@@ -419,11 +419,6 @@ describe("advance() — quality gate integration", () => {
       sourcePath: "src", packageNames: ["CORE_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
-    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
-      callGraph: {}, packageDependency: {},
-      translationOrder: [["CORE_PKG"]],
-      complexity: {}, sccGroups: [], packageNames: ["CORE_PKG"],
-    })
     // 翻译完成率 0% → G1 blocking
     writeArtifact(ctx.dir, RUN_ID, "translations/CORE_PKG/translation.json", {
       packageName: "CORE_PKG", status: "partial",
@@ -447,11 +442,6 @@ describe("advance() — quality gate integration", () => {
     writeArtifact(ctx.dir, RUN_ID, "inventory.json", {
       sourcePath: "src", packageNames: ["CORE_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
-    })
-    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
-      callGraph: {}, packageDependency: {},
-      translationOrder: [["CORE_PKG"]],
-      complexity: {}, sccGroups: [], packageNames: ["CORE_PKG"],
     })
     // 完成率 OK 但 subprogramMethods 少于 completedSubprograms → G2 warning
     writeArtifact(ctx.dir, RUN_ID, "translations/CORE_PKG/translation.json", {
@@ -558,12 +548,6 @@ describe("advance() — quality gate integration", () => {
     writeArtifact(ctx.dir, RUN_ID, "inventory.json", {
       sourcePath: "src", packageNames: ["CORE_PKG", "EXTRA_PKG"], tables: [],
       standaloneProcedures: [], triggers: [], views: [], sequences: [],
-    })
-    writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
-      callGraph: {}, packageDependency: {},
-      translationOrder: [["CORE_PKG"]],
-      complexity: {}, sccGroups: [],
-      packageNames: ["CORE_PKG"],
     })
     // 翻译完成率 0% → G1 blocking
     writeArtifact(ctx.dir, RUN_ID, "translations/CORE_PKG/translation.json", {

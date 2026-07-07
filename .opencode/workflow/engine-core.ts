@@ -20,7 +20,29 @@ import { readFileSync, existsSync, mkdirSync, appendFileSync, unlinkSync, readdi
 import { safeWriteFile } from "./cross-platform"
 import { join } from "node:path"
 import { z } from "zod"
-import { validRefNameSet, parseQualified, pkgOf, refOf } from "./refname"
+import { parseQualified, pkgOf, refOf } from "./refname"
+import { buildDependencyGraph } from "./dependency-graph"
+import { parseInventoryPackage } from "./package-parser"
+import { readScope } from "./scope-computer"
+
+/**
+ * 从 artifactsDir/run.json 读 scoped run 的「期望覆盖包」集（metadata.scopePackages）。
+ * 非 scoped run（无 scopePackages）返回 null，调用方回退到 inventory.packageNames。
+ *
+ * lazy inventory 下 inventory.json.packageNames 是入口包闭包（⊇ scope.scopePackages），
+ * review/verify 的覆盖检查须以 scope.scopePackages 为期望集，否则会误报闭包内但 scope 外的包「缺失」。
+ */
+export function readScopePackagesFromArtifacts(artifactsDir: string): string[] | null {
+  try {
+    const runPath = join(artifactsDir, "run.json")
+    if (!existsSync(runPath)) return null
+    const run = JSON.parse(readFileSync(runPath, "utf-8")) as { metadata?: Record<string, unknown> | undefined }
+    const scope = readScope(run.metadata)
+    return scope && scope.scopePackages.length > 0 ? scope.scopePackages : null
+  } catch {
+    return null
+  }
+}
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────
 
@@ -292,7 +314,7 @@ export class WorkflowEngine {
     }
 
     // ── Step 3b: 跨 Schema 校验 (D9) — 仅 needsCrossSchemaValidation 阶段 ──
-    // inventory-index ↔ inventory 包名一致性作为 warning 在 advance 中检查（plugin 层不再 blocking 校验此项）
+    // inventory.json.packageNames ↔ packages/*.json 文件名一致性作为 warning 在 advance 中检查（plugin 层不再 blocking 校验此项）
     let crossSchemaFindings: CrossSchemaFinding[] = []
     if (currentPhaseConfig?.needsCrossSchemaValidation) {
       crossSchemaFindings = this.validateCrossSchema(run, run.currentPhase!)
@@ -704,29 +726,32 @@ export class WorkflowEngine {
     return run
   }
 
-  // ── inventory-index ↔ inventory 包名一致性校验 ──
+  // ── inventory.json.packageNames ↔ packages/*.json 文件名一致性校验 ──
   // inventory 完成后独立触发，不依赖 analysis artifact
   validateInventoryIndexConsistency(run: WorkflowRun): string[] {
     const warnings: string[] = []
     const artifactsDir = join(this.artifactsRoot, run.runId)
 
-    const inventoryIndex = this.loadArtifactJson(artifactsDir, "inventory-index")
     const inventory = this.loadArtifactJson(artifactsDir, "inventory")
-
-    // 两者都存在时才比对；缺任一文件说明不是完整的 workflow 运行场景，不产生 warning
-    if (!inventory || !inventoryIndex) {
+    // inventory.json 不存在说明不是完整的 workflow 运行场景，不产生 warning
+    if (!inventory) {
       return warnings
     }
 
-    const indexNames = new Set(
-      ((inventoryIndex.packages as Array<{ name: string }>) ?? []).map((p) => p.name)
-    )
     const invNames = this.extractPackageNames(inventory)
-    for (const name of indexNames) {
-      if (!invNames.has(name)) warnings.push(`inventory.packageNames 缺少包: ${name}（index 中存在）`)
+    // packages/ 目录下 {PKG}.json 文件名（去扩展名）集合
+    const pkgDir = join(artifactsDir, "packages")
+    const fileNames = new Set<string>()
+    if (existsSync(pkgDir)) {
+      for (const f of readdirSync(pkgDir)) {
+        if (f.endsWith(".json")) fileNames.add(f.slice(0, -".json".length))
+      }
     }
     for (const name of invNames) {
-      if (!indexNames.has(name)) warnings.push(`inventory-index 缺少包: ${name}（inventory.packageNames 中存在）`)
+      if (!fileNames.has(name)) warnings.push(`packages/ 缺少包文件: ${name}.json（inventory.packageNames 中存在）`)
+    }
+    for (const name of fileNames) {
+      if (!invNames.has(name)) warnings.push(`inventory.packageNames 缺少包: ${name}（packages/ 中存在）`)
     }
     return warnings
   }
@@ -743,33 +768,35 @@ export class WorkflowEngine {
     const artifactsDir = join(this.artifactsRoot, run.runId)
 
     const inventory = this.loadArtifactJson(artifactsDir, "inventory")
-    const analysis = this.loadArtifactJson(artifactsDir, "dependency-graph")
 
-    if (!inventory || !analysis) {
+    if (!inventory) {
       findings.push({
-        message: `跨 Schema 校验跳过：缺少必要的 artifact（inventory: ${!!inventory}, dependency-graph: ${!!analysis}）`,
+        message: `跨 Schema 校验跳过：缺少必要的 artifact（inventory: ${!!inventory}）`,
         severity: "warning",
       })
       return findings
     }
 
+    // 依赖图按需从 subprograms/*.json 的 directCalls 推导（取代旧 dependency-graph.json，已删）
+    const graph = buildDependencyGraph(artifactsDir)
+
     // inventory-index ↔ inventory 一致性已在 inventory 阶段完成时独立校验，此处不重复
 
-    // inventory 包名 ↔ dependency-graph 包名（双向，大小写不敏感）
+    // inventory 包名 ↔ 依赖图包名（双向，大小写不敏感）
     const invNames = this.extractPackageNames(inventory)
-    const anaNames = this.extractPackageNames(analysis)
+    const anaNames = new Set(graph.packageNames)
     const invUpper = new Set([...invNames].map((n) => n.toUpperCase()))
     const anaUpper = new Set([...anaNames].map((n) => n.toUpperCase()))
     for (const name of invNames) {
-      if (!anaUpper.has(name.toUpperCase())) findings.push({ message: `dependency-graph 缺少包: ${name}`, severity: "warning" })
+      if (!anaUpper.has(name.toUpperCase())) findings.push({ message: `依赖图缺少包: ${name}`, severity: "warning" })
     }
     for (const name of anaNames) {
-      if (!invUpper.has(name.toUpperCase())) findings.push({ message: `inventory 缺少包: ${name}（dependency-graph 中存在但 inventory 中不存在）`, severity: "warning" })
+      if (!invUpper.has(name.toUpperCase())) findings.push({ message: `inventory 缺少包: ${name}（依赖图中存在但 inventory 中不存在）`, severity: "warning" })
     }
 
     // translationOrder 覆盖校验（大小写不敏感）
     const orderedUpper = new Set(
-      ((analysis.translationOrder as string[][]) ?? []).flat()
+      (graph.translationOrder ?? []).flat()
         .filter((n): n is string => typeof n === "string" && n.length > 0)
         .map((n) => n.toUpperCase())
     )
@@ -777,11 +804,11 @@ export class WorkflowEngine {
       if (!orderedUpper.has(name.toUpperCase())) findings.push({ message: `translationOrder 缺少包: ${name}`, severity: "warning" })
     }
 
-    // callGraph refName 一致性校验（仅 inventory 完成后；dependency-graph.json 现由 inventory 阶段代码产出）
-    // dependency-graph.json.callGraph 的 key/value 须为 PKG.refName，refName 须落在该包 inventory-packages
-    // 推导出的合法集合内（非重载=裸名，重载={name}__序号，全部带序号）。
+    // callGraph refName 一致性校验（仅 inventory 完成后；callGraph 现由 dependency-graph.ts 从
+    // subprograms/*.json 的 directCalls 按需推导）。callGraph 的 key/value 须为 PKG.refName，
+    // refName 须落在该包 subprograms 推导出的合法集合内（非重载=裸名，重载={name}__序号，全部带序号）。
     if (completedPhase === "inventory") {
-      const callGraph = (analysis.callGraph as Record<string, string[]>) ?? {}
+      const callGraph = graph.callGraph
       const refNameByPkg = this.buildRefNameIndex(artifactsDir, anaNames)
       const refs: Array<[string, "key" | "value"]> = []
       for (const [k, vs] of Object.entries(callGraph)) {
@@ -1190,7 +1217,7 @@ export class WorkflowEngine {
   }
 
   /**
-   * 根据 dependency-graph.json 的 translationOrder 计算分片计划。
+   * 根据依赖图的 translationOrder 计算分片计划（translationOrder 由 dependency-graph.ts 按需推导）。
    *
    * translationOrder 的每个内层数组要么是单包（独立包），要么是 SCC 组
    *（强连通循环依赖包，必须同 session 翻译以解析循环引用，见 sql-analyst.md）。
@@ -1307,7 +1334,8 @@ export class WorkflowEngine {
 
   /**
    * 构建各包（包名大写）→ 合法 refName 集合（大写）的索引，供 callGraph / subprogramMethods
-   * 一致性校验复用。refName 推导依据 inventory-packages/{PKG}.json 的 procedures 数组顺序与重复次数。
+   * 一致性校验复用。refName 推导依据 subprograms/{PKG}.*.json 的 name 数组顺序与重复次数
+   *（经 refNamesForPackage 处理重载 {name}__序号），与 FSD/translation 命名一致。
    */
   private buildRefNameIndex(
     artifactsDir: string,
@@ -1315,11 +1343,11 @@ export class WorkflowEngine {
   ): Map<string, Set<string>> {
     const index = new Map<string, Set<string>>()
     for (const pkg of packageNames) {
-      const invPkg = this.loadArtifactJson(artifactsDir, `inventory-packages/${pkg}`)
-      const procs = ((invPkg?.procedures as Array<{ name: string }>) ?? []).map((p) => p.name)
-      // 空包 / 缺失 inventory-packages 文件也建索引（validRefNameSet([]) → 空 Set）：该包的任何
-      // refName 引用都会被判非法并告警，而非因 valid 为 undefined 被 `if (valid && ...)` 静默跳过。
-      index.set(pkg.toUpperCase(), validRefNameSet(procs))
+      const parsed = parseInventoryPackage(artifactsDir, pkg)
+      // 空包 / 缺失 packages 文件也建索引（空 Set）：该包的任何 refName 引用都会被判非法并告警，
+      // 而非因 valid 为 undefined 被 `if (valid && ...)` 静默跳过。
+      const refs = parsed ? parsed.refNames : []
+      index.set(pkg.toUpperCase(), new Set(refs.map((r) => r.toUpperCase())))
     }
     return index
   }
@@ -1526,9 +1554,13 @@ export class WorkflowEngine {
     const pkgResults = (summary as { packageResults?: Array<{ packageName: string; passed: boolean; staticPassed?: boolean | null }> }).packageResults ?? []
     // 失败包 = 语义未过(!passed) 或 静态未过(staticPassed===false)。后者由 review 静态重构引入
     // （review.json 纯语义、静态 finding 走独立通道），若不纳入 fix 范围会导致静态问题永不修复+不重扫→死循环。
+    // GLOBAL 是未归因到 inventory 包的哨兵（非可修复包），排除出 failedPackages，避免
+    // D12「必须覆盖所有失败包」与「fixedPackages 必须在 inventory 中」自相矛盾导致死循环。
     const failedPackages = new Set(
       pkgResults
-        .filter(p => typeof p.packageName === "string" && p.packageName && (!p.passed || p.staticPassed === false))
+        .filter(p => typeof p.packageName === "string" && p.packageName
+          && p.packageName.toUpperCase() !== "GLOBAL"
+          && (!p.passed || p.staticPassed === false))
         .map(p => p.packageName.toUpperCase())
     )
     const fixedUpper = new Set(

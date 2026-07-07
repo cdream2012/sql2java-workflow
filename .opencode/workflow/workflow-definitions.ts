@@ -92,7 +92,7 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
       description: "修复审查/验证发现的问题",
       agentFile: "agent/translator.md",
       temperature: 0.1,
-      maxRetries: 3,
+      maxRetries: 5,
       isFixPhase: true,
       tools: ["read", "bash", "write", "edit", "workflow"],
     },
@@ -122,11 +122,11 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
 // ============================================================================
 
 // 共享 artifact 路径常量，避免跨阶段重复声明时遗漏
-// inventory-index.json 是预扫描源，仅 inventory 阶段代码生成（generateInventory/
-// generateDependencyGraph）+ 边界校验消费，不注入任何下游 worker（其内容已精炼到
-// inventory.json / inventory-packages / dependency-graph.json，下游读那些即可）。
-const _INV_BASE = ["inventory.json", "inventory-packages/*.json"] as const
-const _ANALYSIS = ["dependency-graph.json", "analysis-packages/*.json"] as const
+// inventory 按实体落盘：packages/{PKG}.json + subprograms/{PKG.METHOD}.json + tables/{TABLE}.json
+// + 顶层 inventory.json（轻量索引）。调用图由 dependency-graph.ts 按需从 subprograms.directCalls
+// 推导，不再落盘 dependency-graph.json。inventory-index.json 仅为 scan→generateInventory 中间文件。
+const _INV_BASE = ["inventory.json", "packages/*.json", "subprograms/*.json", "tables/*.json"] as const
+const _ANALYSIS = ["analysis-packages/*.json"] as const
 const _PLAN = ["plan.json"] as const
 const _SCAFFOLD = ["scaffold.json"] as const
 const _DEDUP = ["dedup.json"] as const
@@ -135,18 +135,19 @@ const _FSD = ["fsd/*/*.md"] as const
 
 /** 每个 phase 需要读取的上游 artifact 路径模板 */
 export const UPSTREAM_ARTIFACTS: Record<string, string[]> = {
-  inventory: ["inventory-index.json"],
-  // analyze 不注入 inventory-index.json：本包源码路径从 inventory-packages/{PKG}.json 的
-  // specFile/bodyFile 取（已收窄到本分片）；表结构从 inventory.json，callGraph 从 dependency-graph.json。
-  analyze: ["inventory.json", "inventory-packages/*.json", "dependency-graph.json"],
+  // inventory-index.json 现由 inventory worker 第 0 步调 workflow({action:"scan"}) 自产，
+  // 不再是 start 预生成的 upstream。generateInventory 从 artifactsDir 自行读取。
+  inventory: [],
+  // analyze：本包子程序详情从 subprograms/{PKG}.*.json 取（已收窄到本分片）；
+  // 表结构从 tables/{TABLE}.json + inventory.json.tableNames；调用图由 dependency-graph.ts 按需推导。
+  analyze: [..._INV_BASE, ..._ANALYSIS],
   // plan 是框架设计（包映射/类型映射/规则/约定/manualReviewList），不做逐过程翻译，
   // 不需要 FSD（FSD 是 per-procedure 业务翻译说明书，给 translate 用）。manualReviewList
   // 的高风险项来自 analysis-packages.translationNotes，不依赖 FSD。
   plan: [..._INV_BASE, ..._ANALYSIS],
   scaffold: [..._PLAN, ..._INV_BASE],
-  // translate 同样不注入 inventory-index.json（同 analyze 理由：避免全量包源码路径泄漏）。
-  // fsd/*/*.md 会在分片模式下被 narrowUpstreamForShard 收窄到 fsd/{pkg}/*.md（本包 FSD）。
-  translate: ["inventory.json", "inventory-packages/*.json", ..._PLAN, ..._ANALYSIS, ..._SCAFFOLD, ..._FSD],
+  // translate：fsd/*/*.md 会在分片模式下被 narrowUpstreamForShard 收窄到 fsd/{pkg}/*.md（本包 FSD）。
+  translate: [..._INV_BASE, ..._PLAN, ..._ANALYSIS, ..._SCAFFOLD, ..._FSD],
   dedup: [..._PLAN, ..._SCAFFOLD, ..._INV_BASE, ..._ANALYSIS, ..._TRANSLATIONS, "dedup-duplicates.json"],
   // TODO (F9): translations/*/translation.json 在 dedup/review/verify 三阶段重复读取，
   // artifactCache 每次 advance 清空导致无法跨阶段缓存。考虑支持只读 artifact 的跨阶段缓存。
@@ -177,15 +178,15 @@ export type PrerequisiteItem = string | string[]
 
 /** 目标阶段 → 必须存在的 artifact 文件名（string=必须，string[]=OR组） */
 export const PHASE_PREREQUISITES: Record<string, PrerequisiteItem[]> = {
-  analyze: ["inventory-index.json", "inventory.json", "inventory-packages", "dependency-graph.json"],
-  plan: ["inventory-index.json", "inventory.json", "inventory-packages", "dependency-graph.json", "analysis-packages"],
-  scaffold: ["plan.json", "inventory-index.json", "inventory.json", "inventory-packages"],
-  translate: ["inventory-index.json", "inventory.json", "inventory-packages", "dependency-graph.json", "analysis-packages", "plan.json", "scaffold.json"],
-  dedup: ["inventory.json", "plan.json", "scaffold.json", "dependency-graph.json", "translations"],
-  review: ["plan.json", "scaffold.json", "dependency-graph.json", "analysis-packages"],
+  analyze: ["inventory.json", "packages", "subprograms", "analysis-packages"],
+  plan: ["inventory.json", "packages", "subprograms", "analysis-packages"],
+  scaffold: ["plan.json", "inventory.json", "packages"],
+  translate: ["inventory.json", "packages", "subprograms", "analysis-packages", "plan.json", "scaffold.json"],
+  dedup: ["inventory.json", "plan.json", "scaffold.json", "translations"],
+  review: ["plan.json", "scaffold.json", "analysis-packages"],
   verify: ["plan.json", "scaffold.json", "dedup.json"],
   fix: [
-    "dependency-graph.json", "analysis-packages", "plan.json", "scaffold.json", "dedup.json",
+    "analysis-packages", "plan.json", "scaffold.json", "dedup.json",
     // 触发阶段的 summary：review-summary.json 或 verify-summary.json，至少一个
     ["review-summary.json", "verify-summary.json"],
     "translations",

@@ -18,7 +18,7 @@ import { writeFileSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
 import type { CaseConfig } from "../../harness"
 import { assertCheckFound, assertArtifactExists } from "../../harness"
-import { makeInventoryIndex, makePlan, writeArtifactJson } from "../../../ts/helpers/artifact-factory"
+import { makeInventoryIndex, makePlan, makePackageArtifact, writeArtifactJson } from "../../../ts/helpers/artifact-factory"
 
 const PACKAGE = "BAD_PKG"
 const PROJECT_ROOT_REL = "generated/bad-service"
@@ -34,7 +34,7 @@ const config: CaseConfig = {
     // inventory-index（reviewer 全量审查范围的来源）
     writeArtifactJson(dir, "inventory-index.json", makeInventoryIndex({
       packages: [
-        { name: PACKAGE, specFile: "pkg/bad.pks", bodyFile: "pkg/bad.pkb", procedures: [{ name: "DO_SOMETHING", type: "procedure", lineRange: [1, 20] }], estimatedLoc: 20 },
+        { name: PACKAGE, headerFile: "pkg/bad.pks", bodyFile: "pkg/bad.pkb", procedures: [{ name: "DO_SOMETHING", type: "procedure", lineRange: [1, 20] }], estimatedLoc: 20 },
       ],
     }))
 
@@ -63,15 +63,17 @@ const config: CaseConfig = {
       conventions: "Standard conventions",
     })
 
-    // analysis（DependencyGraphSchema 形状）
-    writeArtifactJson(dir, "dependency-graph.json", {
-      callGraph: {},
-      packageDependency: {},
-      translationOrder: [[PACKAGE]],
-      complexity: { [PACKAGE]: { score: 3, patterns: ["exception-block"], riskLevel: "low" } },
-      sccGroups: [],
-      packageNames: [PACKAGE],
-    })
+    // packages（新形状：complexity 现写入 packages/{PKG}.json，取代旧 dependency-graph.json.complexity）
+    writeArtifactJson(join(dir, "packages"), `${PACKAGE}.json`, makePackageArtifact({
+      packageName: PACKAGE,
+      absolutePaths: ["pkg/bad.pks", "pkg/bad.pkb"],
+      headerPath: "pkg/bad.pks",
+      bodyPath: "pkg/bad.pkb",
+      procedures: ["DO_SOMETHING"],
+      functions: [],
+      estimatedLoc: 20,
+      complexity: { score: 3, patterns: ["exception-block"], riskLevel: "low" },
+    }))
 
     // analysis-packages/<pkg>（AnalysisPackageSchema 形状）
     writeArtifactJson(join(dir, "analysis-packages"), `${PACKAGE}.json`, {

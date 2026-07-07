@@ -32,12 +32,6 @@ function writeLowCompletionTranslate(ctx: ReturnType<typeof createEngineWithTemp
     sourcePath: "src", packageNames: ["CORE_PKG"], tables: [],
     standaloneProcedures: [], triggers: [], views: [], sequences: [],
   })
-  writeArtifact(ctx.dir, RUN_ID, "dependency-graph.json", {
-    callGraph: {}, packageDependency: {},
-    translationOrder: [["CORE_PKG"]],
-    complexity: {}, sccGroups: [],
-    packageNames: ["CORE_PKG"],
-  })
   writeArtifact(ctx.dir, RUN_ID, "translations/CORE_PKG/translation.json", {
     packageName: "CORE_PKG", status: "partial",
     completedSubprograms: [], totalSubprograms: 5, // 0% < 80% → G1 blocking

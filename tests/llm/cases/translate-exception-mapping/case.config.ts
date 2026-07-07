@@ -20,7 +20,7 @@ import { writeFileSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
 import type { CaseConfig } from "../../harness"
 import { assertGeneratedFileExists, assertJavaMatches, assertDecision } from "../../harness"
-import { makeInventoryIndex, makePlan, writeArtifactJson } from "../../../ts/helpers/artifact-factory"
+import { makeInventoryIndex, makePlan, makePackageArtifact, writeArtifactJson } from "../../../ts/helpers/artifact-factory"
 
 const PACKAGE = "EXC_PKG"
 const SOURCE_DIR_REL = "src-sql"
@@ -36,7 +36,7 @@ const config: CaseConfig = {
   prepareArtifacts: dir => {
     writeArtifactJson(dir, "inventory-index.json", makeInventoryIndex({
       packages: [
-        { name: PACKAGE, specFile: "pkg/exc.pks", bodyFile: `${SOURCE_DIR_REL}/EXC_PKG.pkb`, procedures: [{ name: "SAVE_MSG", type: "procedure", lineRange: [1, 20] }], estimatedLoc: 20 },
+        { name: PACKAGE, headerFile: "pkg/exc.pks", bodyFile: `${SOURCE_DIR_REL}/EXC_PKG.pkb`, procedures: [{ name: "SAVE_MSG", type: "procedure", lineRange: [1, 20] }], estimatedLoc: 20 },
       ],
     }))
 
@@ -44,17 +44,17 @@ const config: CaseConfig = {
       sourcePath: SOURCE_DIR_REL, packageNames: [PACKAGE], tables: [{ name: "T_APP_LOG", columns: [{ name: "MESSAGE", oracleType: "VARCHAR2", nullable: true, isPrimaryKey: false }] }], standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
 
-    // inventory-packages（translate 前置要求；有 procedures 的包必须有 bodyFile）
-    writeArtifactJson(join(dir, "inventory-packages"), `${PACKAGE}.json`, {
+    // packages（新形状：packages/{PKG}.json，PackageArtifactSchema；redesign 后取代 inventory-packages/）
+    writeArtifactJson(join(dir, "packages"), `${PACKAGE}.json`, makePackageArtifact({
       packageName: PACKAGE,
-      bodyFile: `${SOURCE_DIR_REL}/EXC_PKG.pkb`,
-      procedures: [
-        { name: "SAVE_MSG", type: "procedure", params: [{ name: "P_MSG", oracleType: "VARCHAR2", direction: "IN" }], lineRange: [1, 20], loc: 20 },
-      ],
-      types: [],
-      variables: [],
-      constants: [],
-    })
+      absolutePaths: [`${SOURCE_DIR_REL}/EXC_PKG.pkb`],
+      headerPath: null,
+      bodyPath: `${SOURCE_DIR_REL}/EXC_PKG.pkb`,
+      procedures: ["SAVE_MSG"],
+      functions: [],
+      estimatedLoc: 20,
+      complexity: { score: 3, patterns: ["exception-block"], riskLevel: "low" },
+    }))
 
     writeArtifactJson(dir, "plan.json", makePlan({
       packageMappings: [
@@ -72,15 +72,6 @@ const config: CaseConfig = {
         commonClasses: [{ file: "src/main/java/com/example/exc/exception/AppException.java", purpose: "业务异常基类" }],
       },
       conventions: "Standard conventions",
-    })
-
-    writeArtifactJson(dir, "dependency-graph.json", {
-      callGraph: {},
-      packageDependency: {},
-      translationOrder: [[PACKAGE]],
-      complexity: { [PACKAGE]: { score: 3, patterns: ["exception-block"], riskLevel: "low" } },
-      sccGroups: [],
-      packageNames: [PACKAGE],
     })
 
     writeArtifactJson(join(dir, "analysis-packages"), `${PACKAGE}.json`, {

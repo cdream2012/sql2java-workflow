@@ -1,166 +1,125 @@
 /**
- * Inventory Builder — 把 prescan 产出的 inventory-index.json（结构抽取全字段）
- * 转换为下游消费的 inventory-packages/{PKG}.json + inventory.json。
+ * Inventory Builder — 把 scan 阶段产出的 inventory-index.json（新形状：packages/subprograms 独立数组）
+ * 落盘为按实体独立的新产物：
+ *   packages/{PKG}.json       — 包容器（名字索引 + 包级声明）
+ *   subprograms/{PKG.METHOD}.json — 原子子程序（header/body 双定位 + directCalls）
+ *   tables/{TABLE}.json       — 单表列结构 + 主键 + 外键
+ *   inventory.json            — 顶层轻量索引（packageNames + tableNames + triggers/views/sequences）
  *
- * inventory 阶段因此成为纯代码步骤（零 LLM）：prescan（AST/regex）已抽出全部结构字段，
- * 此处仅做格式映射 + Zod 校验，无需 Worker 读源码。
+ * 纯代码步骤（零 LLM）：scan（AST listener）已抽出全部结构字段，此处仅做格式映射 + Zod 校验。
+ * 任一产物 Zod 校验失败即抛错（调用方据此判定 inventory 生成失败）。
  *
- * 兜底：prescan 对个别文件降级到 regex（仅名字）时，对应字段缺省——用合理默认填充以满足
- * schema，下游 analyze 可识别并（必要时）由 LLM 补全。
+ * 注：inventory-index.json 仍作为 scan→generateInventory 的中间文件（Phase 4 评估是否消除）。
  */
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
-import { InventoryPackageSchema, InventorySchema } from "./artifact-schemas"
+import {
+  InventorySchema,
+  PackageArtifactSchema,
+  SubprogramArtifactSchema,
+  TableArtifactSchema,
+} from "./artifact-schemas"
 import { formatZodIssues } from "./engine-core"
 import { getLogger } from "./workflow-logger"
+import { refNameOf } from "./refname"
+import { clearDependencyGraphCache } from "./dependency-graph"
+import type {
+  PackageInfo, SubprogramInfo, TableIndex, TriggerIndex, ViewIndex, SequenceIndex, InventoryIndex,
+} from "./plsql-scanner"
 
-/** prescan 产出的 inventory-index.json 结构（与 plsql-scanner InventoryIndex 对齐，宽松读取） */
-interface PrescanIndex {
-  sourcePath: string
-  packages: PrescanPackage[]
-  tables: PrescanTable[]
-  triggers: PrescanTrigger[]
-  views: PrescanView[]
-  sequences: PrescanSequence[]
-  standaloneProcedures: PrescanStandalone[]
-}
-
-interface PrescanParam { name: string; oracleType: string; direction: string }
-interface PrescanProc {
-  name: string; type: string
-  lineRange?: [number, number]; loc?: number
-  params?: PrescanParam[]; returnType?: string | null
-}
-interface PrescanPackage {
-  name: string; specFile?: string; bodyFile?: string
-  procedures: PrescanProc[]
-  types?: { name: string; kind: string; definition: string }[]
-  variables?: { name: string; type: string; defaultValue?: string | null }[]
-  constants?: { name: string; type: string; value: string }[]
-}
-interface PrescanColumn { name: string; oracleType: string; nullable: boolean; isPrimaryKey: boolean; defaultValue?: string | null }
-interface PrescanTable { name: string; ddlFile?: string; columns?: PrescanColumn[] }
-interface PrescanTrigger {
-  name: string; sourceFile: string
-  timing?: string; level?: string; targetTable?: string; events?: string[]
-  lineRange?: [number, number]; condition?: string | null
-}
-interface PrescanView { name: string; ddlFile?: string; columns?: string[]; underlyingTables?: string[] }
-interface PrescanSequence {
-  name: string; ddlFile?: string
-  startWith?: number | null; incrementBy?: number | null
-  minValue?: number | null; maxValue?: number | null; cycle?: boolean | null
-}
-interface PrescanStandalone {
-  name: string; type: string; sourceFile: string
-  params?: PrescanParam[]; returnType?: string | null; lineRange?: [number, number]
-}
-
-const safeRange = (r?: [number, number]): [number, number] => r ?? [0, 0]
-
-/** 把单个 prescan package 映射为 InventoryPackageSchema 形态 */
-function mapPackage(p: PrescanPackage) {
-  return {
-    packageName: p.name,
-    specFile: p.specFile ?? null,
-    bodyFile: p.bodyFile ?? null,
-    procedures: p.procedures.map(proc => ({
-      name: proc.name,
-      type: proc.type,
-      params: (proc.params ?? []).map(pa => ({
-        name: pa.name,
-        oracleType: pa.oracleType,
-        direction: pa.direction as "IN" | "OUT" | "IN OUT",
-      })),
-      returnType: proc.returnType ?? null,
-      lineRange: safeRange(proc.lineRange),
-      loc: proc.loc ?? (safeRange(proc.lineRange)[1] - safeRange(proc.lineRange)[0] + 1),
-    })),
-    types: p.types ?? [],
-    variables: (p.variables ?? []).map(v => ({ name: v.name, type: v.type, defaultValue: v.defaultValue ?? null })),
-    constants: p.constants ?? [],
-  }
+/** 子程序文件名：{PKG}.{refName}.json，refName 复用单一真相源 refNameOf */
+function subprogramFileName(s: SubprogramInfo): string {
+  return `${s.belongToPackage}.${refNameOf(s)}.json`
 }
 
 /**
- * 读取 inventory-index.json，写出 inventory-packages/{PKG}.json + inventory.json。
- * 任一产物 Zod 校验失败即抛错（调用方据此判定 inventory 生成失败）。
+ * 读取 inventory-index.json（新形状），写出 packages/+subprograms/+tables/+inventory.json。
+ * 任一产物 Zod 校验失败即抛错。
  */
 export function buildInventoryFromIndex(artifactsDir: string): {
   packageCount: number
+  subprogramCount: number
   tableCount: number
   warnings: string[]
 } {
   const indexPath = join(artifactsDir, "inventory-index.json")
   if (!existsSync(indexPath)) {
-    throw new Error(`inventory-index.json 不存在: ${indexPath}（prescan 可能未运行）`)
+    throw new Error(`inventory-index.json 不存在: ${indexPath}（scan 可能未运行）`)
   }
-  const index = JSON.parse(readFileSync(indexPath, "utf-8")) as PrescanIndex
-  const warnings: string[] = []
+  // 本函数重写 subprograms/*.json（含 directCalls），依赖图缓存（按 artifactsDir 常驻）随之失效——
+  // 否则同 session 内 agent 重跑 generateInventory 修正 directCalls 后，buildDependencyGraph 仍返回旧图，
+  // ensureRunScope 用过期闭包持久化错误 scope。生成失败也清：subprograms 可能已部分重写。
+  clearDependencyGraphCache(artifactsDir)
+  const idx = JSON.parse(readFileSync(indexPath, "utf-8")) as InventoryIndex
 
-  // 1) 逐包 inventory-packages/{PKG}.json
-  const pkgDir = join(artifactsDir, "inventory-packages")
-  mkdirSync(pkgDir, { recursive: true })
-  for (const p of index.packages) {
-    const mapped = mapPackage(p)
-    const result = InventoryPackageSchema.safeParse(mapped)
+  const packagesDir = join(artifactsDir, "packages")
+  const subprogramsDir = join(artifactsDir, "subprograms")
+  const tablesDir = join(artifactsDir, "tables")
+  mkdirSync(packagesDir, { recursive: true })
+  mkdirSync(subprogramsDir, { recursive: true })
+  mkdirSync(tablesDir, { recursive: true })
+
+  // 1) packages/{PKG}.json
+  for (const p of idx.packages) {
+    const result = PackageArtifactSchema.safeParse(p)
     if (!result.success) {
-      throw new Error(`inventory-packages/${p.name}.json 校验失败:\n${formatZodIssues(result.error)}`)
+      throw new Error(`packages/${p.packageName}.json 校验失败:\n${formatZodIssues(result.error)}`)
     }
-    writeFileSync(join(pkgDir, `${p.name}.json`), JSON.stringify(result.data, null, 2), "utf-8")
+    // 软校验：包声明了子程序（procedures/functions 非空）但 bodyPath=null —— 无法翻译过程体。
+    // 旧 InventoryPackageSchema 的 refine(procedures⇒bodyFile) 是硬门控，但会误伤合法的 spec-only 包
+    //（Oracle 允许仅 spec 声明），故此处降为非阻塞警告：scanner 漏收 body / 手写产物缺 body 时可见。
+    const subCount = (Array.isArray(p.procedures) ? p.procedures.length : 0) + (Array.isArray(p.functions) ? p.functions.length : 0)
+    if (subCount > 0 && !p.bodyPath) {
+      warnings.push(`包 ${p.packageName} 声明了 ${subCount} 个子程序但 bodyPath 为空（无法翻译过程体，检查 body 文件是否漏收集）`)
+    }
+    writeFileSync(join(packagesDir, `${p.packageName}.json`), JSON.stringify(result.data, null, 2), "utf-8")
   }
 
-  // 2) inventory.json（索引 + DDL）
+  // 2) subprograms/{PKG.METHOD}.json
+  for (const s of idx.subprograms) {
+    const result = SubprogramArtifactSchema.safeParse(s)
+    if (!result.success) {
+      throw new Error(`subprograms/${subprogramFileName(s)} 校验失败:\n${formatZodIssues(result.error)}`)
+    }
+    writeFileSync(join(subprogramsDir, subprogramFileName(s)), JSON.stringify(result.data, null, 2), "utf-8")
+  }
+
+  // 3) tables/{TABLE}.json（表名可能含点 FM.T_ITEM，文件名保留点）
+  for (const t of idx.tables) {
+    const result = TableArtifactSchema.safeParse(t)
+    if (!result.success) {
+      throw new Error(`tables/${t.name}.json 校验失败:\n${formatZodIssues(result.error)}`)
+    }
+    writeFileSync(join(tablesDir, `${t.name}.json`), JSON.stringify(result.data, null, 2), "utf-8")
+  }
+
+  // 4) inventory.json（顶层轻量索引）
   const inventory = {
-    sourcePath: index.sourcePath,
-    packageNames: index.packages.map(p => p.name),
-    tables: index.tables.map(t => ({
+    sourcePath: idx.sourcePath,
+    scannedAt: idx.scannedAt,
+    scannerUsed: idx.scannerUsed,
+    warnings: idx.warnings ?? [],
+    packageNames: idx.packages.map(p => p.packageName),
+    tableNames: idx.tables.map(t => t.name),
+    triggers: idx.triggers.map(t => ({
       name: t.name,
-      ddlFile: t.ddlFile ?? null,
-      columns: (t.columns ?? []).map(c => ({
-        name: c.name,
-        oracleType: c.oracleType,
-        nullable: c.nullable,
-        isPrimaryKey: c.isPrimaryKey,
-        defaultValue: c.defaultValue ?? null,
-      })),
+      timing: t.timing ?? "before",
+      level: t.level ?? "statement",
+      targetTable: t.targetTable ?? "",
+      events: t.events ?? [],
+      sourceFile: t.sourceFile,
+      lineRange: t.lineRange ?? [0, 0],
+      condition: t.condition ?? null,
     })),
-    standaloneProcedures: index.standaloneProcedures.map(s => ({
-      name: s.name,
-      type: s.type,
-      params: (s.params ?? []).map(pa => ({
-        name: pa.name, oracleType: pa.oracleType,
-        direction: pa.direction as "IN" | "OUT" | "IN OUT",
-      })),
-      returnType: s.returnType ?? null,
-      sourceFile: s.sourceFile,
-      lineRange: safeRange(s.lineRange),
-    })),
-    triggers: index.triggers.map(t => {
-      // prescan 文本提取总会设置 timing/level/events/targetTable；regex 降级缺省时给默认以满足 schema
-      if (!t.timing || !t.targetTable) {
-        warnings.push(`trigger ${t.name} 元数据不完整（prescan 降级？），用默认值填充`)
-      }
-      return {
-        name: t.name,
-        timing: t.timing ?? "before",
-        level: t.level ?? "statement",
-        targetTable: t.targetTable ?? "",
-        events: t.events ?? [],
-        sourceFile: t.sourceFile,
-        lineRange: safeRange(t.lineRange),
-        condition: t.condition ?? null,
-      }
-    }),
-    views: index.views.map(v => ({
+    views: idx.views.map(v => ({
       name: v.name,
       ddlFile: v.ddlFile ?? null,
       sourceFile: v.ddlFile ?? null,
       columns: v.columns ?? [],
       underlyingTables: v.underlyingTables ?? [],
     })),
-    sequences: index.sequences.map(s => ({
+    sequences: idx.sequences.map(s => ({
       name: s.name,
       ddlFile: s.ddlFile ?? null,
       startWith: s.startWith ?? null,
@@ -177,6 +136,14 @@ export function buildInventoryFromIndex(artifactsDir: string): {
   }
   writeFileSync(join(artifactsDir, "inventory.json"), JSON.stringify(invResult.data, null, 2), "utf-8")
 
-  getLogger().info("[inventory-builder]", `生成 inventory: ${index.packages.length} pkgs, ${index.tables.length} tables, ${index.triggers.length} triggers`)
-  return { packageCount: index.packages.length, tableCount: index.tables.length, warnings }
+  getLogger().info(
+    "[inventory-builder]",
+    `生成 inventory: ${idx.packages.length} pkgs, ${idx.subprograms.length} subprograms, ${idx.tables.length} tables, ${idx.triggers.length} triggers`,
+  )
+  return {
+    packageCount: idx.packages.length,
+    subprogramCount: idx.subprograms.length,
+    tableCount: idx.tables.length,
+    warnings: idx.warnings ?? [],
+  }
 }

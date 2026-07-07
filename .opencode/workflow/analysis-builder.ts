@@ -1,344 +1,52 @@
 /**
- * Analysis Builder — 把 prescan 的 inventory-index.json（结构全字段）转换为
- * 下游 dependency-graph.json（依赖图 meta）+ 无子程序包的空 analysis-packages。
+ * Analysis Builder — analyze map-reduce 的 **reduce**（代码，零 LLM），归入 inventory 阶段：
+ *   - complexity：启发式（LOC + 子程序数 + 出边数 + 模式 grep）→ score/riskLevel/patterns，
+ *     写入 packages/{PKG}.json（取代旧 dependency-graph.json.complexity，已删）。
+ *   - 无子程序包的空 analysis-packages/{PKG}.json 兜底（有子程序的包由 analyze map 阶段填充）。
  *
- * 这是 analyze map-reduce 的 **reduce**（代码，零 LLM），归入 inventory 阶段：
- *   - callGraph：按子程序 lineRange 扫描源码 `PKG.PROC` 调用 → caller→callee 真实边，
- *     callee 用 refName 规范解析（非重载裸名；重载 grep 无法消歧→过近似全部变体）。
- *   - packageDependency：从 callGraph 聚合包级依赖（排除自环）。
- *   - translationOrder + sccGroups：包级依赖图上跑 Tarjan SCC，输出拓扑序（依赖在前）。
- *   - complexity：启发式（LOC + 子程序数 + 出边数 + 模式 grep）→ score/riskLevel/patterns。
+ * callGraph / packageDependency / translationOrder / sccGroups / procedureOrder / functionOwnership
+ * 不再落盘（dependency-graph.json 已删），由 dependency-graph.ts 从 subprograms/*.json 的 directCalls
+ * 按需推导（进程内缓存）。本模块仅保留 complexity——它读源码做 grep 启发式，非纯图算法，
+ * 不适合放进纯 artifact→图的 dependency-graph.ts。出边数复用 dependency-graph.ts 推导的 callGraph。
  *
- * 产出过 DependencyGraphSchema / AnalysisPackageSchema Zod 校验。
+ * 产出过 PackageArtifactSchema / AnalysisPackageSchema Zod 校验。
  */
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from "node:fs"
 import { join, isAbsolute } from "node:path"
-import { DependencyGraphSchema, AnalysisPackageSchema } from "./artifact-schemas"
+import { PackageArtifactSchema, AnalysisPackageSchema } from "./artifact-schemas"
 import { formatZodIssues } from "./engine-core"
-import { refNamesForPackage, pkgOf } from "./refname"
+import { buildDependencyGraph } from "./dependency-graph"
+import { pkgOf } from "./refname"
 import { getLogger } from "./workflow-logger"
 
-// ── prescan inventory-index.json 形态（宽松读取）──
-interface PrescanProc { name: string; type: string; lineRange?: [number, number] }
-interface PrescanPackage {
-  name: string
-  specFile?: string
-  bodyFile?: string
-  procedures: PrescanProc[]
+// ── packages/{PKG}.json 形态（宽松读取，complexity 由本模块回填）──
+interface PackageArtifact {
+  packageName: string
+  headerPath: string | null
+  bodyPath: string | null
+  procedures: string[]
+  functions: string[]
   estimatedLoc?: number
-}
-interface PrescanIndex {
-  sourcePath: string
-  packages: PrescanPackage[]
+  [k: string]: unknown
 }
 
-interface SubprogramInfo {
-  name: string
-  refName: string
-  type: "procedure" | "function"
-  lineRange?: [number, number]
-}
-
-// SQL 伪列 / 绑定变量排除（与 plsql-scanner extractCallGraph 一致）
-const SQL_PSEUDO = new Set([
-  "NEXTVAL", "CURRVAL", "COUNT", "EXISTS", "FIRST", "LAST",
-  "ROWCOUNT", "FOUND", "NOTFOUND", "ISOPEN", "BULK_ROWCOUNT",
-  "SQL", "DBMS", "UTL", "SQLERRM", "SQLCODE",
-])
-
-interface CallSite { line: number; calleePkg: string; calleeProc: string }
-
-/** 读源码文件（specFile/bodyFile 相对 sourcePath） */
-function readSource(sourcePath: string, rel?: string): string {
+/** 读源码文件（headerPath/bodyPath 相对 sourcePath，可能为绝对路径） */
+function readSource(sourcePath: string, rel?: string | null): string {
   if (!rel) return ""
   const abs = isAbsolute(rel) ? rel : join(sourcePath, rel)
   if (!existsSync(abs)) return ""
   return readFileSync(abs, "utf-8").replace(/\r\n?/g, "\n")
 }
 
-/** 构建 refName 索引：同名仅 1 次→裸名；同名多次→`{name}__{i}`（1-based，全部带序号）。
- *  refName 计算复用 refname.ts 单一真相源 refNamesForPackage，保证与 engine-core
- *  validateCrossSchema 的 validRefNameSet 口径一致（PL/SQL 不区分大小写，按大写计数重载）。 */
-export function buildRefNameIndex(pkgs: PrescanPackage[]): Map<string, {
-  subprograms: SubprogramInfo[]
-  procNameToRefNames: Map<string, string[]>
-}> {
-  const result = new Map<string, { subprograms: SubprogramInfo[]; procNameToRefNames: Map<string, string[]> }>()
-  for (const pkg of pkgs) {
-    const refNames = refNamesForPackage(pkg.procedures.map((p) => p.name))
-    const subprograms: SubprogramInfo[] = pkg.procedures.map((p, i) => ({
-      name: p.name,
-      refName: refNames[i],
-      type: (p.type?.toLowerCase() === "function" ? "function" : "procedure") as "procedure" | "function",
-      lineRange: p.lineRange,
-    }))
-    const procNameToRefNames = new Map<string, string[]>()
-    for (const s of subprograms) {
-      const key = s.name.toUpperCase()
-      const arr = procNameToRefNames.get(key) ?? []
-      arr.push(s.refName)
-      procNameToRefNames.set(key, arr)
-    }
-    result.set(pkg.name, { subprograms, procNameToRefNames })
-  }
-  return result
-}
-
-/** 扫描源码中的 `PKG.PROC` 调用点（排除注释 / 绑定变量 / 伪列），带行号 */
-function scanCallSites(code: string): CallSite[] {
-  const sites: CallSite[] = []
-  const lines = code.split("\n")
-  lines.forEach((rawLine, i) => {
-    const trimmed = rawLine.trim()
-    if (trimmed.startsWith("--")) return
-    // 排除 :NEW/:OLD 绑定变量
-    const cleaned = trimmed.replace(/:[A-Z]+/gi, " ")
-    const matches = cleaned.matchAll(/\b([A-Z][A-Z0-9_]*)\.([A-Z][A-Z0-9_]*)\b/gi)
-    for (const m of matches) {
-      const calleePkg = m[1].toUpperCase()
-      const calleeProc = m[2].toUpperCase()
-      if (SQL_PSEUDO.has(calleePkg) || SQL_PSEUDO.has(calleeProc)) continue
-      if (calleePkg.length < 2 || calleeProc.length < 2) continue
-      sites.push({ line: i + 1, calleePkg, calleeProc })
-    }
-  })
-  return sites
-}
-
-/** 扫描源码中的同包**裸名**调用点（`proc_name(...)` / `proc_name;`，无 `PKG.` 前缀）。
- *
- * scanCallSites 只识别 `PKG.PROC` 点号调用，遗漏同包裸名互调——闭包翻译（feat/proc-entry-scope）
- * 场景下入口 proc 调同包 helper 若漏边会漏译。此函数补同包裸名调用边：
- *   - 候选：标识符后接 `(` 或 `;`（PL/SQL 调用两种形式）；
- *   - 严格白名单：裸名须命中本包子程序名集合（procNameToRefNames 的 key，已大写），否则跳过
- *     （排除列名/变量/SQL 关键字/伪列），避免幻边膨胀 SCC；
- *   - 排除点号调用的一部分（`PKG.PROC` 的 PROC 段）——前一个非空白字符为 `.` 则跳过（已由
- *     scanCallSites 处理）；
- *   - 排除 `--` 注释行、`:NEW/:OLD` 绑定变量（与 scanCallSites 一致）。
- *
- * 跨包裸名调用（synonym/standalone，无包前缀）无法消歧，仍为已知局限，不在此处理。
- */
-function scanBareCallSites(code: string, samePkgNames: Set<string>): CallSite[] {
-  const sites: CallSite[] = []
-  if (samePkgNames.size === 0) return sites
-  // 前导词为这些关键字时，NAME 不是调用：`procedure NAME(` / `function NAME(` 是声明，
-  // `end NAME;` 是子程序结束标签。排除以防声明/结尾误判为调用（自环污染 callGraph）。
-  const DECL_KEYWORDS = new Set(["PROCEDURE", "FUNCTION", "END"])
-  const lines = code.split("\n")
-  lines.forEach((rawLine, i) => {
-    const trimmed = rawLine.trim()
-    if (trimmed.startsWith("--")) return
-    const cleaned = trimmed.replace(/:[A-Z]+/gi, " ")
-    const re = /\b([A-Z][A-Z0-9_]*)\s*(?=[(;])/gi
-    let m: RegExpExecArray | null
-    while ((m = re.exec(cleaned)) !== null) {
-      const name = m[1].toUpperCase()
-      if (name.length < 2) continue
-      if (SQL_PSEUDO.has(name)) continue
-      if (!samePkgNames.has(name)) continue
-      // 排除点号调用的一部分（PKG.PROC 由 scanCallSites 处理）：前一个非空白字符为 `.` 则跳过
-      let j = m.index - 1
-      while (j >= 0 && /\s/.test(cleaned[j])) j--
-      if (j >= 0 && cleaned[j] === ".") continue
-      // 排除声明/结尾：前一个 word 是 procedure/function/end
-      let k = m.index - 1
-      while (k >= 0 && /\s/.test(cleaned[k])) k--
-      const wordEnd = k
-      while (k >= 0 && /[A-Za-z0-9_]/.test(cleaned[k])) k--
-      const prevWord = cleaned.slice(k + 1, wordEnd + 1).toUpperCase()
-      if (DECL_KEYWORDS.has(prevWord)) continue
-      sites.push({ line: i + 1, calleePkg: "", calleeProc: name })
-    }
-  })
-  return sites
-}
-
-/** 找包含指定行的最内层子程序（lineRange 最小者） */
-function findCallerSubprogram(subprograms: SubprogramInfo[], line: number): SubprogramInfo | null {
-  let best: SubprogramInfo | null = null
-  let bestSpan = Infinity
-  for (const s of subprograms) {
-    if (!s.lineRange) continue
-    const [a, b] = s.lineRange
-    if (line >= a && line <= b) {
-      const span = b - a
-      if (span < bestSpan) { bestSpan = span; best = s }
-    }
-  }
-  return best
-}
-
-/** 解析 callee 的 refName 列表：PROC 须是 calleePkg 的子程序；重载→全部变体；否则跳过 */
-function resolveCalleeRefNames(
-  calleePkg: string,
-  calleeProc: string,
-  refIndex: Map<string, { procNameToRefNames: Map<string, string[]> }>,
-): string[] | null {
-  const pkgInfo = refIndex.get(calleePkg)
-  if (!pkgInfo) return null // callee 包不在 inventory（外部/系统包），跳过
-  const refNames = pkgInfo.procNameToRefNames.get(calleeProc)
-  if (!refNames) return null // callee 不是子程序（常量/变量/类型），跳过
-  return refNames.map(r => `${calleePkg}.${r}`)
-}
-
-/**
- * Tarjan SCC（递归）。图边 A→B 表示 A 依赖 B。
- * 输出 SCC 列表，顺序为 **依赖在前**（B 的 SCC 先于 A 的 SCC 输出）→ 直接作 translationOrder。
- */
-export function tarjanSCC(nodes: string[], edges: Map<string, Set<string>>): string[][] {
-  const index = new Map<string, number>()
-  const lowlink = new Map<string, number>()
-  const onStack = new Set<string>()
-  const stack: string[] = []
-  let order = 0
-  const sccs: string[][] = []
-
-  function strongconnect(v: string): void {
-    index.set(v, order)
-    lowlink.set(v, order)
-    order++
-    stack.push(v)
-    onStack.add(v)
-    const succs = edges.get(v) ?? new Set()
-    for (const w of succs) {
-      if (!index.has(w)) {
-        strongconnect(w)
-        lowlink.set(v, Math.min(lowlink.get(v)!, lowlink.get(w)!))
-      } else if (onStack.has(w)) {
-        lowlink.set(v, Math.min(lowlink.get(v)!, index.get(w)!))
-      }
-    }
-    if (lowlink.get(v) === index.get(v)) {
-      const comp: string[] = []
-      let w: string
-      do {
-        w = stack.pop()!
-        onStack.delete(w)
-        comp.push(w)
-      } while (w !== v)
-      sccs.push(comp)
-    }
-  }
-
-  for (const v of nodes) {
-    if (!index.has(v)) strongconnect(v)
-  }
-  return sccs
-}
-
-/**
- * 计算 FUNCTION 属主归属（同包内，确定性）。见 plan「FUNCTION 属主归属」。
- *
- * 对每个 FUNCTION f，在**同包**子程序 callGraph 上反向 BFS，收集能（经 function→function 链）
- * 调用 f 的 PROCEDURE 及其最短调用距离；owner = 距离最近者，并列取 refName 字典序最小。
- * 无任何 PROCEDURE 可达 → f 为孤儿（不在返回 map 中，自身作为独立 unit）。
- * 跨包调用不建立属主（仅同包边参与反向可达）。
- *
- * @returns ownership: `PKG.funcRef` → `PKG.ownerProcRef`（仅被拥有的 FUNCTION）
- */
-export function assignFunctionOwnership(
-  callGraph: Record<string, string[]>,
-  refIndex: Map<string, { subprograms: SubprogramInfo[]; procNameToRefNames: Map<string, string[]> }>,
-): Map<string, string> {
-  const ownership = new Map<string, string>()
-
-  for (const [pkg, info] of refIndex) {
-    // 同包子程序类型表 + 同包反向邻接（predecessors）
-    const typeOf = new Map<string, "procedure" | "function">()
-    const reverse = new Map<string, string[]>() // callee(full) → [caller(full), ...] 同包
-    for (const s of info.subprograms) {
-      const full = `${pkg}.${s.refName}`
-      typeOf.set(full, s.type)
-      reverse.set(full, [])
-    }
-    for (const [s, callees] of Object.entries(callGraph)) {
-      if (pkgOf(s) !== pkg) continue
-      for (const t of callees) {
-        if (pkgOf(t) !== pkg) continue // 跨包边不参与同包属主
-        const arr = reverse.get(t)
-        if (arr) arr.push(s)
-      }
-    }
-
-    // 每个 FUNCTION 反向 BFS 找可达 PROCEDURE
-    for (const s of info.subprograms) {
-      if (s.type !== "function") continue
-      const f = `${pkg}.${s.refName}`
-      // BFS（无权图首达即最短）
-      const dist = new Map<string, number>([[f, 0]])
-      const queue: string[] = [f]
-      let head = 0
-      while (head < queue.length) {
-        const cur = queue[head++]
-        for (const pred of reverse.get(cur) ?? []) {
-          if (!dist.has(pred)) {
-            dist.set(pred, dist.get(cur)! + 1)
-            queue.push(pred)
-          }
-        }
-      }
-      // 收集可达 PROCEDURE（distance, refName）
-      let best: { ref: string; dist: number } | null = null
-      for (const [node, d] of dist) {
-        if (typeOf.get(node) !== "procedure") continue
-        const cand = { ref: node, dist: d }
-        if (best === null ||
-            cand.dist < best.dist ||
-            (cand.dist === best.dist && cand.ref < best.ref)) {
-          best = cand
-        }
-      }
-      if (best) ownership.set(f, best.ref)
-      // best===null → 孤儿，不入表
-    }
-  }
-  return ownership
-}
-
-/**
- * 由子程序 callGraph + 属主归属折叠出**单元级**依赖图，跑 Tarjan SCC → procedureOrder。
- *
- * unit = 一个 PROCEDURE（full key 自身），或一个孤儿 FUNCTION（full key 自身）；被 owner 拥有的
- * FUNCTION 折叠进 owner 单元。边：callGraph 每条 s→t 映射为 unit(s)→unit(t)，同单元自环跳过。
- * 边方向 caller→callee = 依赖（与 tarjanSCC「A→B 表示 A 依赖 B」约定一致），输出依赖在前。
- */
-export function buildProcedureOrder(
-  callGraph: Record<string, string[]>,
-  refIndex: Map<string, { subprograms: SubprogramInfo[]; procNameToRefNames: Map<string, string[]> }>,
-  ownership: Map<string, string>,
-): string[][] {
-  const unitOf = new Map<string, string>()
-  for (const [pkg, info] of refIndex) {
-    for (const s of info.subprograms) {
-      const full = `${pkg}.${s.refName}`
-      const unit = s.type === "procedure" ? full : (ownership.get(full) ?? full)
-      unitOf.set(full, unit)
-    }
-  }
-  const unitList = [...new Set(unitOf.values())]
-  const edges = new Map<string, Set<string>>()
-  for (const u of unitList) edges.set(u, new Set())
-  for (const [s, callees] of Object.entries(callGraph)) {
-    const us = unitOf.get(s)
-    if (!us) continue
-    for (const t of callees) {
-      const ut = unitOf.get(t)
-      if (!ut || ut === us) continue // 跨包/同单元自环跳过
-      edges.get(us)!.add(ut)
-    }
-  }
-  return tarjanSCC(unitList, edges)
-}
-
 /** 启发式复杂度：LOC + 子程序数 + 出边数 + 模式 grep → score/patterns/riskLevel */
 function heuristicComplexity(
-  pkg: PrescanPackage,
+  pkg: PackageArtifact,
   bodyCode: string,
-  specCode: string,
+  headerCode: string,
   outgoingEdges: number,
 ): { score: number; patterns: string[]; riskLevel: "low" | "medium" | "high" } {
-  const code = bodyCode + "\n" + specCode
+  const code = bodyCode + "\n" + headerCode
   const patternDefs: [string, RegExp][] = [
     ["cursor-loop", /\b(FOR\s+\w+\s+IN\s*\(|CURSOR\b|\bLOOP\b)/i],
     ["exception-block", /\bEXCEPTION\b/i],
@@ -350,163 +58,94 @@ function heuristicComplexity(
     ["analytic", /\bOVER\s*\(/i],
     ["pipelined", /(PIPELINED|PIPE\s+ROW)/i],
     ["autonomous-tx", /AUTONOMOUS_TRANSACTION/i],
-    ["recursive-call", /\bRETURN\b/i], // 粗略，递归函数难精确判定，留作占位
   ]
   const patterns = patternDefs.filter(([, re]) => re.test(code)).map(([n]) => n)
-  // 递归调用占位太粗，去掉避免噪声
-  const filtered = patterns.filter(p => p !== "recursive-call")
 
   const loc = pkg.estimatedLoc ?? 0
-  const subprogramCount = pkg.procedures.length
-  let score = Math.round(loc / 100 + subprogramCount * 0.4 + outgoingEdges * 0.3 + filtered.length * 0.6)
+  const subprogramCount = pkg.procedures.length + pkg.functions.length
+  let score = Math.round(loc / 100 + subprogramCount * 0.4 + outgoingEdges * 0.3 + patterns.length * 0.6)
   if (score < 1) score = 1
   if (score > 10) score = 10
   const riskLevel: "low" | "medium" | "high" = score <= 3 ? "low" : score <= 6 ? "medium" : "high"
-  return { score, patterns: filtered, riskLevel }
+  return { score, patterns, riskLevel }
+}
+
+/** 读 inventory.json 的 sourcePath + packageNames（顶层索引，轻量） */
+function readInventoryMeta(artifactsDir: string): { sourcePath: string; packageNames: string[] } {
+  const p = join(artifactsDir, "inventory.json")
+  if (!existsSync(p)) {
+    throw new Error(`inventory.json 不存在: ${p}（generateInventory 可能未运行）`)
+  }
+  const inv = JSON.parse(readFileSync(p, "utf-8")) as { sourcePath?: string; packageNames?: string[] }
+  return {
+    sourcePath: inv.sourcePath ?? "",
+    packageNames: Array.isArray(inv.packageNames) ? inv.packageNames : [],
+  }
+}
+
+/** 读 packages/*.json 全部包（按文件名序） */
+function readPackages(artifactsDir: string): PackageArtifact[] {
+  const dir = join(artifactsDir, "packages")
+  if (!existsSync(dir)) return []
+  const out: PackageArtifact[] = []
+  for (const f of readdirSync(dir).sort()) {
+    if (!f.endsWith(".json")) continue
+    try {
+      out.push(JSON.parse(readFileSync(join(dir, f), "utf-8")) as PackageArtifact)
+    } catch { /* 跳过损坏文件 */ }
+  }
+  return out
 }
 
 /**
- * 读 inventory-index.json，写出 dependency-graph.json + 无子程序包的空 analysis-packages/{PKG}.json。
- * 任一产物 Zod 校验失败即抛错。
+ * 读 inventory.json + packages/*.json，把启发式 complexity 写回 packages/{PKG}.json，
+ * 并为无子程序包写空 analysis-packages/{PKG}.json 兜底。任一产物 Zod 校验失败即抛错。
+ *
+ * callGraph/SCC/ordering 不再在此产出——由 dependency-graph.ts 按需推导（见该模块）。
  */
 export function buildDependencyGraphFromIndex(artifactsDir: string): {
   packageCount: number
   sccGroupCount: number
   warnings: string[]
 } {
-  const indexPath = join(artifactsDir, "inventory-index.json")
-  if (!existsSync(indexPath)) {
-    throw new Error(`inventory-index.json 不存在: ${indexPath}（prescan 可能未运行）`)
-  }
-  const index = JSON.parse(readFileSync(indexPath, "utf-8")) as PrescanIndex
   const warnings: string[] = []
-  const sourcePath = index.sourcePath
+  const { sourcePath } = readInventoryMeta(artifactsDir)
+  const packages = readPackages(artifactsDir)
 
-  // 1) refName 索引
-  const refIndex = buildRefNameIndex(index.packages)
+  // 出边数（按包聚合）——复用 dependency-graph.ts 从 subprograms.directCalls 推导的 callGraph
+  const graph = buildDependencyGraph(artifactsDir)
+  const outgoingByPkg: Record<string, number> = {}
+  for (const [caller, callees] of Object.entries(graph.callGraph)) {
+    const p = pkgOf(caller)
+    outgoingByPkg[p] = (outgoingByPkg[p] ?? 0) + callees.length
+  }
 
-  // 2) callGraph（子程序级，仅 subprogram 调用）+ 收集所有跨包引用点（包级，含常量/类型）
-  // 局限：scanCallSites 只识别 `PKG.PROC` 点号模式调用。standalone 过程被 package 裸名
-  // 调用（proc_name() 无包前缀）时，调用边进不了 callGraph——但不阻断 standalone 自身被
-  // 翻译（虚拟包进 packages 后自然走 FSD/translate），仅 package→standalone 跨包对接边
-  // 可能缺失，由后续 review/fix 兜底。standalone 调用 package（PKG.PROC 形式）不受影响。
-  const callGraph: Record<string, string[]> = {}
-  const allRefs: { callerPkg: string; calleePkg: string }[] = []
-  for (const pkg of index.packages) {
-    const pkgInfo = refIndex.get(pkg.name)!
-    const bodyCode = readSource(sourcePath, pkg.bodyFile)
-    if (!bodyCode) continue // spec-only 包无调用
-    // 2a) 点号调用 `PKG.PROC`（scanCallSites）
-    const sites = scanCallSites(bodyCode)
-    for (const site of sites) {
-      // 包级引用：任何指向 inventory 包的 PKG.X 都算依赖（含常量/类型/子程序）
-      if (refIndex.has(site.calleePkg) && site.calleePkg !== pkg.name) {
-        allRefs.push({ callerPkg: pkg.name, calleePkg: site.calleePkg })
-      }
-      // 子程序级 callGraph：仅当 callee 是子程序时归属 caller
-      const caller = findCallerSubprogram(pkgInfo.subprograms, site.line)
-      if (!caller) continue // 调用在包初始化块等非子程序区，跳过
-      const calleeRefNames = resolveCalleeRefNames(site.calleePkg, site.calleeProc, refIndex)
-      if (!calleeRefNames) continue // 非子程序 callee（常量/变量/外部包），跳过
-      const callerKey = `${pkg.name}.${caller.refName}`
-      const arr = callGraph[callerKey] ?? []
-      for (const r of calleeRefNames) {
-        if (!arr.includes(r)) arr.push(r)
-      }
-      callGraph[callerKey] = arr
+  // complexity 写入 packages/{PKG}.json（合并回写，保留其它字段）
+  for (const pkg of packages) {
+    const bodyCode = readSource(sourcePath, pkg.bodyPath)
+    const headerCode = readSource(sourcePath, pkg.headerPath)
+    const complexity = heuristicComplexity(pkg, bodyCode, headerCode, outgoingByPkg[pkg.packageName] ?? 0)
+    const merged = { ...pkg, complexity }
+    const r = PackageArtifactSchema.safeParse(merged)
+    if (!r.success) {
+      throw new Error(`packages/${pkg.packageName}.json 合并 complexity 后校验失败:\n${formatZodIssues(r.error)}`)
     }
-    // 2b) 同包 bare-name 调用边补全（feat/proc-entry-scope D）——复用同一 bodyCode，避免重复读文件。
-    // scanCallSites 仅识别 `PKG.PROC` 点号调用；同包裸名互调（`helper_proc()` / `helper_proc;` 无
-    // 包前缀）进不了 callGraph，闭包翻译会漏。命中本包子程序名集合即补边；calleePkg 同包
-    // （resolveCalleeRefNames 按 pkg.name 解析），不产生新的跨包 allRefs。
-    const samePkgNames = new Set(pkgInfo.procNameToRefNames.keys()) // 已大写
-    if (samePkgNames.size > 0) {
-      const bareSites = scanBareCallSites(bodyCode, samePkgNames)
-      for (const site of bareSites) {
-        const caller = findCallerSubprogram(pkgInfo.subprograms, site.line)
-        if (!caller) continue
-        const calleeRefNames = resolveCalleeRefNames(pkg.name, site.calleeProc, refIndex)
-        if (!calleeRefNames) continue
-        const callerKey = `${pkg.name}.${caller.refName}`
-        const arr = callGraph[callerKey] ?? []
-        for (const r of calleeRefNames) {
-          if (!arr.includes(r)) arr.push(r)
-        }
-        callGraph[callerKey] = arr
-      }
-    }
+    writeFileSync(join(artifactsDir, "packages", `${pkg.packageName}.json`), JSON.stringify(r.data, null, 2), "utf-8")
   }
 
-  // 3) packageDependency：从所有跨包引用聚合（排除自环），含常量/类型依赖
-  const pkgDep: Record<string, string[]> = {}
-  for (const pkg of index.packages) pkgDep[pkg.name] = []
-  for (const { callerPkg, calleePkg } of allRefs) {
-    const arr = pkgDep[callerPkg] ?? (pkgDep[callerPkg] = [])
-    if (!arr.includes(calleePkg)) arr.push(calleePkg)
-  }
-
-  // 4) Tarjan SCC → translationOrder（依赖在前）+ sccGroups（size>1）
-  const nodes = index.packages.map(p => p.name)
-  const edges = new Map<string, Set<string>>()
-  for (const pkg of index.packages) {
-    edges.set(pkg.name, new Set(pkgDep[pkg.name] ?? []))
-  }
-  const sccs = tarjanSCC(nodes, edges)
-  const translationOrder: string[][] = sccs.map(c => c)
-  const sccGroups: string[][] = sccs.filter(c => c.length > 1).map(c => [...c].sort())
-
-  // 5) complexity（启发式）
-  const complexity: Record<string, { score: number; patterns: string[]; riskLevel: string }> = {}
-  for (const pkg of index.packages) {
-    const bodyCode = readSource(sourcePath, pkg.bodyFile)
-    const specCode = readSource(sourcePath, pkg.specFile)
-    // 出边数：该包子程序的 callee 边数
-    let outgoing = 0
-    for (const s of (refIndex.get(pkg.name)?.subprograms ?? [])) {
-      const arr = callGraph[`${pkg.name}.${s.refName}`]
-      if (arr) outgoing += arr.length
-    }
-    complexity[pkg.name] = heuristicComplexity(pkg, bodyCode, specCode, outgoing)
-  }
-
-  // 5.5) PROCEDURE 级：FUNCTION 属主归属 + 单元级拓扑序 procedureOrder
-  // translate 下沉到 PROCEDURE 级的依赖分析：PROCEDURE 为 unit，FUNCTION 跟随同包属主，
-  // 无属主 FUNCTION 独立成 unit。详见 assignFunctionOwnership / buildProcedureOrder。
-  const functionOwnershipMap = assignFunctionOwnership(callGraph, refIndex)
-  const functionOwnership: Record<string, string> = {}
-  for (const [k, v] of functionOwnershipMap) functionOwnership[k] = v
-  const procedureOrder = buildProcedureOrder(callGraph, refIndex, functionOwnershipMap)
-
-  // 6) 写 dependency-graph.json
-  const analysis = {
-    callGraph,
-    packageDependency: pkgDep,
-    translationOrder,
-    complexity,
-    sccGroups,
-    packageNames: nodes,
-    procedureOrder,
-    functionOwnership,
-  }
-  const metaResult = DependencyGraphSchema.safeParse(analysis)
-  if (!metaResult.success) {
-    throw new Error(`dependency-graph.json 校验失败:\n${formatZodIssues(metaResult.error)}`)
-  }
-  writeFileSync(join(artifactsDir, "dependency-graph.json"), JSON.stringify(metaResult.data, null, 2), "utf-8")
-
-  // 7) 无子程序包写空 analysis-packages/{PKG}.json（有子程序的包由 analyze map 阶段填充）
+  // 无子程序包写空 analysis-packages/{PKG}.json（有子程序的包由 analyze map 阶段填充）
   const analysisPkgDir = join(artifactsDir, "analysis-packages")
   mkdirSync(analysisPkgDir, { recursive: true })
-  for (const pkg of index.packages) {
-    if (pkg.procedures.length > 0) continue
-    const empty = { packageName: pkg.name, subprograms: [] }
+  for (const pkg of packages) {
+    if (pkg.procedures.length > 0 || pkg.functions.length > 0) continue
+    const empty = { packageName: pkg.packageName, subprograms: [] }
     const r = AnalysisPackageSchema.safeParse(empty)
     if (!r.success) {
-      throw new Error(`analysis-packages/${pkg.name}.json 空文件校验失败:\n${formatZodIssues(r.error)}`)
+      throw new Error(`analysis-packages/${pkg.packageName}.json 空文件校验失败:\n${formatZodIssues(r.error)}`)
     }
-    writeFileSync(join(analysisPkgDir, `${pkg.name}.json`), JSON.stringify(r.data, null, 2), "utf-8")
+    writeFileSync(join(analysisPkgDir, `${pkg.packageName}.json`), JSON.stringify(r.data, null, 2), "utf-8")
   }
 
-  getLogger().info("[analysis-builder]", `生成 dependency-graph.json: ${nodes.length} 包, ${sccGroups.length} SCC 组, ${Object.keys(callGraph).length} 调用边, ${procedureOrder.flat().length} PROCEDURE 单元, ${Object.keys(functionOwnership).length} 被拥有 FUNCTION`)
-  return { packageCount: nodes.length, sccGroupCount: sccGroups.length, warnings }
+  getLogger().info("[analysis-builder]", `complexity 写入 ${packages.length} 个 packages/*.json; 依赖图按需推导: ${graph.sccGroups.length} SCC 组, ${graph.procedureOrder.flat().length} PROCEDURE 单元, ${Object.keys(graph.functionOwnership).length} 被拥有 FUNCTION`)
+  return { packageCount: packages.length, sccGroupCount: graph.sccGroups.length, warnings }
 }

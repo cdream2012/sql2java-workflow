@@ -47,6 +47,20 @@ export function refNamesForPackage(procedureNames: string[]): string[] {
 }
 
 /**
+ * 由子程序自身的 `overloadIndex` 计算 refName：重载=`{name}__{idx}`，否则裸名。
+ *
+ * 与 {@link refNamesForPackage} 语义等价，但**顺序无关**——直接读子程序文件的 `overloadIndex`
+ * 字段（scanner 按源码声明序赋值，落盘进文件名 `{PKG}.{refName}.json`），不依赖数组顺序。
+ *
+ * 重载包在 ext4/APFS 上 `readdirSync` 顺序非字典序时，`refNamesForPackage(遇见序)` 会把
+ * `__1` 贴到 overloadIndex=2 的文件上，与依赖图 callGraph key（亦取 overloadIndex）错位。
+ * 故凡能拿到 `overloadIndex` 的场合应优先用本函数。
+ */
+export function refNameOf(sub: { name: string; overloadIndex: number | null }): string {
+  return sub.overloadIndex != null ? `${sub.name}__${sub.overloadIndex}` : sub.name
+}
+
+/**
  * 一个包所有**合法** refName 的集合（统一转大写，便于跨来源做大小写不敏感比对）。
  * 用于校验 callGraph 引用、subprogramMethods.oracleName 是否落在合法集合内。
  */
@@ -61,13 +75,15 @@ export function validRefNameSet(procedureNames: string[]): Set<string> {
  */
 export function parseQualified(qualified: string): [string, string] | null {
   if (typeof qualified !== "string") return null
-  const idx = qualified.indexOf(".")
+  // 按**最后一个** `.` 拆分：refName 本身不含 `.`，而包名可能带点（项目约定 fm.xxx，
+  // 点编码子目录路径），故包名 = 最后一个点之前的所有段，refName = 最后一段。
+  const idx = qualified.lastIndexOf(".")
   if (idx <= 0 || idx >= qualified.length - 1) return null
   return [qualified.slice(0, idx), qualified.slice(idx + 1)]
 }
 
 /**
- * 从 unit id `PKG.refName` 取包名（宽松版，按首个 `.` 切分）。
+ * 从 unit id `PKG.refName` 取包名（宽松版，按最后一个 `.` 切分）。
  * 无 `.` 时返回原串（用于已保证合法的 unit id 热路径，避免 null 检查）。
  * 需要严格校验非法格式时用 parseQualified。
  *
@@ -75,12 +91,12 @@ export function parseQualified(qualified: string): [string, string] | null {
  * `const i = u.indexOf("."); return i < 0 ? u : u.slice(...)` 内联闭包（单一真相源）。
  */
 export function pkgOf(unitId: string): string {
-  const i = unitId.indexOf(".")
+  const i = unitId.lastIndexOf(".")
   return i < 0 ? unitId : unitId.slice(0, i)
 }
 
-/** 从 unit id `PKG.refName` 取 refName（宽松版，按首个 `.` 切分）。无 `.` 时返回原串。 */
+/** 从 unit id `PKG.refName` 取 refName（宽松版，按最后一个 `.` 切分）。无 `.` 时返回原串。 */
 export function refOf(unitId: string): string {
-  const i = unitId.indexOf(".")
+  const i = unitId.lastIndexOf(".")
   return i < 0 ? unitId : unitId.slice(i + 1)
 }

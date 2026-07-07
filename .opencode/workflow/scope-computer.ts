@@ -14,12 +14,13 @@
  * 单一真相源（refName 规范、pkgOf/refOf/parseQualified），与 callGraph key 口径一致。
  *
  * 纯函数、零副作用、可单测：不读文件、不持久化。调用方（workflow-engine）负责加载
- * dependency-graph.json / inventory-packages 数据并传入，以及把结果写入 run.metadata。
+ * 依赖图（dependency-graph.ts 按需推导，不再落盘 dependency-graph.json）/ packages 数据并传入，
+ * 以及把结果写入 run.metadata。
  */
 
-import { pkgOf, refNamesForPackage, parseQualified } from "./refname"
+import { pkgOf, refNameOf, parseQualified } from "./refname"
 
-// ── 宽松输入形态（来自 Zod 校验后的 dependency-graph.json / inventory-packages，但本模块不强耦合 schema）──
+// ── 宽松输入形态（来自依赖图 dependency-graph.ts 推导结果 / packages 数据，本模块不强耦合 schema）──
 
 export interface AnalysisLike {
   callGraph: Record<string, string[]>
@@ -29,9 +30,9 @@ export interface AnalysisLike {
 
 export interface InventoryPackageLike {
   packageName: string
-  specFile?: string | null
-  bodyFile?: string | null
-  procedures: { name: string; type: string }[]
+  headerPath?: string | null
+  bodyPath?: string | null
+  procedures: { name: string; type: string; overloadIndex?: number | null }[]
 }
 
 // ── mainEntry 解析 ──
@@ -49,8 +50,9 @@ export interface ParsedMainEntry {
  * 解析 mainEntry 串。过程级形态：`[subdir/]PKG.refName`（location 用 `/`，调用图键用 `.`）。
  * 返回 null = 非过程级（纯包名 / 无点），调用方按旧门面包语义全量翻译。
  *
- * 拆分：先按最后一个 `/` 分 location / rest；rest 按首个 `.` 拆 pkg / refName（parseQualified）。
- * 无 `/` 时 location=null；rest 无 `.` → 非过程级 → null。
+ * 拆分：先按最后一个 `/` 分 location / rest；rest 按最后一个 `.` 拆 pkg / refName（parseQualified，
+ * 适配 dotted 包名 fm.xxx：最后一段是 refName，前面拼成包名）。无 `/` 时 location=null；
+ * rest 无 `.` → 非过程级 → null。
  */
 export function parseMainEntry(spec: unknown): ParsedMainEntry | null {
   if (typeof spec !== "string" || spec.length === 0) return null
@@ -62,7 +64,7 @@ export function parseMainEntry(spec: unknown): ParsedMainEntry | null {
   const rest = slashIdx >= 0 ? trimmed.slice(slashIdx + 1) : trimmed
   if (rest.length === 0) return null
 
-  const q = parseQualified(rest) // [pkg, refName]，按首个 `.` 拆；无 `.` 返回 null
+  const q = parseQualified(rest) // [pkg, refName]，按最后一个 `.` 拆（dotted 包名 fm.xxx 取末段为 refName）；无 `.` 返回 null
   if (!q) return null // 纯包名（无过程）→ 非过程级
   return { subdir: subdir && subdir.length > 0 ? subdir : null, pkg: q[0], refName: q[1] }
 }
@@ -88,10 +90,10 @@ export interface EntryError {
  * 重载消歧：用户给的 refName 段若命中唯一 refName（裸名非重载 / 显式 `name__N`）→ 取之；
  * 若是裸名且该名重载（多个 `name__N`）→ 报错要求显式 refName；若不在该包子程序集 → 报错。
  *
- * subdir 校验：入口包的 `bodyFile ?? specFile` 须以 `subdir/` 开头（防指错/同名包）。
+ * subdir 校验：入口包的 `bodyPath ?? headerPath` 须以 `subdir/` 开头（防指错/同名包）。
  * subdir=null 时跳过。
  *
- * @param entryPkg 入口包的 inventory 数据（调用方从 inventory-packages/{pkg}.json 加载）
+ * @param entryPkg 入口包的 inventory 数据（调用方从 packages/{pkg}.json + subprograms/{pkg}.*.json 加载）
  */
 export function resolveEntry(
   entryPkg: InventoryPackageLike | undefined,
@@ -103,12 +105,13 @@ export function resolveEntry(
 
   // 大小写不敏感匹配包名（Oracle 标识符大小写不敏感）
   if (entryPkg.packageName.toUpperCase() !== parsed.pkg.toUpperCase()) {
-    return { ok: false, error: `inventory-packages 数据包名 ${entryPkg.packageName} 与入口 ${parsed.pkg} 不匹配` }
+    return { ok: false, error: `packages 数据包名 ${entryPkg.packageName} 与入口 ${parsed.pkg} 不匹配` }
   }
 
-  // 计算该包真实 refName 列表（与 callGraph key / FSD 文件名同口径）
-  const procNames = entryPkg.procedures.map(p => p.name)
-  const refNames = refNamesForPackage(procNames) // 与 procedures 数组同序
+  // 计算该包真实 refName 列表（与 callGraph key / FSD 文件名同口径）。
+  // 用 refNameOf(overloadIndex) 顺序无关——refNamesForPackage(遇见序) 在重载≥10 时
+  // __10<__2 会错位，且依赖 readdirSync 顺序，与依赖图 callGraph key 不一致。
+  const refNames = entryPkg.procedures.map(p => refNameOf({ name: p.name, overloadIndex: p.overloadIndex ?? null }))
   const upperToRefName = new Map<string, string>() // 大写 refName → 原始 refName
   for (const r of refNames) upperToRefName.set(r.toUpperCase(), r)
 
@@ -136,7 +139,7 @@ export function resolveEntry(
   // 3) 不存在
   return {
     ok: false,
-    error: `入口子程序 ${parsed.pkg}.${parsed.refName} 不在包 ${entryPkg.packageName} 的子程序集（现有: ${procNames.join(", ") || "无"}）`,
+    error: `入口子程序 ${parsed.pkg}.${parsed.refName} 不在包 ${entryPkg.packageName} 的子程序集（现有: ${refNames.join(", ") || "无"}）`,
   }
 }
 
@@ -148,9 +151,9 @@ function finalize(
 ): EntryResolution | EntryError {
   // subdir 校验
   if (parsed.subdir) {
-    const file = entryPkg.bodyFile ?? entryPkg.specFile
+    const file = entryPkg.bodyPath ?? entryPkg.headerPath
     if (!file) {
-      return { ok: false, error: `入口包 ${pkg} 无 bodyFile/specFile，无法校验子目录 ${parsed.subdir}` }
+      return { ok: false, error: `入口包 ${pkg} 无 bodyPath/headerPath，无法校验子目录 ${parsed.subdir}` }
     }
     const prefix = parsed.subdir.endsWith("/") ? parsed.subdir : parsed.subdir + "/"
     // 归一化反斜杠（跨平台容忍）

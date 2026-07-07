@@ -25,7 +25,7 @@ import { getLogger } from "./workflow-logger"
 
 const MAX_FOCUS_POINTS = 30
 
-interface ProcMeta { lineRange: [number, number]; bodyFile: string | null | undefined; hasOutParam: boolean }
+interface ProcMeta { lineRange: [number, number]; bodyPath: string | null | undefined; hasOutParam: boolean }
 interface SubprogMeta { hasCursors: boolean; hasExceptionHandlers: boolean }
 interface JavaAnchor { javaClass: string; javaMethod: string; javaFile: string | null | undefined }
 interface FocusPoint {
@@ -45,24 +45,32 @@ function readJson(p: string): any | null {
   try { return JSON.parse(readFileSync(p, "utf-8")) } catch { return null }
 }
 
-/** inventory-packages/{pkg}.json → refName → {lineRange, bodyFile, hasOutParam}（解析复用 parseInventoryPackage） */
-function buildInvRefMap(artifactsDir: string, pkg: string): Map<string, ProcMeta> {
+/** packages/{pkg}.json + subprograms/{pkg}.*.json → refName → {lineRange, bodyPath, hasOutParam}（解析复用 parseInventoryPackage）。
+ *  同时返回包级 complexity（原 dependency-graph.json.complexity 已迁入 packages/{pkg}.json）。 */
+function buildInvRefMap(artifactsDir: string, pkg: string): {
+  refMap: Map<string, ProcMeta>
+  complexity: { riskLevel?: string }
+} {
   const m = new Map<string, ProcMeta>()
   const parsed = parseInventoryPackage(artifactsDir, pkg)
-  if (!parsed) return m
-  const { refNames, procs, bodyFile } = parsed
-  procs.forEach((p: any, i: number) => {
+  if (!parsed) return { refMap: m, complexity: {} }
+  const { refNames, subprograms, pkgInfo } = parsed
+  subprograms.forEach((s: any, i: number) => {
     const ref = refNames[i]
-    if (!ref || !Array.isArray(p.lineRange) || p.lineRange.length !== 2) return
-    const hasOutParam = Array.isArray(p.params) && p.params.some((prm: any) =>
-      String(prm?.direction ?? "").toUpperCase() === "OUT" || String(prm?.direction ?? "").toUpperCase() === "IN OUT")
+    if (!ref) return
+    const loc = s?.bodyLocation
+    if (!loc || !Array.isArray(loc.lineRange) || loc.lineRange.length !== 2) return
+    const hasOutParam = Array.isArray(s.parameters) && s.parameters.some((prm: any) => {
+      const mode = String(prm?.mode ?? "").toUpperCase()
+      return mode === "OUT" || mode === "IN OUT"
+    })
     m.set(ref, {
-      lineRange: [Number(p.lineRange[0]), Number(p.lineRange[1])],
-      bodyFile,
+      lineRange: [Number(loc.lineRange[0]), Number(loc.lineRange[1])],
+      bodyPath: typeof loc.absolutePath === "string" ? loc.absolutePath : null,
       hasOutParam,
     })
   })
-  return m
+  return { refMap: m, complexity: (pkgInfo.complexity ?? {}) as { riskLevel?: string } }
 }
 
 /** analysis-packages/{pkg}.json → refName → {hasCursors, hasExceptionHandlers}（解析复用 parseAnalysisPackage） */
@@ -126,8 +134,6 @@ export function buildReviewFocus(
 ): string {
   if (!targetPackages || targetPackages.length === 0) return ""
 
-  const analysis = readJson(join(artifactsDir, "dependency-graph.json")) ?? {}
-  const complexity = (analysis.complexity ?? {}) as Record<string, { riskLevel?: string }>
   const plan = readJson(join(artifactsDir, "plan.json")) ?? {}
   const manualReview = Array.isArray(plan.manualReviewList) ? plan.manualReviewList as Array<{ procedure?: string }> : []
   const scaffold = readJson(join(artifactsDir, "scaffold.json")) ?? {}
@@ -146,18 +152,18 @@ export function buildReviewFocus(
   let skippedNoSignal = 0
 
   for (const pkg of targetPackages) {
-    const invMap = buildInvRefMap(artifactsDir, pkg)
+    const { refMap: invMap, complexity } = buildInvRefMap(artifactsDir, pkg)
     const anaMap = buildAnaRefMap(artifactsDir, pkg)
     const methodMap = buildMethodMap(artifactsDir, pkg)
 
     // body 文件路径在 invMap 各过程一致（同包同 body），取首个非空
-    const bodyFileRel = [...invMap.values()].map(m => m.bodyFile).find(Boolean)
+    const bodyFileRel = [...invMap.values()].map(m => m.bodyPath).find(Boolean)
     const slice = makeSourceSlice(absSrc(bodyFileRel))
 
     for (const [ref, meta] of invMap) {
       const signals: string[] = []
-      const ckey = `${pkg}.${ref}`
-      const isHigh = String(complexity[ckey]?.riskLevel ?? "").toLowerCase() === "high"
+      // complexity 现为包级（packages/{pkg}.json.complexity），整包同 riskLevel
+      const isHigh = String(complexity?.riskLevel ?? "").toLowerCase() === "high"
       const refU = ref.toUpperCase()
       const inManual = manualReview.some(mr => {
         const mp = String(mr?.procedure ?? "").toUpperCase()
@@ -176,7 +182,7 @@ export function buildReviewFocus(
       focusPoints.push({
         unitRef: `${pkg}.${ref}`, pkg, ref, signals,
         java: jm,
-        plsqlAbs: absSrc(meta.bodyFile),
+        plsqlAbs: absSrc(meta.bodyPath),
         plsqlStart: meta.lineRange[0],
         plsqlEnd: meta.lineRange[1],
       })
@@ -214,7 +220,7 @@ export function buildReviewFocus(
     if (fp.plsqlAbs && fp.plsqlStart && fp.plsqlEnd) {
       lines.push(`- PL/SQL 源: \`${fp.plsqlAbs}\` 行 ${fp.plsqlStart}-${fp.plsqlEnd} → \`sed -n '${fp.plsqlStart},${fp.plsqlEnd}p' '${fp.plsqlAbs}'\``)
     } else {
-      lines.push(`- PL/SQL 源: lineRange 未找到（按 refName ${fp.ref} 自行在 inventory-packages/${fp.pkg}.json 定位）`)
+      lines.push(`- PL/SQL 源: lineRange 未找到（按 refName ${fp.ref} 自行在 subprograms/${fp.pkg}.${fp.ref}.json 的 bodyLocation 定位）`)
     }
     if (fp.java) {
       const jabs = absProj(fp.java.javaFile) ?? fp.java.javaFile ?? "(javaFile 缺失)"

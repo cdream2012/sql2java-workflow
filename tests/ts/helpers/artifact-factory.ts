@@ -18,19 +18,39 @@ export function makeInventoryIndex(overrides: Record<string, unknown> = {}) {
     sourcePath: "/test/source",
     scannedAt: "2026-06-01T00:00:00.000Z",
     scannerUsed: "regex" as const,
+    warnings: [] as string[],
     packages: [
       {
-        name: "CORE_PKG",
-        specFile: "pkg/core_pkg.pks",
-        bodyFile: "pkg/core_pkg.pkb",
-        procedures: [
-          { name: "GET_ITEM", type: "function" as const, lineRange: [10, 50] as [number, number] },
-          { name: "SET_ITEM", type: "procedure" as const, lineRange: [52, 90] as [number, number] },
-        ],
+        packageName: "CORE_PKG",
+        absolutePaths: ["pkg/core_pkg.pks", "pkg/core_pkg.pkb"],
+        headerPath: "pkg/core_pkg.pks",
+        bodyPath: "pkg/core_pkg.pkb",
+        constants: [], variables: [], exceptions: [], types: [],
+        functions: ["GET_ITEM"],
+        procedures: ["SET_ITEM"],
         estimatedLoc: 200,
       },
     ],
-    tables: [{ name: "ITEMS", ddlFile: "schema/tables.sql" }],
+    subprograms: [
+      {
+        name: "GET_ITEM", type: "FUNCTION", belongToPackage: "CORE_PKG",
+        overloadIndex: null, isPrivate: false,
+        headerLocation: { absolutePath: "pkg/core_pkg.pks", lineRange: [10, 10] },
+        bodyLocation: { absolutePath: "pkg/core_pkg.pkb", lineRange: [10, 50] },
+        parameters: [{ name: "P_ID", type: "NUMBER", mode: "IN", defaultExpression: null }],
+        returnType: "t_item%ROWTYPE", loc: 41,
+        directCalls: [], packageRefs: [],
+      },
+      {
+        name: "SET_ITEM", type: "PROCEDURE", belongToPackage: "CORE_PKG",
+        overloadIndex: null, isPrivate: false,
+        headerLocation: { absolutePath: "pkg/core_pkg.pks", lineRange: [52, 52] },
+        bodyLocation: { absolutePath: "pkg/core_pkg.pkb", lineRange: [52, 90] },
+        parameters: [], returnType: null, loc: 39,
+        directCalls: [], packageRefs: [],
+      },
+    ],
+    tables: [{ name: "ITEMS", ddlFile: "schema/tables.sql", columns: [] }],
     triggers: [{ name: "TRG_ITEM_AUD", sourceFile: "trigger/trg_item_audit.sql" }],
     views: [],
     sequences: [{ name: "SEQ_ITEM_ID", ddlFile: "schema/sequences.sql" }],
@@ -54,17 +74,42 @@ export function makeInventory(overrides: Record<string, unknown> = {}) {
   }
 }
 
-// ── Analysis Meta ────────────────────────────────────────────
+// ── Package Artifact（逐包 inventory，新形状）─────────────────
 
-/** dependency-graph.json — 全局元数据（callGraph key 用 PKG.refName） */
-export function makeDependencyGraphMeta(overrides: Record<string, unknown> = {}) {
+/** packages/{PKG}.json — 对齐 PackageArtifactSchema（redesign 后取代旧 inventory-packages/{PKG}.json） */
+export function makePackageArtifact(overrides: Record<string, unknown> = {}) {
   return {
-    callGraph: { "CORE_PKG.GET_ITEM": [], "CORE_PKG.SET_ITEM": [] },
-    packageDependency: { CORE_PKG: [], BASE_PKG: [] },
-    translationOrder: [["BASE_PKG", "CORE_PKG"]],
-    complexity: { CORE_PKG: { score: 3, patterns: [], riskLevel: "low" as const }, BASE_PKG: { score: 1, patterns: [], riskLevel: "low" as const } },
-    sccGroups: [],
-    packageNames: ["CORE_PKG", "BASE_PKG"],
+    packageName: "CORE_PKG",
+    absolutePaths: ["pkg/core_pkg.pks", "pkg/core_pkg.pkb"],
+    headerPath: "pkg/core_pkg.pks",
+    bodyPath: "pkg/core_pkg.pkb",
+    constants: [],
+    variables: [],
+    exceptions: [],
+    types: [],
+    functions: [],
+    procedures: ["GET_ITEM"],
+    estimatedLoc: 40,
+    complexity: { score: 3, patterns: [], riskLevel: "low" as const },
+    ...overrides,
+  }
+}
+
+/** subprograms/{PKG.METHOD}.json — 对齐 SubprogramArtifactSchema（含 directCalls/packageRefs） */
+export function makeSubprogramArtifact(overrides: Record<string, unknown> = {}) {
+  return {
+    name: "GET_ITEM",
+    type: "FUNCTION" as const,
+    belongToPackage: "CORE_PKG",
+    overloadIndex: null,
+    isPrivate: false,
+    headerLocation: null,
+    bodyLocation: { absolutePath: "pkg/core_pkg.pkb", lineRange: [10, 50] as [number, number] },
+    parameters: [{ name: "P_ID", type: "NUMBER", mode: "IN" as const, defaultExpression: null }],
+    returnType: "VARCHAR2",
+    loc: 40,
+    directCalls: [] as Array<{ package: string; name: string; line: number; kind: "function" | "procedure" }>,
+    packageRefs: [] as Array<{ package: string; name: string; line: number }>,
     ...overrides,
   }
 }
@@ -144,30 +189,6 @@ export function makeScaffold(overrides: Record<string, unknown> = {}) {
   }
 }
 
-// ── Inventory Package（逐包）─────────────────────────────────
-
-/** inventory-packages/{PKG}.json — 对齐 InventoryPackageSchema */
-export function makeInventoryPackage(overrides: Record<string, unknown> = {}) {
-  return {
-    packageName: "CORE_PKG",
-    specFile: "pkg/core_pkg.pks",
-    bodyFile: "pkg/core_pkg.pkb",
-    procedures: [
-      {
-        name: "GET_ITEM",
-        type: "function" as const,
-        params: [{ name: "P_ID", oracleType: "NUMBER", direction: "IN" as const }],
-        lineRange: [10, 50] as [number, number],
-        loc: 40,
-      },
-    ],
-    types: [],
-    variables: [],
-    constants: [],
-    ...overrides,
-  }
-}
-
 // ── Analysis Package（逐包）──────────────────────────────────
 
 /** analysis-packages/{PKG}.json — 对齐 AnalysisPackageSchema */
@@ -239,6 +260,14 @@ export function makeVerifySummary(overrides: Record<string, unknown> = {}) {
       testFiles: ["src/test/java/com/example/item/ItemServiceTest.java"],
     },
     totalTodosRemaining: 0,
+    // coverage 为必填（VerifySummarySchema）；默认跳过（executed=false, passed=true 不阻断）
+    coverage: {
+      executed: false,
+      passed: true,
+      lineThreshold: 0.9,
+      branchThreshold: 0.75,
+      packageCoverage: [],
+    },
     ...overrides,
   }
 }

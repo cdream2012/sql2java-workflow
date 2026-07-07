@@ -20,8 +20,8 @@ import { join } from "node:path"
 import type { CaseConfig } from "../../harness"
 import { assertGeneratedFileExists, assertJavaMatches } from "../../harness"
 import {
-  makeInventoryIndex, makeInventory, makeInventoryPackage,
-  makePlan, makeScaffold, makeDependencyGraphMeta, makeAnalysisPackage,
+  makeInventoryIndex, makeInventory,
+  makePlan, makeScaffold, makePackageArtifact, makeSubprogramArtifact, makeAnalysisPackage,
   makeTranslation, writeArtifactJson,
 } from "../../../ts/helpers/artifact-factory"
 
@@ -42,8 +42,8 @@ const config: CaseConfig = {
     // inventory-index（两包，B 叶子在前）
     writeArtifactJson(dir, "inventory-index.json", makeInventoryIndex({
       packages: [
-        { name: PKG_B, specFile: "pkg/util.pks", bodyFile: `${SOURCE_DIR_REL}/UTIL_PKG.pkb`, procedures: [{ name: "get_by_id", type: "function", lineRange: [1, 10] }], estimatedLoc: 10 },
-        { name: PKG_A, specFile: "pkg/order.pks", bodyFile: `${SOURCE_DIR_REL}/ORDER_PKG.pkb`, procedures: [{ name: "create_order", type: "procedure", lineRange: [1, 20] }], estimatedLoc: 20 },
+        { name: PKG_B, headerFile: "pkg/util.pks", bodyFile: `${SOURCE_DIR_REL}/UTIL_PKG.pkb`, procedures: [{ name: "get_by_id", type: "function", lineRange: [1, 10] }], estimatedLoc: 10 },
+        { name: PKG_A, headerFile: "pkg/order.pks", bodyFile: `${SOURCE_DIR_REL}/ORDER_PKG.pkb`, procedures: [{ name: "create_order", type: "procedure", lineRange: [1, 20] }], estimatedLoc: 20 },
       ],
     }))
 
@@ -51,16 +51,42 @@ const config: CaseConfig = {
       sourcePath: SOURCE_DIR_REL, packageNames: [PKG_B, PKG_A], tables: [{ name: "T_ORDER", columns: [{ name: "CUST_ID", oracleType: "NUMBER", nullable: true, isPrimaryKey: false }] }], standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
 
-    // inventory-packages（两包）
-    writeArtifactJson(join(dir, "inventory-packages"), `${PKG_B}.json`, makeInventoryPackage({
+    // packages（新形状：packages/{PKG}.json，PackageArtifactSchema；取代旧 inventory-packages/）
+    writeArtifactJson(join(dir, "packages"), `${PKG_B}.json`, makePackageArtifact({
       packageName: PKG_B,
-      bodyFile: `${SOURCE_DIR_REL}/UTIL_PKG.pkb`,
-      procedures: [{ name: "get_by_id", type: "function", params: [{ name: "P_ID", oracleType: "NUMBER", direction: "IN" }], lineRange: [1, 10], loc: 10 }],
+      absolutePaths: [`${SOURCE_DIR_REL}/UTIL_PKG.pkb`],
+      headerPath: null,
+      bodyPath: `${SOURCE_DIR_REL}/UTIL_PKG.pkb`,
+      functions: ["GET_BY_ID"],
+      procedures: [],
+      estimatedLoc: 10,
+      complexity: { score: 2, patterns: [], riskLevel: "low" },
     }))
-    writeArtifactJson(join(dir, "inventory-packages"), `${PKG_A}.json`, makeInventoryPackage({
+    writeArtifactJson(join(dir, "packages"), `${PKG_A}.json`, makePackageArtifact({
       packageName: PKG_A,
-      bodyFile: `${SOURCE_DIR_REL}/ORDER_PKG.pkb`,
-      procedures: [{ name: "create_order", type: "procedure", params: [{ name: "P_CUST_ID", oracleType: "NUMBER", direction: "IN" }], lineRange: [1, 20], loc: 20 }],
+      absolutePaths: [`${SOURCE_DIR_REL}/ORDER_PKG.pkb`],
+      headerPath: null,
+      bodyPath: `${SOURCE_DIR_REL}/ORDER_PKG.pkb`,
+      functions: [],
+      procedures: ["CREATE_ORDER"],
+      estimatedLoc: 20,
+      complexity: { score: 3, patterns: ["cross-package-call"], riskLevel: "low" },
+    }))
+
+    // subprograms（新形状：subprograms/{PKG.METHOD}.json，含 directCalls —— 依赖图按需推导取代旧 dependency-graph.json）
+    // ORDER_PKG.CREATE_ORDER 调用 UTIL_PKG.GET_BY_ID → packageDependency ORDER_PKG→UTIL_PKG → translationOrder [[UTIL_PKG],[ORDER_PKG]]
+    writeArtifactJson(join(dir, "subprograms"), `${PKG_A}.CREATE_ORDER.json`, makeSubprogramArtifact({
+      name: "CREATE_ORDER", type: "PROCEDURE", belongToPackage: PKG_A,
+      bodyLocation: { absolutePath: `${SOURCE_DIR_REL}/ORDER_PKG.pkb`, lineRange: [1, 20] },
+      parameters: [{ name: "P_CUST_ID", type: "NUMBER", mode: "IN", defaultExpression: null }],
+      returnType: null, loc: 20,
+      directCalls: [{ package: PKG_B, name: "GET_BY_ID", line: 5, kind: "function" }],
+    }))
+    writeArtifactJson(join(dir, "subprograms"), `${PKG_B}.GET_BY_ID.json`, makeSubprogramArtifact({
+      name: "GET_BY_ID", type: "FUNCTION", belongToPackage: PKG_B,
+      bodyLocation: { absolutePath: `${SOURCE_DIR_REL}/UTIL_PKG.pkb`, lineRange: [1, 10] },
+      parameters: [{ name: "P_ID", type: "NUMBER", mode: "IN", defaultExpression: null }],
+      returnType: "VARCHAR2", loc: 10, directCalls: [],
     }))
 
     // plan（两包映射）
@@ -83,21 +109,7 @@ const config: CaseConfig = {
       },
     }))
 
-    // analysis（拓扑序：B 叶子先、A 后；callGraph 用 refName key）
-    writeArtifactJson(dir, "dependency-graph.json", makeDependencyGraphMeta({
-      callGraph: {
-        "ORDER_PKG.create_order": ["UTIL_PKG.get_by_id"],
-        "UTIL_PKG.get_by_id": [],
-      },
-      packageDependency: { ORDER_PKG: ["UTIL_PKG"], UTIL_PKG: [] },
-      translationOrder: [[PKG_B], [PKG_A]],
-      complexity: {
-        [PKG_B]: { score: 2, patterns: [], riskLevel: "low" },
-        [PKG_A]: { score: 3, patterns: ["cross-package-call"], riskLevel: "low" },
-      },
-      packageNames: [PKG_B, PKG_A],
-    }))
-
+    // analysis（拓扑序：B 叶子先、A 后；callGraph 由 buildDependencyGraph 从 subprograms.directCalls 按需推导）
     writeArtifactJson(join(dir, "analysis-packages"), `${PKG_B}.json`, makeAnalysisPackage({
       packageName: PKG_B,
       subprograms: [{ name: "get_by_id", blocks: [{ type: "sql-statement", oracleLine: 3, description: "SELECT INTO 查询", dependencies: [] }], variables: [], cursors: [], exceptionHandlers: [], translationNotes: ["按 id 查询"] }],

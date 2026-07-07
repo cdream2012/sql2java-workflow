@@ -31,7 +31,7 @@ import { QUALITY_GATE_THRESHOLDS } from "./engine-core"
  */
 export const REFINE_CONSTRAINTS: Record<string, string[]> = {
   inventory: [
-    "有 procedures 的包必须有非空的 bodyFile（procedure 实现体在 body 中）",
+    "packages/{PKG}.json 的 procedures/functions 仅为名字数组（详情在 subprograms/{PKG.METHOD}.json）；有子程序的包应有 bodyPath（procedure 实现体在 body 中）",
   ],
   translate: [
     "subprogramMethods.oracleName 必须唯一（重载子程序用 {name}__序号 区分，禁用裸名重复）",
@@ -61,11 +61,11 @@ export const REFINE_CONSTRAINTS: Record<string, string[]> = {
 export const NON_ZOD_VALIDATION_RULES: { phases: string[]; message: string }[] = [
   {
     phases: ["inventory"],
-    message: "inventory-packages/{PKG}.json: packageName 必须与文件名一致（大小写不敏感）",
+    message: "packages/{PKG}.json: packageName 必须与文件名一致（大小写不敏感）",
   },
   {
     phases: ["inventory"],
-    message: "inventory.json 的 packageNames 必须覆盖 inventory-index 中所有包（含 spec-only 包：只有 constants/exceptions/variables 而没有 procedures 的包，procedures 数组为 []，bodyFile 为 null）",
+    message: "inventory.json 的 packageNames 必须覆盖 packages/ 下所有包文件（含 header-only 包：只有 constants/exceptions/variables/types 而没有 procedures/functions 的包，bodyPath 为 null）",
   },
   {
     phases: ["analyze"],
@@ -73,11 +73,11 @@ export const NON_ZOD_VALIDATION_RULES: { phases: string[]; message: string }[] =
   },
   {
     phases: ["analyze"],
-    message: "dependency-graph.json 的 packageNames 必须与 inventory 包名一致",
+    message: "依赖图（按需从 subprograms.directCalls 推导）的 packageNames 必须与 inventory 包名一致",
   },
   {
     phases: ["scaffold"],
-    message: "scaffold.json 的 projectRoot 必须为绝对路径，指向项目根目录下的 generated/{artifactId}（来自 plan.json + Runtime Context 注入值）",
+    message: "scaffold.json 的 projectRoot 必须是 Runtime Context / workOrder 注入的 projectRoot 值（绝对路径 generated/{artifactId}，原样使用，勿自行编造）",
   },
   {
     phases: ["translate", "review", "verify"],
@@ -134,12 +134,12 @@ export const QUALITY_GATE_HINTS: Record<string, string[]> = {
  */
 export const CROSS_SCHEMA_HINTS: Record<string, string[]> = {
   inventory: [
-    "dependency-graph.json（含 callGraph）现由 inventory 阶段代码产出：packageNames 必须与 inventory 包名一致（大小写不敏感）",
-    "callGraph 的 key/value 必须为 PKG.refName 格式；refName 须落在该包 inventory-packages 推导的合法集合内（非重载=裸名，重载={name}__序号，大小写不敏感计数重载）",
-    "translationOrder 必须覆盖所有 analysis 包",
+    "依赖图（callGraph 等）由 dependency-graph.ts 从 subprograms/*.json 的 directCalls 按需推导（不落盘）：packageNames 必须与 inventory 包名一致（大小写不敏感）",
+    "callGraph 的 key/value 必须为 PKG.refName 格式；refName 须落在该包 subprograms 推导的合法集合内（非重载=裸名，重载={name}__序号，大小写不敏感计数重载）",
+    "translationOrder 必须覆盖所有包",
   ],
   analyze: [
-    "dependency-graph.json 的 packageNames 必须与 inventory 包名一致（大小写不敏感）",
+    "依赖图（按需推导）的 packageNames 必须与 inventory 包名一致（大小写不敏感）",
     "callGraph 的 key 必须为 PKG.refName 格式；重载子程序用 {name}__序号",
   ],
   plan: [
@@ -170,13 +170,13 @@ export const COMMON_PITFALLS: Record<string, string[]> = {
     'Schema 允许额外字段（.passthrough()）——可添加不在 schema 中的 optional 字段帮助下游阶段，额外字段会透传不被剥离',
   ],
   inventory: [
-    'optional 字段（defaultValue/bodyFile/returnType/specFile/ddlFile 等）可省略或写 null，均可通过校验',
-    'direction 自动 normalize 为大写："in"/"In"/"IN" 均等价于 "IN"，"in out"/"IN OUT" 均等价于 "IN OUT"',
-    'type 自动 normalize 为小写："PROCEDURE"/"Procedure" 均等价于 "procedure"',
+    'optional 字段（defaultValue/bodyPath/returnType/headerPath/ddlFile 等）可省略或写 null，均可通过校验',
+    'parameters[].mode 自动 normalize 为大写："in"/"In"/"IN" 均等价于 "IN"，"in out"/"IN OUT" 均等价于 "IN OUT"',
+    'subprograms[].type 严格大写枚举："PROCEDURE" / "FUNCTION"（不 normalize，必须全大写）；directCalls[].kind 严格小写："function" / "procedure"',
     'triggers.timing 自动 normalize 为小写：任意大小写均可通过',
     'triggers.level 自动 normalize 为小写：任意大小写均可通过',
     'triggers.events 每个元素自动 normalize 为小写：任意大小写均可通过',
-    '有 procedures 的包必须提供 bodyFile（空串或 null 均可）；无 body 的包可省略该键',
+    'packages/{PKG}.json 的 procedures/functions 仅为名字数组；子程序详情（parameters/bodyLocation/directCalls）在 subprograms/{PKG.METHOD}.json',
     'Schema 允许额外字段（.passthrough()）——可添加不在 schema 中的 optional 字段帮助下游阶段，额外字段会透传不被剥离',
   ],
   analyze: [
@@ -196,7 +196,7 @@ export const COMMON_PITFALLS: Record<string, string[]> = {
   ],
   scaffold: [
     'commonModules.classes.category 推荐全小写，如 "type-mapper" / "mybatis-fragment" / "mapper-interface" / "test-base"（不限死）',
-    'projectRoot 为绝对路径，必须使用 Runtime Context 注入的 projectRoot 值（指向项目根目录下 generated/{artifactId}）',
+    'projectRoot 为绝对路径（generated/{artifactId}），必须原样使用 Runtime Context / workOrder 注入的 projectRoot 值，勿自行编造路径',
     'mapperTestShells 中的 testClass 命名必须为 {MapperInterface}IntegrationTest',
     'mapperTestShells 中的 oraclePackage 必须与 plan.json 的 packageMappings 一致',
     'h2SchemaFile 指向的文件必须存在于磁盘（src/test/resources/schema-h2.sql）',
