@@ -47,7 +47,8 @@ src/test/java/{packageBase}/{module}                   # 测试代码
 1. 【强制】每个存储过程入口（PROCEDURE/FUNCTION）映射为一组 Access + Processor + Aggregate 组件，不得缺层。
 2. 【强制】Access 层只做参数接收与转发，**不含业务逻辑**；业务逻辑必须下沉到 Aggregate。
 3. 【强制】Processor 层负责流程编排与异常捕获，**不标注 `@Transactional`**；事务边界由 Aggregate 层控制。
-4. 【强制】跨包/跨 schema 调用必须封装为 OutService，不得在 Aggregate 中直接引用他包 Mapper。
+4. 【强制】主存储过程含多个子流程（子程序调用 / 顺序逻辑段 / 跨包调用）时，**Processor 必须按原 PL/SQL 调用顺序编排多个 Aggregate 步骤方法 / 跨单元 `AccessIntf` 调用 / `OutService` 调用**，体现"主存储过程调用链"，**禁止将整条流程折叠为单个 Aggregate 方法**；Aggregate 每个步骤一个方法，Processor 不含业务逻辑。步骤单一的主存储过程保持 Aggregate 单方法，不强拆。拆分依据是原 SP 的调用结构（调用语句边界），属忠实呈现而非重构，不违反"不重构"原则。
+5. 【强制】跨包/跨 schema 调用必须封装为 OutService，不得在 Aggregate 中直接引用他包 Mapper。
 
 ## 二、核心设计模式
 
@@ -85,6 +86,78 @@ public class XxxAggregate implements Serializable {
 3. 【强制】涉及数据修改的聚合根方法必须标注 `@Transactional(rollbackFor = Exception.class)`。
 4. 【强制】聚合根实现 `Serializable`，声明 `serialVersionUID`。
 5. 【推荐】聚合根内部维护业务状态集合（如 `beans` 列表）。
+
+### 2.1.1 多步骤 Processor 编排（主存储过程含多个子流程）
+
+当主存储过程体内顺序调用了多个子流程（如期权交易新增：预审批单比对 → 交易对手池校验 → 币种/币种对判断 → 交易新增 → 业务协议新增 → ump 序列新增 → 重置序列新增 → 估值任务新增），Aggregate 按原 PL/SQL 顺序为每个步骤生成一个方法，Processor 按序编排，**Processor 不含任何业务逻辑**，只做调用编排 + 异常捕获 + 状态流转。
+
+```java
+// Aggregate：每个业务步骤一个方法，步骤内做实际业务操作（编排 Builder+Validator+Mapper）
+@Component
+public class FmbmAggregate implements Serializable {
+    private static final long serialVersionUID = 1L;
+
+    @Autowired private FmbmBuilder fmbmBuilder;
+    @Autowired private FmbmValidator fmbmValidator;
+    @Autowired private FmbmMapper fmbmMapper;
+
+    /** 预审批单比对 */
+    @Transactional(rollbackFor = Exception.class)
+    public void comparePreApprove(FmbmBean bean) throws TranFailException {
+        // 业务逻辑：Builder 组装参数 + Validator 校验 + Mapper 调用
+    }
+
+    /** 交易对手池校验 */
+    public void checkCounterpartyPool(FmbmBean bean) throws TranFailException {
+        // 业务逻辑
+    }
+
+    /** 交易新增 */
+    @Transactional(rollbackFor = Exception.class)
+    public void addTrade(FmbmBean bean) throws TranFailException {
+        // 业务逻辑
+    }
+
+    /** 业务协议新增 */
+    @Transactional(rollbackFor = Exception.class)
+    public void addBizAgreement(FmbmBean bean) throws TranFailException {
+        // 业务逻辑
+    }
+
+    // ump 序列新增 / 重置序列新增 / 估值任务新增 …… 同样按步骤拆方法
+}
+
+// Processor：按原 PL/SQL 调用顺序编排各步骤，不含业务逻辑
+@Component
+public class FmbmProcessor {
+    @Autowired private FmbmAggregate fmbmAggregate;
+
+    /**
+     * 期权交易新增流程编排
+     * <p>按原存储过程调用链顺序编排各业务步骤，单步失败捕获并更新状态</p>
+     */
+    public void addFmbmTrade(FmbmBean bean) {
+        try {
+            fmbmAggregate.comparePreApprove(bean);
+            fmbmAggregate.checkCounterpartyPool(bean);
+            fmbmAggregate.addTrade(bean);
+            fmbmAggregate.addBizAgreement(bean);
+            // fmbmAggregate.addUmpSeq(bean); ... 按 PL/SQL 原顺序继续编排
+        } catch (Exception e) {
+            CommonLog.error("期权交易新增异常：" + e.getMessage(), e);
+            bean.setExpInfo(e.getMessage().length() > 1000
+                ? e.getMessage().substring(0, 1000)
+                : e.getMessage());
+            bean.setProcStat("0");
+        }
+    }
+}
+```
+
+**规约要点：**
+1. 【强制】Processor 方法体内只允许出现对 Aggregate 步骤方法 / `AccessIntf` / `OutService` 的顺序调用、批量循环、try-catch 状态流转，**禁止出现 Mapper/Builder/Validator 直调与业务判断逻辑**。
+2. 【强制】Aggregate 步骤方法的拆分边界 = 原 PL/SQL 的调用语句边界 / call block，顺序与原存储过程体一致；不得凭空合并或新增步骤。
+3. 【强制】步骤单一的主存储过程保持 Aggregate 单方法、Processor 单次调用，不强拆。
 
 ### 2.2 Builder 模式
 
