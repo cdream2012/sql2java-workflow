@@ -9,10 +9,10 @@
  * 重构后：grammar 认的命令交给 antlr4，unitStart/unitEnd 边界判断已删，根除该类 bug。
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
-import { mkdtempSync, mkdirSync, copyFileSync, rmSync } from "node:fs"
+import { mkdtempSync, mkdirSync, copyFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { scanWithAST } from "@workflow/plsql-scanner"
+import { scanWithAST, scanSource } from "@workflow/plsql-scanner"
 
 const SRC = resolve(import.meta.dirname, "../../../resources/MFG_ERP")
 
@@ -48,5 +48,39 @@ describe("plsql-scanner: Oracle EDITIONABLE 内联注释", () => {
       expect(s, `缺失子程序 ${name}`).toBeDefined()
       expect(s!.bodyLocation, `${name} bodyLocation 为 null`).not.toBeNull()
     }
+  })
+})
+
+// ── extractPackageNames 分区鲁棒性：CREATE 语句含 EDITIONABLE literal / 行注释时，
+// body 必须仍能与 spec 分到同一 file-set（共享 Map），否则 spec/body 分裂成两个槽位
+//（header-only + body-only），header 槽位 bodyLocation=null 且被误判为重载。──
+describe("plsql-scanner: CREATE 语句含 EDITIONABLE literal / 行注释的分区", () => {
+  const SPEC = `CREATE OR REPLACE PACKAGE mypkg AS\nPROCEDURE foo(p IN NUMBER);\nEND mypkg;\n/\n`
+
+  async function scanWithBody(body: string) {
+    const d = mkdtempSync(join(tmpdir(), "ed-lit-"))
+    writeFileSync(join(d, "mypkg.pks"), SPEC, "utf-8")
+    writeFileSync(join(d, "mypkg.pkb"), body, "utf-8")
+    return scanSource(d)
+  }
+
+  it("EDITIONABLE literal 关键字：FOO 单槽位且 bodyLocation 非空", async () => {
+    const idx = await scanWithBody(
+      `CREATE OR REPLACE EDITIONABLE PACKAGE BODY mypkg AS\nPROCEDURE foo(p IN NUMBER) IS\nBEGIN NULL; END;\nEND mypkg;\n/\n`,
+    )
+    const foos = idx.subprograms.filter((s) => s.name === "FOO" && s.belongToPackage === "MYPKG")
+    expect(foos.length, "EDITIONABLE literal 不应分裂为多槽位").toBe(1)
+    expect(foos[0].bodyLocation, "bodyLocation 不应为 null").not.toBeNull()
+    expect(foos[0].headerLocation, "headerLocation 不应为 null").not.toBeNull()
+  })
+
+  it("CREATE 语句含 -- 行注释：FOO 单槽位且 bodyLocation 非空", async () => {
+    const idx = await scanWithBody(
+      `CREATE OR REPLACE -- a comment\nPACKAGE BODY mypkg AS\nPROCEDURE foo(p IN NUMBER) IS\nBEGIN NULL; END;\nEND mypkg;\n/\n`,
+    )
+    const foos = idx.subprograms.filter((s) => s.name === "FOO" && s.belongToPackage === "MYPKG")
+    expect(foos.length, "行注释不应分裂为多槽位").toBe(1)
+    expect(foos[0].bodyLocation, "bodyLocation 不应为 null").not.toBeNull()
+    expect(foos[0].headerLocation, "headerLocation 不应为 null").not.toBeNull()
   })
 })

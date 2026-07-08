@@ -182,8 +182,12 @@ export function cleanName(name: string): string {
  *  antlr grammar 本就容忍该注释，此处对齐 grammar 行为。供 partitionFilesByPackage 与
  *  scanSourceLazy Phase 0 共用。 */
 export function extractPackageNames(code: string): string[] {
-  const clean = code.replace(/\/\*[\s\S]*?\*\//g, " ")
-  const re = /CREATE\s+(?:OR\s+REPLACE\s+)?PACKAGE\s+(BODY\s+)?([A-Za-z_][\w.]*)/gi
+  // 剥块注释 + 行注释：CREATE 语句里的 -- 行注释会让正则失配 → body 抽不到包名 → body 与 spec
+  // 被分到不同 file-set → 不共享 Map → 产出 header-only / body-only 两个分裂槽位 → header 槽位
+  // bodyLocation=null（且被误判为重载）。容忍 EDITIONABLE/NONEDITIONABLE literal 关键字
+  //（Oracle 12c+ DBMS_METADATA 导出 PACKAGE 常见，非 /*EDITIONABLE*/ 注释形式）。
+  const clean = code.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ")
+  const re = /CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:EDITIONABLE|NONEDITIONABLE)\s+)?PACKAGE\s+(BODY\s+)?([A-Za-z_][\w.]*)/gi
   const names: string[] = []
   for (const m of clean.matchAll(re)) {
     const n = cleanName(m[2])
