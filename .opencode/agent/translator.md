@@ -127,11 +127,12 @@ permission:
 - 先 `read` 本包已有的 Mapper 接口 / Mapper XML / AccessIntf / AccessImpl / Processor / Aggregate / Builder / Validator（若存在，由同包 prior unit 创建）；不存在则新建。**用 edit 追加本单元方法，勿覆盖已有内容**。
 - Mapper 接口（`@Mapper`，项目级 `mapper/`）：追加本单元各子程序对应的 SQL 方法（存储过程用 `statementType=CALLABLE`，OUT 参数标 `mode=OUT`+`jdbcType`）
 - Mapper XML（`resources/mapper/`）：追加本单元 SQL 语句、resultMap
-- **Builder**：变量初始化/默认值 → `initXxx()`；参数组装 → `buildXxxParams()`；**OUT 参数预定义** → `buildXxxOutputParams()`（初始化为空字符串）；日期/字典转换
+- **Builder**：变量初始化/默认值 → `initXxx()`；参数组装 → `buildXxxParams()`；**OUT 参数预定义** → `buildXxxOutputParams()`（初始化为空字符串）；日期/字典转换；**接入层 Map↔Bean 适配** → `toBean(Map inputMap)`（Map→Bean，供 AccessImpl 委托 Processor 前转换）/ `toResultMap(bean)`（Bean→Map，含 `oiFlag`/`osMsg` + 业务结果键，供 AccessImpl 返回）
 - **Validator**：IF-THEN-ELSE 前置校验 → `validateXxx()`；存储过程 OUT 结果校验 → `processResult()`；校验失败设 `procStat="0"`+`expInfo` 后抛 `TranFailException`
-- **Aggregate**：核心业务逻辑 → 业务方法（声明 `throws TranFailException`，涉及数据修改标 `@Transactional(rollbackFor=Exception.class)`，编排 Builder+Validator+Mapper）
-- **Processor**：主流程编排（**不标 `@Transactional`**），批量循环 + 异常捕获（`CommonLog.error` + 截断 1000 字符 + 更新 `procStat`/`expInfo`）
-- **AccessIntf / AccessImpl**：对外入口方法签名 + 委托 Processor/Aggregate
+- **Aggregate**：核心业务逻辑 → 业务方法（声明 `throws TranFailException`，涉及数据修改标 `@Transactional(rollbackFor=Exception.class)`，编排 Builder+Validator+Mapper）。**当根子程序体内含多个可区分业务步骤**（子程序调用 / 顺序逻辑段 / 跨包调用——依据 `analysis-slice.json` 的 `type:"call"` block 与 source.sql 调用语句边界判定）**时，按原 PL/SQL 顺序把每个步骤拆成独立 Aggregate 方法，禁止把整条流程折叠为单个方法**；步骤单一的 SP 保持单方法，不强拆。
+- **Processor**：**按原 PL/SQL 语句顺序编排** Aggregate 的多个步骤方法 + 跨单元调用（Spring DI 注入目标 `AccessIntf`，签名查「依赖签名」预注入块）+ OutService 调用，体现"主存储过程调用链"；编排之外负责异常捕获（`CommonLog.error` + 截断 1000 字符 + 更新 `procStat`/`expInfo`）与批量循环。**不标 `@Transactional`**，不含业务逻辑。
+- **拆分边界**：上述拆分的依据是原 SP 的调用结构（call block / 调用语句边界），是忠实呈现原 PL/SQL 流程结构、非凭空重构，不违反翻译五原则之"不重构"；反之，把单步骤 SP 强行拆成多方法、或把多步骤 SP 折叠成单方法，均属违规。
+- **AccessIntf / AccessImpl**：`AccessIntf` 方法签名统一 `Map<String,Object> xxx(Map<String,Object> inputMap)`（返回 `Map<String,Object>` 含 `oiFlag`/`osMsg` + 业务结果键，**禁止 `void`**）；`AccessImpl` 用 `Builder.toBean(inputMap)` 转 Bean 委托 Processor，再用 `Builder.toResultMap(bean)` 转 Map 返回；Bean 不暴露到接入层之外（内部 Processor/Aggregate 保持 Bean）
 - Bean 类（OUT 参数、返回值包装）：本单元所需 Bean 若同包 prior unit 已生成则复用，否则新建（项目级 `beans/`）
 - 异常统一用 `TranFailException`（scaffold 已生成于 `common/infrastructure`，勿新建业务异常基类）；日志统一用 `CommonLog`
 
@@ -263,6 +264,7 @@ per-unit 文件字段：
 
 - [ ] 按 procedureOrder 顺序处理 unit（SCC 组按数组内顺序）
 - [ ] 每个单元的子程序（根 + cargo FUNCTION）都有对应的 Java 方法
+- [ ] 主存储过程含多个子流程（call block / 子程序调用 / 顺序逻辑段）时，Aggregate 按原 PL/SQL 顺序拆成多个步骤方法、Processor 按序编排（+ 异常捕获 + 批量循环），未折叠为单个 Aggregate 方法；单步骤 SP 保持单方法未强拆
 - [ ] 每个 SQL 语句都有对应的 MyBatis 映射；OUT/IN OUT 参数通过 DTO 传递
 - [ ] 不确定的构造标记了 `// TODO: [translate] 标记人 标记时间 中文说明`
 - [ ] 跨包/同包跨单元调用用了真实方法名（查依赖签名块），非命名猜测；预注入块标 TODO 的已照抄占位
