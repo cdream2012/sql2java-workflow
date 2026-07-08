@@ -48,8 +48,8 @@ export function readScopePackagesFromArtifacts(artifactsDir: string): string[] |
 
 /** D2: fix 循环双层 exhausted 上限 */
 export const FIX_LIMITS = {
-  globalMax: 5,   // 全局 fix 上限
-  phaseMax: 5,    // 单阶段 fix 上限
+  globalMax: 10,  // 全局 fix 上限
+  phaseMax: 10,   // 单阶段 fix 上限
 } as const
 
 /** L3: Quality gate thresholds — 确定性数值门控阈值 */
