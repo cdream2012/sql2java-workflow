@@ -30,12 +30,15 @@ export function getWorkerCount(): number {
   return Math.max(1, Math.min(cores, 4))
 }
 
-/** 单任务失败的占位产物（带 warning，不丢整体结果） */
+/** 单任务失败的占位产物（带 warning，不丢整体结果）。warning 含文件名便于定位崩在哪个文件。 */
 function emptyResultWithError(errMsg: string, fileSet: string[]): FileSetResult {
+  const names = fileSet.map(f => f.split("/").pop() || f)
+  const shown = names.slice(0, 3).join(", ")
+  const more = names.length > 3 ? ` …+${names.length - 3}` : ""
   return {
     packages: [], subprograms: [], standaloneProcedures: [], standaloneSlots: [],
     tables: [], triggers: [], views: [], sequences: [],
-    warnings: [`worker file-set 失败 (${fileSet.length} 文件): ${errMsg}`],
+    warnings: [`worker file-set 失败 (${names.length} 文件: ${shown}${more}): ${errMsg}`],
   }
 }
 
