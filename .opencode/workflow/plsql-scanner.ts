@@ -417,7 +417,7 @@ export function scanWithRegex(roots: string[], primaryBase: string): InventoryIn
 
   for (const filePath of files) {
     const code = readFileSync(filePath, "utf-8").replace(/\r\n?/g, "\n")
-    const relPath = storedFilePath(filePath, primaryBase)
+    const relPath = storedFilePath(filePath)
     extractTableFromText(code, tables, relPath)
     extractTriggerFromText(code, triggers, relPath)
     extractViewFromText(code, views, relPath)
@@ -546,7 +546,7 @@ export async function scanSourceLazy(opts: ScanSourceLazyOpts): Promise<Inventor
     if (seenFiles.has(filePath)) continue
     seenFiles.add(filePath)
     const rawCode = readFileSync(filePath, "utf-8").replace(/\r\n?/g, "\n")
-    const relPath = storedFilePath(filePath, primaryBase)
+    const relPath = storedFilePath(filePath)
     const code = stripSqlPlusCommands(rawCode)
     extractTableFromText(code, tables, relPath)
     extractTriggerFromText(code, triggers, relPath)

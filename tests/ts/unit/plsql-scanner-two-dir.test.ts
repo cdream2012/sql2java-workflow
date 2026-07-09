@@ -26,11 +26,11 @@ describe("scanSource 双目录模式", () => {
     expect(pkg, "account_management_pkg 应被跨目录配对").toBeDefined()
     if (!pkg) return
 
-    // headerPath 相对 headerPath、bodyPath 绝对路径
-    expect(pkg.headerPath).toBe("acct.sql")
-    expect(pkg.bodyPath).toBeDefined()
-    expect(isAbsolute(pkg.bodyPath!)).toBe(true)
+    // headerPath/bodyPath 均绝对路径（不再相对/绝对混用）
+    expect(pkg.headerPath).toBe(resolve(HEADER_DIR, "acct.sql"))
     expect(pkg.bodyPath).toBe(resolve(BODY_DIR, "acct.sql"))
+    expect(isAbsolute(pkg.headerPath!)).toBe(true)
+    expect(isAbsolute(pkg.bodyPath!)).toBe(true)
 
     // 公开过程 transfer_money：4 参数，p_status_msg 为 OUT
     const transfer = index.subprograms.find(
@@ -65,9 +65,9 @@ describe("scanSource 双目录模式", () => {
     const pkg = index.packages.find(p => p.packageName.toUpperCase() === "ACCOUNT_MANAGEMENT_PKG")
     expect(pkg).toBeDefined()
     if (pkg) {
-      // 单目录模式：headerPath 相对 sourcePath（非绝对）
-      expect(pkg.headerPath).toBe("acct.sql")
-      expect(isAbsolute(pkg.headerPath!)).toBe(false)
+      // 单目录模式：headerPath 绝对路径
+      expect(pkg.headerPath).toBe(resolve(HEADER_DIR, "acct.sql"))
+      expect(isAbsolute(pkg.headerPath!)).toBe(true)
     }
   })
 })

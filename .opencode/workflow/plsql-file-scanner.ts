@@ -13,7 +13,6 @@
  */
 
 import { readFileSync } from "node:fs"
-import { sep } from "node:path"
 import { PlSqlLexer } from "./plsql-ast/PlSqlLexer"
 import { PlSqlParser } from "./plsql-ast/PlSqlParser"
 import { PlSqlParserListener } from "./plsql-ast/PlSqlParserListener"
@@ -962,18 +961,17 @@ export function extractSequenceFromText(code: string, sequences: SequenceIndex[]
 
 // ── 路径规范化 ────────────────────────────────────────────────────────────────────
 
-/** 计算存入 headerPath/bodyPath 的路径：在 primaryBase 下存相对（可移植），否则存绝对。
- *  Windows 文件系统大小写不敏感：用户传的 primaryBase 大小写可能与 readdirSync 返回的不一致
- *  （C:\Proj vs C:\proj），startsWith 区分大小写会误判为非子路径 → 存绝对路径，使 inventory.json
- *  路径风格部分相对部分绝对、跨平台不可移植。故 win32 下做大小写不敏感前缀匹配，存路径仍用原始大小写。 */
-export function storedFilePath(filePath: string, primaryBase: string): string {
-  const prefix = primaryBase + sep
-  const underPrimary = process.platform === "win32"
-    ? filePath.toLowerCase().startsWith(prefix.toLowerCase())
-    : filePath.startsWith(prefix)
-  if (!underPrimary) return filePath
-  // 剥前缀（保留 filePath 原始大小写），规范为 '/' 分隔跨平台可移植
-  return filePath.slice(prefix.length).replace(/\\/g, "/")
+/** 存入 headerPath/bodyPath/absolutePath 的路径：返回绝对路径（规范 '/' 分隔）。
+ *
+ *  历史上在 primaryBase 下存相对、否则存绝对，致：①字段名 absolutePath 名不副实；
+ *  ②两级目录模式（headerPath/bodyPath 为兄弟目录）下 header 相对、body 绝对，不一致；
+ *  ③generateUnitSlices 需 join(sourcePath, rel) 还原，sourcePath 缺失（两级目录模式）时切片失败。
+ *
+ *  改存绝对：.workflow-artifacts 是 gitignore 的 run-local 产物，无跨机器移植需求；绝对路径使
+ *  字段名副其实、header/body 一致、且 generateUnitSlices 的 isAbsolute 直走无需 sourcePath。
+ *  全路径（含目录）天然唯一，同包 header/body 重名不碰撞（不同目录/扩展名 + 分属不同字段）。 */
+export function storedFilePath(filePath: string): string {
+  return filePath.replace(/\\/g, "/")
 }
 
 // ── 文件集扫描（worker 与主线程串行 fallback 共用）──────────────────────────────
@@ -1015,7 +1013,7 @@ export function scanFileSet(filePaths: string[], primaryBase: string): FileSetRe
     if (processed.has(filePath)) continue
     processed.add(filePath)
     const rawCode = readFileSync(filePath, "utf-8").replace(/\r\n?/g, "\n")
-    const relPath = storedFilePath(filePath, primaryBase)
+    const relPath = storedFilePath(filePath)
     const code = stripSqlPlusCommands(rawCode)
 
     // table/trigger/view/sequence 仍走文本提取（与包结构无关）

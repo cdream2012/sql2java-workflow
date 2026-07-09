@@ -31,12 +31,12 @@ describe("scanSource 三路径模式 (sourcePath + headerPath + bodyPath)", () =
     const accounts = index.tables.find(t => t.name.toUpperCase() === "ACCOUNTS")
     expect(accounts, "schema/accounts.sql 的表应被扫到（证明 sourcePath 额外 root 生效）").toBeDefined()
 
-    // 2. 包按包名跨目录配对，headerPath/bodyPath 相对父目录（可移植）
+    // 2. 包按包名跨目录配对，headerPath/bodyPath 均绝对路径
     const pkg = index.packages.find(p => p.packageName.toUpperCase() === "ACCOUNT_MANAGEMENT_PKG")
     expect(pkg, "account_management_pkg 应被跨目录配对").toBeDefined()
     if (pkg) {
-      expect(pkg.headerPath).toBe("header/acct.sql")
-      expect(pkg.bodyPath).toBe("body/acct.sql")
+      expect(pkg.headerPath).toBe(resolve(HEADER_DIR, "acct.sql"))
+      expect(pkg.bodyPath).toBe(resolve(BODY_DIR, "acct.sql"))
     }
 
     // 3. header-first 仍保住：body-only 私有函数 check_balance_sufficient 被捕获
