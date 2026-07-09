@@ -3,6 +3,10 @@
 -- issue_stock 走 FIFO: 窗口函数算批次累计可用量定位扣减批次，游标 where current of 逐批扣
 -- bulk_receive 用 forall save exceptions + sql%bulk_exceptions 收集单行失败不阻断整批
 -- 余额同步用 merge(有则更新无则插)，新批次插入用 returning into 取回 lot_id
+-- 库存收发实现
+-- 三层落地原则: 流水是事实(append-only)，批次是 FIFO 排队的明细，余额是物料+仓库的快照
+-- 每个动作都按 流水 -> 批次 -> 余额 的顺序写，余额走 merge 自愈，避免余额行缺失时整笔失败
+-- 发料的 FIFO 定位用窗口函数算累计可用量,再用 for update 游标逐批扣,锁粒度落到批次行
 
 CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE MFG_ERP.F_INVENTORY IS
     -- Author : sql2java-workflow
@@ -138,8 +142,6 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE MFG_ERP.F_INVENTORY IS
     );
 
 END f_inventory;
-
--- 库存收发实现
--- 三层落地原则: 流水是事实(append-only)，批次是 FIFO 排队的明细，余额是物料+仓库的快照
--- 每个动作都按 流水 -> 批次 -> 余额 的顺序写，余额走 merge 自愈，避免余额行缺失时整笔失败
--- 发料的 FIFO 定位用窗口函数算累计可用量,再用 for update 游标逐批扣,锁粒度落到批次行
+/
+GRANT EXECUTE ON PACKAGE MFG_ERP.F_INVENTORY TO GPCBATCH ;
+GRANT EXECUTE ON PACKAGE MFG_ERP.F_INVENTORY TO MOVE ;
