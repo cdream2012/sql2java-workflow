@@ -248,11 +248,29 @@ export function stripSqlPlusCommands(code: string): string {
   // 此处所列命令（SPOOL/DEFINE/...）从不出现在 PL/SQL 单元内，只按行首关键字 + 括号外判断即可。
   // 括号内不剥：CREATE TABLE 列定义里可能恰好是这些词作列名（括号深度跨行累积）。
   const sqlPlusLine = /^(SPOOL|DEFINE|UNDEFINE|VARIABLE|ACCEPT|WHENEVER|HOST|COLUMN|TTITLE|BTITLE|BREAK|COMPUTE)\b/i
+  // GRANT 权限语句：顶层 DDL、可能跨行（到分号止）。grammar 虽有 GRANT token 但不全认
+  // `GRANT EXECUTE ON PACKAGE schema.obj TO role` 形式（报 missing 'TO'），且权限语句对
+  // 包/过程/表分析无信息贡献 → 剥掉。行首 GRANT 起，到含 `;` 的行止；跨行续行用 inGrant 状态剥。
+  // 不检查 parenDepth：GRANT 是顶层 DDL，绝不会出现在 CREATE TABLE 列定义括号内（不像 SPOOL 可能
+  // 作列名）；PL/SQL 块内的 GRANT 须经 EXECUTE IMMEDIATE 'GRANT...'（行首非 GRANT，不误剥）。
+  // 行注释 `-- GRANT`/块注释内的 GRANT 行首非 GRANT，不匹配。
+  const grantLine = /^\s*GRANT\b/i
   let parenDepth = 0
+  let inGrant = false
   return code
     .split("\n")
     .map(line => {
       const trimmed = line.trimStart()
+      if (inGrant) {
+        parenDepth += parenDelta(line)
+        if (line.includes(";")) inGrant = false
+        return ""
+      }
+      if (grantLine.test(trimmed)) {
+        parenDepth += parenDelta(line)
+        if (!line.includes(";")) inGrant = true
+        return ""
+      }
       if (parenDepth === 0 && sqlPlusLine.test(trimmed)) {
         parenDepth += parenDelta(line)
         return ""

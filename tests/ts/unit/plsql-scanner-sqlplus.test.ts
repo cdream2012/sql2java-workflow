@@ -50,4 +50,32 @@ describe("plsql-scanner: SQL*Plus 命令处理（antlr4 优先）", () => {
     expect(s).toBeLessThanOrEqual(10)
     expect(e).toBeGreaterThanOrEqual(11)
   })
+
+  it("GRANT 权限语句被剥（单行+跨行），不产生语法错误，包/子程序正常", async () => {
+    const grantSql = `CREATE OR REPLACE PACKAGE BODY grant_pkg AS
+PROCEDURE do_work IS
+BEGIN
+  NULL;
+END do_work;
+END grant_pkg;
+/
+GRANT EXECUTE ON PACKAGE grant_pkg TO role1 ;
+GRANT SELECT ON grant_pkg
+  TO role2 ;
+`
+    const d = mkdtempSync(join(tmpdir(), "sqlplus-grant-"))
+    try {
+      writeFileSync(join(d, "grant_pkg.sql"), grantSql)
+      const inv = await scanWithAST([d], d)
+      // GRANT 被剥 → 无 missing 'TO' / extraneous input 语法错误
+      const grantErrs = inv.warnings.filter((w) => /missing 'TO'|extraneous input/i.test(w))
+      expect(grantErrs, `GRANT 未被剥，残留语法错误: ${grantErrs.join("; ")}`).toHaveLength(0)
+      const pkg = inv.packages.find((p) => p.packageName === "GRANT_PKG")
+      expect(pkg, "未识别 GRANT_PKG").toBeDefined()
+      const sub = inv.subprograms.find((s) => s.name === "DO_WORK")
+      expect(sub?.bodyLocation, "DO_WORK bodyLocation 为 null").not.toBeNull()
+    } finally {
+      rmSync(d, { recursive: true, force: true })
+    }
+  })
 })
