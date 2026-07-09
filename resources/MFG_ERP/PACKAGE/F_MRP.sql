@@ -2,12 +2,12 @@
 -- 低层码(low-level code): 一个物料可能出现在多层 BOM，净算必须等它在所有上层的毛需求
 -- 都汇齐了再算，所以先按 BOM 深度给每个物料定低层码，再自顶向下(低层码升序)逐层净算
 -- 主流程: 收集独立需求(预测+销售订单) -> 逐层展开相关需求(递归 BOM) -> 净算 -> 产计划行
--- 计划行 merge 进 t_mrp_plan，相关需求展开靠 F_BOM.explode
+-- 计划行 merge 进 t_mrp_plan，相关需求展开靠 MFG_ERP.F_BOM.explode
 
 CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE MFG_ERP.F_MRP IS
     -- Author : sql2java-workflow
     -- Created : 2026-07-03
-    -- Purpose : MRP 物料需求计划 / 低层码(low-level code): 一个物料可能出现在多层 BOM，净算必须等它在所有上层的毛需求 / 都汇齐了再算，所以先按 BOM 深度给每个物料定低层码，再自顶向下(低层码升序)逐层净算 / 主流程: 收集独立需求(预测+销售订单) -> 逐层展开相关需求(递归 BOM) -> 净算 -> 产计划行 / 计划行 merge 进 t_mrp_plan，相关需求展开靠 F_BOM.explode
+    -- Purpose : MRP 物料需求计划 / 低层码(low-level code): 一个物料可能出现在多层 BOM，净算必须等它在所有上层的毛需求 / 都汇齐了再算，所以先按 BOM 深度给每个物料定低层码，再自顶向下(低层码升序)逐层净算 / 主流程: 收集独立需求(预测+销售订单) -> 逐层展开相关需求(递归 BOM) -> 净算 -> 产计划行 / 计划行 merge 进 t_mrp_plan，相关需求展开靠 MFG_ERP.F_BOM.explode
 
     -- 重算所有物料的低层码: 反复沿 BOM 下钻取每个物料的最大深度
     -- 计划净算严格按低层码升序，否则下层毛需求会算漏
@@ -22,12 +22,12 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE MFG_ERP.F_MRP IS
     --   1) 建运行头 t_mrp_run
     --   2) 收集顶层独立需求(t_demand_forecast 未来期 + t_sales_order 未发货)
     --   3) 按低层码逐层: 毛需求 - 在手 - 在途 = 净需求 -> 计划下单(含提前期倒排)
-    --   4) 相关需求按 F_BOM.explode 下放到子件
+    --   4) 相关需求按 MFG_ERP.F_BOM.explode 下放到子件
     --   5) 计划行 merge 进 t_mrp_plan，回写运行头统计
     /*****************************************************************
     创建作者：sql2java-workflow
     创建日期：2026-07-03
-    功能描述：主流程: 一次 MRP 运行 / 1) 建运行头 t_mrp_run / 2) 收集顶层独立需求(t_demand_forecast 未来期 + t_sales_order 未发货) / 3) 按低层码逐层: 毛需求 - 在手 - 在途 = 净需求 -> 计划下单(含提前期倒排) / 4) 相关需求按 F_BOM.explode 下放到子件 / 5) 计划行 merge 进 t_mrp_plan，回写运行头统计
+    功能描述：主流程: 一次 MRP 运行 / 1) 建运行头 t_mrp_run / 2) 收集顶层独立需求(t_demand_forecast 未来期 + t_sales_order 未发货) / 3) 按低层码逐层: 毛需求 - 在手 - 在途 = 净需求 -> 计划下单(含提前期倒排) / 4) 相关需求按 MFG_ERP.F_BOM.explode 下放到子件 / 5) 计划行 merge 进 t_mrp_plan，回写运行头统计
     *****************************************************************/
     PROCEDURE run_mrp(
         id_run_date     IN  DATE    DEFAULT NULL,
@@ -59,11 +59,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE MFG_ERP.F_MRP IS
     );
 
 END f_mrp;
-/
 
 -- MRP 物料需求计划 包体
 -- 低层码决定净算顺序: 同一物料若被多层 BOM 用到,必须等它在所有上层的毛需求都汇齐
 -- 才能净算,所以先算每个物料在 BOM 树中的最大深度(低层码),再按低层码升序逐层推进
--- 顶层独立需求(成品/半成品)在 level 0/低层码起点,相关需求靠 F_BOM.explode 下放到子件
+-- 顶层独立需求(成品/半成品)在 level 0/低层码起点,相关需求靠 MFG_ERP.F_BOM.explode 下放到子件
 -- 净算公式: 净需求 = 毛需求 - 在手可用 - 在途(未收 PO),净需求>0 才产计划行
-/

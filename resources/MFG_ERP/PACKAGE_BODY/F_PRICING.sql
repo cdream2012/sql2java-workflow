@@ -44,14 +44,14 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PRICING AS
                AND (valid_to IS NULL OR valid_to >= id_as_of);
         EXCEPTION
             WHEN NO_DATA_FOUND THEN
-                F_EXC.raise_biz_error(
-                    F_CONST.c_err_price_list_not_found, F_CONST.c_mod_price, 'pick_price_list',
+                MFG_ERP.F_EXC.raise_biz_error(
+                    MFG_ERP.F_CONST.c_err_price_list_not_found, MFG_ERP.F_CONST.c_mod_price, 'pick_price_list',
                     '无可用默认价目表 as_of=' || TO_CHAR(id_as_of, 'YYYY-MM-DD'),
                     TO_CHAR(ii_customer_id));
             WHEN TOO_MANY_ROWS THEN
                 -- 配了多张默认表是配置错误，取一张继续但留日志
-                F_EXC.log_error(
-                    F_CONST.c_err_price_list_not_found, F_CONST.c_mod_price, 'pick_price_list',
+                MFG_ERP.F_EXC.log_error(
+                    MFG_ERP.F_CONST.c_err_price_list_not_found, MFG_ERP.F_CONST.c_mod_price, 'pick_price_list',
                     '默认价目表多于一张，任取其一', NULL, NULL, 'WARN');
                 SELECT MIN(price_list_id) INTO v_list_id
                   FROM t_price_list
@@ -123,10 +123,10 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PRICING AS
     ) RETURN NUMBER IS
     BEGIN
         RETURN CASE is_rule_type
-            WHEN F_CONST.c_rule_list         THEN ii_price_value
-            WHEN F_CONST.c_rule_override     THEN ii_price_value
-            WHEN F_CONST.c_rule_discount_pct THEN ROUND(ii_base_price * (1 - ii_price_value), 6)
-            WHEN F_CONST.c_rule_discount_amt THEN GREATEST(ii_base_price - ii_price_value, 0)
+            WHEN MFG_ERP.F_CONST.c_rule_list         THEN ii_price_value
+            WHEN MFG_ERP.F_CONST.c_rule_override     THEN ii_price_value
+            WHEN MFG_ERP.F_CONST.c_rule_discount_pct THEN ROUND(ii_base_price * (1 - ii_price_value), 6)
+            WHEN MFG_ERP.F_CONST.c_rule_discount_amt THEN GREATEST(ii_base_price - ii_price_value, 0)
             ELSE ii_base_price
         END;
     END apply_rule;
@@ -150,14 +150,14 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PRICING AS
         v_list_id t_price_list.price_list_id%TYPE;
         v_rule    t_price_rule%ROWTYPE;
         v_qty     NUMBER := NVL(ii_qty, 1);
-        v_as_of   DATE   := F_UTIL.curr_biz_date();
+        v_as_of   DATE   := MFG_ERP.F_UTIL.curr_biz_date();
     BEGIN
         BEGIN
             SELECT * INTO v_item FROM t_item WHERE item_id = ii_item_id;
         EXCEPTION
             WHEN NO_DATA_FOUND THEN
-                F_EXC.raise_biz_error(
-                    F_CONST.c_err_item_not_found, F_CONST.c_mod_price, 'get_price_detail',
+                MFG_ERP.F_EXC.raise_biz_error(
+                    MFG_ERP.F_CONST.c_err_item_not_found, MFG_ERP.F_CONST.c_mod_price, 'get_price_detail',
                     '物料不存在 item_id=' || ii_item_id, TO_CHAR(ii_item_id));
         END;
 
@@ -176,7 +176,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PRICING AS
         END IF;
 
         -- LIST/OVERRIDE 用规则自身价做基准展示，折扣类仍以标价为基准
-        IF v_rule.rule_type IN (F_CONST.c_rule_list, F_CONST.c_rule_override) THEN
+        IF v_rule.rule_type IN (MFG_ERP.F_CONST.c_rule_list, MFG_ERP.F_CONST.c_rule_override) THEN
             oi_base_price := v_rule.price_value;
         END IF;
 
@@ -228,22 +228,22 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PRICING AS
             SELECT so_line_id, item_id, qty_ordered, unit_price, discount_pct
               FROM t_so_line
              WHERE so_id = ii_so_id
-               AND line_status <> F_CONST.c_line_cancel
+               AND line_status <> MFG_ERP.F_CONST.c_line_cancel
                FOR UPDATE OF unit_price, discount_pct;
     BEGIN
         BEGIN
             SELECT * INTO v_so FROM t_sales_order WHERE so_id = ii_so_id FOR UPDATE;
         EXCEPTION
             WHEN NO_DATA_FOUND THEN
-                F_EXC.raise_biz_error(
-                    F_CONST.c_err_price_list_not_found, F_CONST.c_mod_price, 'reprice_sales_order',
+                MFG_ERP.F_EXC.raise_biz_error(
+                    MFG_ERP.F_CONST.c_err_price_list_not_found, MFG_ERP.F_CONST.c_mod_price, 'reprice_sales_order',
                     '销售单不存在 so_id=' || ii_so_id, TO_CHAR(ii_so_id));
         END;
 
         -- DRAFT/CONFIRMED 才允许重定价; 已发货行价格已锁定
         IF v_so.status NOT IN ('DRAFT', 'CONFIRMED') THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_price_rule_missing, F_CONST.c_mod_price, 'reprice_sales_order',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_price_rule_missing, MFG_ERP.F_CONST.c_mod_price, 'reprice_sales_order',
                 '当前状态不可重定价 status=' || v_so.status, TO_CHAR(ii_so_id));
         END IF;
 
@@ -287,14 +287,14 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PRICING AS
     ) IS
         v_item    t_item%ROWTYPE;
         v_list_id t_price_list.price_list_id%TYPE;
-        v_as_of   DATE := F_UTIL.curr_biz_date();
+        v_as_of   DATE := MFG_ERP.F_UTIL.curr_biz_date();
     BEGIN
         BEGIN
             SELECT * INTO v_item FROM t_item WHERE item_id = ii_item_id;
         EXCEPTION
             WHEN NO_DATA_FOUND THEN
-                F_EXC.raise_biz_error(
-                    F_CONST.c_err_item_not_found, F_CONST.c_mod_price, 'list_effective_rules',
+                MFG_ERP.F_EXC.raise_biz_error(
+                    MFG_ERP.F_CONST.c_err_item_not_found, MFG_ERP.F_CONST.c_mod_price, 'list_effective_rules',
                     '物料不存在 item_id=' || ii_item_id, TO_CHAR(ii_item_id));
         END;
 
@@ -339,5 +339,3 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PRICING AS
     END list_effective_rules;
 
 END f_pricing;
-/
-/

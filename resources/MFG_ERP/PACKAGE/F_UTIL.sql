@@ -14,7 +14,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE MFG_ERP.F_UTIL IS
     g_curr_operator  VARCHAR2(32);
     g_session_id     VARCHAR2(64);
 
-    -- 条件编译开关: 静态布尔常量，body 里用 $IF F_UTIL.c_trace_compile $THEN ... 控制是否编进 trace 代码
+    -- 条件编译开关: 静态布尔常量，body 里用 $IF MFG_ERP.F_UTIL.c_trace_compile $THEN ... 控制是否编进 trace 代码
     -- 生产编译为 false，trace 代码不进字节码；排障时改 true 重编
     c_trace_compile  CONSTANT BOOLEAN := FALSE;
 
@@ -95,5 +95,3 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE MFG_ERP.F_UTIL IS
     PROCEDURE clear_cache;
 
 END f_util;
-/
-/

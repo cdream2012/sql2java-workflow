@@ -14,7 +14,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_BOM AS
     功能描述：BOM 展开 / 反查 / 版本比对 / 成本卷算。 / 多层 BOM 是"行的组件本身又是另一物料的 BOM 头物料"形成的树，三种展开实现等价但机制不同: / explode       connect by 一把查出整树结构，cum_qty 借深度优先前序遍历在 PL/SQL 端逐层累乘后 pipe 出 / explode_table 局部递归过程 walk 自调下钻，每层 extend 嵌套表，纯 PL/SQL 控制 / explode_cte   递归 with 让数据库自己迭代，cum_qty 在 CTE 里直接累乘 / 虚拟件(is_phantom，行级优先于物料级)不是领料点但要继续往下穿透；环路是脏数据， / connect by nocycle 兜底不让查询挂死，walk 版靠 path 串里查重并抛 e_bom_cycle。
     *****************************************************************/
     FUNCTION get_active_bom_id(ii_item_id IN NUMBER, id_as_of IN DATE DEFAULT NULL) RETURN NUMBER IS
-        v_as_of DATE := NVL(id_as_of, F_UTIL.curr_biz_date());
+        v_as_of DATE := NVL(id_as_of, MFG_ERP.F_UTIL.curr_biz_date());
         v_bom   NUMBER;
     BEGIN
         -- 同一时点最多一个默认 ACTIVE 版本，多个生效时取最晚生效那条兜底
@@ -33,8 +33,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_BOM AS
         RETURN v_bom;
     EXCEPTION
         WHEN NO_DATA_FOUND THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_bom_no_active, F_CONST.c_mod_bom, 'get_active_bom_id',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_bom_no_active, MFG_ERP.F_CONST.c_mod_bom, 'get_active_bom_id',
                 '物料无生效 ACTIVE BOM item_id=' || ii_item_id
                 || ' as_of=' || TO_CHAR(v_as_of, 'YYYY-MM-DD'), TO_CHAR(ii_item_id));
             RETURN NULL;
@@ -71,7 +71,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_BOM AS
         ii_qty     IN NUMBER   DEFAULT 1,
         id_as_of   IN DATE     DEFAULT NULL
     ) RETURN t_explosion_tab PIPELINED IS
-        v_as_of DATE := NVL(id_as_of, F_UTIL.curr_biz_date());
+        v_as_of DATE := NVL(id_as_of, MFG_ERP.F_UTIL.curr_biz_date());
 
         -- 深度优先前序遍历下，按层缓存累计需用量: cum(lvl) = cum(lvl-1) * 本行含损耗实际用量
         -- connect by 自身没有"沿路径累乘"算子，借遍历顺序在 PL/SQL 端补上最干净
@@ -136,7 +136,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_BOM AS
         id_as_of   IN  DATE     DEFAULT NULL,
         ot_result  OUT t_explosion_tab
     ) IS
-        v_as_of DATE := NVL(id_as_of, F_UTIL.curr_biz_date());
+        v_as_of DATE := NVL(id_as_of, MFG_ERP.F_UTIL.curr_biz_date());
 
         -- 局部递归过程: 进一层就 extend 一格写结果，再对每个组件自调下钻
         -- p_path 串既做展示路径也做环路检测(组件 id 已在路径里说明绕回来了)，配合层数上限双保险
@@ -148,10 +148,10 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_BOM AS
         ) IS
             v_node_path VARCHAR2(1000);
         BEGIN
-            IF p_lvl > F_CONST.c_max_bom_levels THEN
-                F_EXC.raise_biz_error(
-                    F_CONST.c_err_bom_cycle, F_CONST.c_mod_bom, 'explode_table',
-                    'BOM 层级超上限 ' || F_CONST.c_max_bom_levels
+            IF p_lvl > MFG_ERP.F_CONST.c_max_bom_levels THEN
+                MFG_ERP.F_EXC.raise_biz_error(
+                    MFG_ERP.F_CONST.c_err_bom_cycle, MFG_ERP.F_CONST.c_mod_bom, 'explode_table',
+                    'BOM 层级超上限 ' || MFG_ERP.F_CONST.c_max_bom_levels
                     || '，疑似环路 path=' || p_path, TO_CHAR(p_parent_item));
             END IF;
 
@@ -177,8 +177,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_BOM AS
             ) LOOP
                 -- 环路检测: 同一组件已经在当前下钻路径上，再出现就是 A->B->A 这类脏数据
                 IF INSTR(p_path, '/' || r.component_item_id || '/') > 0 THEN
-                    F_EXC.raise_biz_error(
-                        F_CONST.c_err_bom_cycle, F_CONST.c_mod_bom, 'explode_table',
+                    MFG_ERP.F_EXC.raise_biz_error(
+                        MFG_ERP.F_CONST.c_err_bom_cycle, MFG_ERP.F_CONST.c_mod_bom, 'explode_table',
                         'BOM 环路 component_id=' || r.component_item_id
                         || ' path=' || p_path, TO_CHAR(r.component_item_id));
                 END IF;
@@ -229,7 +229,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_BOM AS
         ii_qty     IN  NUMBER   DEFAULT 1,
         or_cur     OUT SYS_REFCURSOR
     ) IS
-        v_as_of DATE := F_UTIL.curr_biz_date();
+        v_as_of DATE := MFG_ERP.F_UTIL.curr_biz_date();
     BEGIN
         -- 递归 with: 锚成员是顶层物料的当层组件，递归成员把上一层组件当作下一层 BOM 的头物料续接
         -- cum_qty 在递归里直接累乘(上层 cum * 本行含损耗用量)，路径与层级一并在 CTE 内维护
@@ -279,7 +279,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_BOM AS
                    AND h.is_default  = 'Y'
                    AND h.effective_from <= v_as_of
                    AND (h.effective_to IS NULL OR h.effective_to >= v_as_of)
-                   AND t.lvl < F_CONST.c_max_bom_levels
+                   AND t.lvl < MFG_ERP.F_CONST.c_max_bom_levels
             )
             SELECT lvl,
                    parent_item_id,
@@ -307,7 +307,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_BOM AS
         ii_max_levels   IN  NUMBER DEFAULT NULL,
         or_cur          OUT SYS_REFCURSOR
     ) IS
-        v_as_of DATE := F_UTIL.curr_biz_date();
+        v_as_of DATE := MFG_ERP.F_UTIL.curr_biz_date();
     BEGIN
         -- 反查("用在哪"): 从用到本组件的 BOM 行起步，沿 prior 向上爬父项，直到无人再用它
         -- 与正向展开方向相反: 这里 prior 把"子(本层头物料)"连到"父(上层组件)"
@@ -424,9 +424,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_BOM AS
         v_base  NUMBER;
         v_total NUMBER := 0;
     BEGIN
-        IF ii_depth > F_CONST.c_max_bom_levels THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_bom_cycle, F_CONST.c_mod_bom, 'rolled_cost',
+        IF ii_depth > MFG_ERP.F_CONST.c_max_bom_levels THEN
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_bom_cycle, MFG_ERP.F_CONST.c_mod_bom, 'rolled_cost',
                 '卷算层级超上限，疑似环路 item_id=' || ii_item_id, TO_CHAR(ii_item_id));
         END IF;
 
@@ -469,9 +469,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_BOM AS
     *****************************************************************/
     FUNCTION rolled_cost(ii_item_id IN NUMBER, id_as_of IN DATE DEFAULT NULL) RETURN NUMBER IS
     BEGIN
-        RETURN unit_cost(ii_item_id, NVL(id_as_of, F_UTIL.curr_biz_date()), 1);
+        RETURN unit_cost(ii_item_id, NVL(id_as_of, MFG_ERP.F_UTIL.curr_biz_date()), 1);
     END rolled_cost;
 
 END f_bom;
-/
-/

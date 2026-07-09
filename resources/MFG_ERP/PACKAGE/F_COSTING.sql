@@ -59,10 +59,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE MFG_ERP.F_COSTING IS
     PROCEDURE roll_standard_cost(id_as_of IN DATE DEFAULT NULL);
 
 END f_costing;
-/
 
 -- 成本计算实现
 -- 本包以分析函数为主线: FIFO 分层与估值占比靠窗口函数,落地成本分摊靠 SQL 内联 PL/SQL(with function)
--- 标准成本卷算把 BOM 递归交给 F_BOM.rolled_cost,本包只负责挑成品/半成品并 merge 回写
+-- 标准成本卷算把 BOM 递归交给 MFG_ERP.F_BOM.rolled_cost,本包只负责挑成品/半成品并 merge 回写
 -- 多数子程序 open ref cursor 返回,让应用层流式取,不在库内物化大结果集
-/

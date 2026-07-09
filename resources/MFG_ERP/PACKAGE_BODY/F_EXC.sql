@@ -39,7 +39,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_EXC AS
     EXCEPTION
         WHEN OTHERS THEN
             ROLLBACK;
-            DBMS_OUTPUT.PUT_LINE('[FATAL] F_EXC.log_error self-failed: ' || SQLERRM);
+            DBMS_OUTPUT.PUT_LINE('[FATAL] MFG_ERP.F_EXC.log_error self-failed: ' || SQLERRM);
     END log_error;
 
 
@@ -130,5 +130,3 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_EXC AS
     END format_error_stack;
 
 END f_exc;
-/
-/

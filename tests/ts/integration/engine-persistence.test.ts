@@ -76,7 +76,7 @@ describe("engine-persistence", () => {
       const ctx = createEngineWithTempDir()
       try {
         ctx.engine.start("sql2java", "event-001")
-        const logPath = join(ctx.dir, "event-001", "_events.log")
+        const logPath = join(ctx.dir, "event-001", "logs", "_events.log")
         expect(existsSync(logPath)).toBe(true)
         const content = readFileSync(logPath, "utf-8")
         expect(content).toContain("[START]")

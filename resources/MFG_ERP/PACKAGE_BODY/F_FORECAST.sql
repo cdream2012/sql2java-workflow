@@ -23,7 +23,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_FORECAST AS
         is_method        IN VARCHAR2 DEFAULT 'MA3',
         ii_periods_ahead IN NUMBER   DEFAULT 3
     ) IS
-        v_run_date DATE := NVL(id_run_date, F_UTIL.curr_biz_date());
+        v_run_date DATE := NVL(id_run_date, MFG_ERP.F_UTIL.curr_biz_date());
         v_method   VARCHAR2(16) := UPPER(NVL(is_method, 'MA3'));
         v_ahead    PLS_INTEGER := NVL(ii_periods_ahead, 3);
         v_anchor   NUMBER := period_seq(v_run_date);  -- 最后一个有实绩的期序号(含当期)
@@ -32,8 +32,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_FORECAST AS
         v_merged   NUMBER := 0;
     BEGIN
         IF v_method NOT IN ('MA3','MA6','TREND') THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_system, F_CONST.c_mod_forecast, 'generate_forecast',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_system, MFG_ERP.F_CONST.c_mod_forecast, 'generate_forecast',
                 '不支持的预测方法: ' || v_method, v_method);
         END IF;
 
@@ -111,9 +111,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_FORECAST AS
 
         v_merged := sql%ROWCOUNT;
 
-        F_EXC.log_error(
+        MFG_ERP.F_EXC.log_error(
             is_error_code  => 'I6010',
-            is_module      => F_CONST.c_mod_forecast,
+            is_module      => MFG_ERP.F_CONST.c_mod_forecast,
             is_procedure   => 'generate_forecast',
             is_error_msg   => '预测生成 method=' || v_method || ' ahead=' || v_ahead
                           || ' anchor=' || TO_CHAR(v_run_date, 'YYYY-MM') || ' rows=' || v_merged,
@@ -121,9 +121,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_FORECAST AS
             is_error_level => 'INFO');
     EXCEPTION
         WHEN OTHERS THEN
-            F_EXC.log_error(
-                is_error_code => F_CONST.c_err_system,
-                is_module     => F_CONST.c_mod_forecast,
+            MFG_ERP.F_EXC.log_error(
+                is_error_code => MFG_ERP.F_CONST.c_err_system,
+                is_module     => MFG_ERP.F_CONST.c_mod_forecast,
                 is_procedure  => 'generate_forecast',
                 is_error_msg  => '预测生成失败 method=' || v_method || ': ' || SQLERRM,
                 is_biz_key    => TO_CHAR(v_run_id));
@@ -245,9 +245,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_FORECAST AS
             IF DBMS_SQL.IS_OPEN(v_cur_id) THEN
                 DBMS_SQL.CLOSE_CURSOR(v_cur_id);
             END IF;
-            F_EXC.log_error(
-                is_error_code => F_CONST.c_err_system,
-                is_module     => F_CONST.c_mod_forecast,
+            MFG_ERP.F_EXC.log_error(
+                is_error_code => MFG_ERP.F_CONST.c_err_system,
+                is_module     => MFG_ERP.F_CONST.c_mod_forecast,
                 is_procedure  => 'pivot_demand_dynamic',
                 is_error_msg  => '动态透视失败: ' || SQLERRM,
                 is_biz_key    => TO_CHAR(v_from, 'YYYY-MM') || '..' || TO_CHAR(v_to, 'YYYY-MM'));
@@ -255,5 +255,3 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_FORECAST AS
     END pivot_demand_dynamic;
 
 END f_forecast;
-/
-/

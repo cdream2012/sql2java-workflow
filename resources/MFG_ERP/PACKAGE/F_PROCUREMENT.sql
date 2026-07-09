@@ -1,12 +1,12 @@
 -- 采购: PO 状态机 / 收货过账 / MRP 转采购单 / 补货扫描 / 供应商排名
 -- PO 状态机: DRAFT -> APPROVED -> PARTIAL -> RECEIVED -> CLOSED，行状态汇总驱动头状态
--- 收货过账委托 F_INVENTORY.receive_stock，同事务更新 PO 行 qty_received 与状态
+-- 收货过账委托 MFG_ERP.F_INVENTORY.receive_stock，同事务更新 PO 行 qty_received 与状态
 -- 补货扫描用游标 + where current of；供应商排名用 rank/分析函数
 
 CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE MFG_ERP.F_PROCUREMENT IS
     -- Author : sql2java-workflow
     -- Created : 2026-07-03
-    -- Purpose : 采购: PO 状态机 / 收货过账 / MRP 转采购单 / 补货扫描 / 供应商排名 / PO 状态机: DRAFT -> APPROVED -> PARTIAL -> RECEIVED -> CLOSED，行状态汇总驱动头状态 / 收货过账委托 F_INVENTORY.receive_stock，同事务更新 PO 行 qty_received 与状态 / 补货扫描用游标 + where current of；供应商排名用 rank/分析函数
+    -- Purpose : 采购: PO 状态机 / 收货过账 / MRP 转采购单 / 补货扫描 / 供应商排名 / PO 状态机: DRAFT -> APPROVED -> PARTIAL -> RECEIVED -> CLOSED，行状态汇总驱动头状态 / 收货过账委托 MFG_ERP.F_INVENTORY.receive_stock，同事务更新 PO 行 qty_received 与状态 / 补货扫描用游标 + where current of；供应商排名用 rank/分析函数
 
     /*****************************************************************
     创建作者：sql2java-workflow
@@ -99,5 +99,3 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE MFG_ERP.F_PROCUREMENT IS
     PROCEDURE cancel_po(ii_po_id IN NUMBER, is_reason IN VARCHAR2);
 
 END f_procurement;
-/
-/

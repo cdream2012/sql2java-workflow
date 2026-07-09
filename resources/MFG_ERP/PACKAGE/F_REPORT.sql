@@ -65,10 +65,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE MFG_ERP.F_REPORT IS
     PROCEDURE inventory_pareto(or_cur OUT SYS_REFCURSOR);
 
 END f_report;
-/
 
 -- F_REPORT 包体: 只读分析报表，全部走 ref cursor / 标量返回，不改数据
 -- 这里集中演示分析类 SQL，sql2java 侧多半映射成只读 Mapper + VO，列别名即字段名
 -- 库存口径: 余额表 t_inventory_balance 是物料+仓库快照，批次表 t_inventory_lot 带 receipt_date 可算库龄
 -- 消耗口径: 流水表 t_inventory_txn 的出库方向(ISSUE/PROD_OUT)累计，比从订单推更准
-/

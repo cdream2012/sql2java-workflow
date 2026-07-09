@@ -75,8 +75,8 @@ describe("engine-fix-loop", () => {
 
   describe("双层 exhausted 策略 (D2)", () => {
     it("globalMax 和 phaseMax 默认值正确", () => {
-      expect(FIX_LIMITS.globalMax).toBe(5)
-      expect(FIX_LIMITS.phaseMax).toBe(5)
+      expect(FIX_LIMITS.globalMax).toBe(10)
+      expect(FIX_LIMITS.phaseMax).toBe(10)
     })
 
     it("isFixExhausted: 未超限时返回 false", () => {
@@ -84,11 +84,11 @@ describe("engine-fix-loop", () => {
     })
 
     it("isFixExhausted: global 超限返回 true", () => {
-      // TODO: 模拟 5 次 global fix
+      // TODO: 模拟 10 次 global fix
     })
 
     it("isFixExhausted: phase 超限返回 true", () => {
-      // TODO: 模拟 review 阶段 5 次 fix
+      // TODO: 模拟 review 阶段 10 次 fix
     })
   })
 

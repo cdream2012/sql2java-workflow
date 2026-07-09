@@ -77,8 +77,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_MRP AS
             NULL;  -- 无持久列可回写时此处为占位;落库版本会 update t_item set low_level_code = r.llc
         END LOOP;
 
-        IF F_UTIL.c_trace_compile THEN
-            F_EXC.debug(F_CONST.c_mod_mrp, 'compute_low_level_codes touched ' || v_cnt || ' items');
+        IF MFG_ERP.F_UTIL.c_trace_compile THEN
+            MFG_ERP.F_EXC.debug(MFG_ERP.F_CONST.c_mod_mrp, 'compute_low_level_codes touched ' || v_cnt || ' items');
         END IF;
     END compute_low_level_codes;
 
@@ -93,7 +93,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_MRP AS
         ii_horizon_days IN  NUMBER  DEFAULT NULL,
         oi_run_id       OUT NUMBER
     ) IS
-        v_run_date DATE := NVL(id_run_date, F_UTIL.curr_biz_date());
+        v_run_date DATE := NVL(id_run_date, MFG_ERP.F_UTIL.curr_biz_date());
         v_horizon  NUMBER := NVL(ii_horizon_days, 90);
         v_run_no   VARCHAR2(32);
         v_horizon_end DATE;
@@ -125,7 +125,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_MRP AS
             v_gross(p_item_id) := v_gross(p_item_id) + NVL(p_qty, 0);
         END add_demand;
     BEGIN
-        v_run_no := F_UTIL.gen_doc_no('MRP', seq_mrp_run_id.NEXTVAL, v_run_date);
+        v_run_no := MFG_ERP.F_UTIL.gen_doc_no('MRP', seq_mrp_run_id.NEXTVAL, v_run_date);
         v_run_id := seq_mrp_run_id.CURRVAL;
         oi_run_id := v_run_id;
         v_horizon_end := v_run_date + v_horizon;
@@ -135,7 +135,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_MRP AS
             status, item_count, plan_count, started_at, created_by
         ) VALUES (
             v_run_id, v_run_no, v_run_date, v_horizon, 'WEEK',
-            F_CONST.c_mrp_running, 0, 0, CURRENT_TIMESTAMP, F_UTIL.get_operator()
+            MFG_ERP.F_CONST.c_mrp_running, 0, 0, CURRENT_TIMESTAMP, MFG_ERP.F_UTIL.get_operator()
         );
 
         -- 1) 顶层独立需求: 预测未来期 + 销售订单未发货行
@@ -205,7 +205,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_MRP AS
 
                     -- 在手可用: 有默认仓走该仓,否则跨仓汇总余额
                     IF v_wh IS NOT NULL THEN
-                        v_avail := NVL(F_INVENTORY.get_available(v_item, v_wh), 0);
+                        v_avail := NVL(MFG_ERP.F_INVENTORY.get_available(v_item, v_wh), 0);
                     ELSE
                         SELECT NVL(SUM(qty_on_hand - qty_allocated), 0)
                           INTO v_avail
@@ -233,13 +233,13 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_MRP AS
                     v_plans(v_pidx).warehouse_id      := v_wh;
                     v_plans(v_pidx).bucket_date       := v_horizon_end;
                     v_plans(v_pidx).level_no          := lvl;
-                    v_plans(v_pidx).gross_req         := F_UTIL.round_qty(v_gross(v_item), NULL);
+                    v_plans(v_pidx).gross_req         := MFG_ERP.F_UTIL.round_qty(v_gross(v_item), NULL);
                     v_plans(v_pidx).scheduled_receipt := v_intransit;
                     v_plans(v_pidx).proj_on_hand      := v_avail;
 
                     IF v_net > 0 THEN
-                        v_plans(v_pidx).net_req            := F_UTIL.round_qty(v_net, NULL);
-                        v_plans(v_pidx).planned_order_qty  := F_UTIL.round_qty(v_net, NULL);
+                        v_plans(v_pidx).net_req            := MFG_ERP.F_UTIL.round_qty(v_net, NULL);
+                        v_plans(v_pidx).planned_order_qty  := MFG_ERP.F_UTIL.round_qty(v_net, NULL);
                         v_plans(v_pidx).planned_order_date := v_horizon_end - NVL(v_lead, 0);
                         v_plans(v_pidx).action_msg         := '建议下单 提前期' || NVL(v_lead, 0) || '天';
 
@@ -249,7 +249,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_MRP AS
                         BEGIN
                             FOR c IN (
                                 SELECT component_item_id, cum_qty, is_phantom
-                                  FROM TABLE(F_BOM.explode(v_item, v_net, v_run_date))
+                                  FROM TABLE(MFG_ERP.F_BOM.explode(v_item, v_net, v_run_date))
                                  WHERE lvl = 1
                             ) LOOP
                                 IF NVL(c.is_phantom, 'N') <> 'Y' THEN
@@ -323,15 +323,15 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_MRP AS
 
         -- 5) 回写运行头统计
         UPDATE t_mrp_run
-           SET status      = F_CONST.c_mrp_success,
+           SET status      = MFG_ERP.F_CONST.c_mrp_success,
                item_count  = v_item_cnt,
                plan_count  = v_plan_cnt,
                finished_at = CURRENT_TIMESTAMP
          WHERE run_id = v_run_id;
 
-        F_EXC.log_error(
+        MFG_ERP.F_EXC.log_error(
             is_error_code  => 'I5010',
-            is_module      => F_CONST.c_mod_mrp,
+            is_module      => MFG_ERP.F_CONST.c_mod_mrp,
             is_procedure   => 'run_mrp',
             is_error_msg   => 'MRP 完成 run=' || v_run_no || ' items=' || v_item_cnt
                           || ' plans=' || v_plan_cnt || ' max_llc=' || v_max_llc,
@@ -341,11 +341,11 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_MRP AS
         WHEN OTHERS THEN
             -- 主流程失败: 头置 FAILED 留痕后抛出(参 bank F_SETTLE.run_day_end)
             UPDATE t_mrp_run
-               SET status = F_CONST.c_mrp_failed, finished_at = CURRENT_TIMESTAMP
+               SET status = MFG_ERP.F_CONST.c_mrp_failed, finished_at = CURRENT_TIMESTAMP
              WHERE run_id = v_run_id;
-            F_EXC.log_error(
-                is_error_code => F_CONST.c_err_system,
-                is_module     => F_CONST.c_mod_mrp,
+            MFG_ERP.F_EXC.log_error(
+                is_error_code => MFG_ERP.F_CONST.c_err_system,
+                is_module     => MFG_ERP.F_CONST.c_mod_mrp,
                 is_procedure  => 'run_mrp',
                 is_error_msg  => 'MRP 失败: ' || SQLERRM,
                 is_biz_key    => TO_CHAR(v_run_id));
@@ -367,8 +367,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_MRP AS
     BEGIN
         SELECT COUNT(*) INTO v_exists FROM t_mrp_run WHERE run_id = ii_run_id;
         IF v_exists = 0 THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_mrp_run_not_found, F_CONST.c_mod_mrp, 'netting_detail',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_mrp_run_not_found, MFG_ERP.F_CONST.c_mod_mrp, 'netting_detail',
                 'MRP 运行不存在 run_id=' || ii_run_id, TO_CHAR(ii_run_id));
         END IF;
 
@@ -416,8 +416,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_MRP AS
 
         SELECT COUNT(*) INTO v_exists FROM t_mrp_run WHERE run_id = ii_run_id;
         IF v_exists = 0 THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_mrp_run_not_found, F_CONST.c_mod_mrp, 'release_planned_orders',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_mrp_run_not_found, MFG_ERP.F_CONST.c_mod_mrp, 'release_planned_orders',
                 'MRP 运行不存在 run_id=' || ii_run_id, TO_CHAR(ii_run_id));
         END IF;
 
@@ -429,18 +429,18 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_MRP AS
               JOIN t_item i ON i.item_id = mp.item_id
              WHERE mp.run_id = ii_run_id
                AND mp.planned_order_qty > 0
-               AND i.item_type IN (F_CONST.c_item_fg, F_CONST.c_item_semi)
+               AND i.item_type IN (MFG_ERP.F_CONST.c_item_fg, MFG_ERP.F_CONST.c_item_semi)
              ORDER BY mp.level_no, mp.item_id
         ) LOOP
             -- 自制件取其 ACTIVE BOM 挂到工单;无 ACTIVE BOM 则记 null(后续补维护)
             BEGIN
-                v_bom_id := F_BOM.get_active_bom_id(r.item_id, SYSDATE);
+                v_bom_id := MFG_ERP.F_BOM.get_active_bom_id(r.item_id, SYSDATE);
             EXCEPTION
                 WHEN OTHERS THEN
                     v_bom_id := NULL;
             END;
 
-            v_prod_no := F_UTIL.gen_doc_no('PRD', seq_prod_id.NEXTVAL, NVL(r.planned_order_date, SYSDATE));
+            v_prod_no := MFG_ERP.F_UTIL.gen_doc_no('PRD', seq_prod_id.NEXTVAL, NVL(r.planned_order_date, SYSDATE));
 
             INSERT INTO t_production_order(
                 prod_id, prod_no, item_id, bom_id, qty_planned,
@@ -448,9 +448,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_MRP AS
                 start_date, due_date, source_mrp_id, created_by, created_at
             ) VALUES (
                 seq_prod_id.CURRVAL, v_prod_no, r.item_id, v_bom_id, r.planned_order_qty,
-                0, 0, F_CONST.c_prod_planned, r.warehouse_id,
+                0, 0, MFG_ERP.F_CONST.c_prod_planned, r.warehouse_id,
                 NVL(r.planned_order_date, SYSDATE) - NVL(r.lead_time_days, 0),
-                r.planned_order_date, ii_run_id, F_UTIL.get_operator(), CURRENT_TIMESTAMP
+                r.planned_order_date, ii_run_id, MFG_ERP.F_UTIL.get_operator(), CURRENT_TIMESTAMP
             );
 
             -- 工单建好后,把计划行动作改成已转工单,留单号便于追溯
@@ -463,9 +463,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_MRP AS
 
         oi_prod_count := v_cnt;
 
-        F_EXC.log_error(
+        MFG_ERP.F_EXC.log_error(
             is_error_code  => 'I5020',
-            is_module      => F_CONST.c_mod_mrp,
+            is_module      => MFG_ERP.F_CONST.c_mod_mrp,
             is_procedure   => 'release_planned_orders',
             is_error_msg   => '计划下达完成 run=' || ii_run_id || ' prod_orders=' || v_cnt,
             is_biz_key     => TO_CHAR(ii_run_id),
@@ -473,5 +473,3 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_MRP AS
     END release_planned_orders;
 
 END f_mrp;
-/
-/

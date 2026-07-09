@@ -38,8 +38,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_UTIL AS
          WHERE sys_code = 'CORE';
     EXCEPTION
         WHEN NO_DATA_FOUND THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_system, F_CONST.c_mod_util, 'refresh_biz_date',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_system, MFG_ERP.F_CONST.c_mod_util, 'refresh_biz_date',
                 '业务日期表 t_business_date(sys_code=CORE) 未初始化');
     END refresh_biz_date;
 
@@ -139,8 +139,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_UTIL AS
             RETURN ii_default;
         WHEN VALUE_ERROR THEN
             -- 配错成非数字时退回默认值并告警，不让跑批因一个脏参数崩掉
-            F_EXC.log_error(
-                F_CONST.c_err_system, F_CONST.c_mod_util, 'get_param',
+            MFG_ERP.F_EXC.log_error(
+                MFG_ERP.F_CONST.c_err_system, MFG_ERP.F_CONST.c_mod_util, 'get_param',
                 '参数非数字 key=' || is_key || ' val=' || v_val, is_key, NULL, 'WARN');
             RETURN ii_default;
     END get_param;
@@ -192,18 +192,18 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_UTIL AS
 
         -- 跨类换算无意义(重量换不成长度)，直接拦
         IF NOT (g_uom_cat.EXISTS(is_from_uom) AND g_uom_cat.EXISTS(is_to_uom)) THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_uom_not_found, F_CONST.c_mod_util, 'convert_qty',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_uom_not_found, MFG_ERP.F_CONST.c_mod_util, 'convert_qty',
                 '单位未定义 from=' || is_from_uom || ' to=' || is_to_uom, is_from_uom);
         END IF;
         IF g_uom_cat(is_from_uom) <> g_uom_cat(is_to_uom) THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_uom_incompatible, F_CONST.c_mod_util, 'convert_qty',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_uom_incompatible, MFG_ERP.F_CONST.c_mod_util, 'convert_qty',
                 '单位不同类不可换算 ' || is_from_uom || '(' || g_uom_cat(is_from_uom) || ') -> '
                 || is_to_uom || '(' || g_uom_cat(is_to_uom) || ')', is_from_uom);
         END IF;
 
-        $IF F_UTIL.c_trace_compile $THEN
+        $IF MFG_ERP.F_UTIL.c_trace_compile $THEN
             DBMS_OUTPUT.PUT_LINE('[TRACE] convert_qty ' || ii_qty || ' ' || is_from_uom || '->' || is_to_uom);
         $END
 
@@ -296,5 +296,3 @@ BEGIN
             DBMS_OUTPUT.PUT_LINE('[WARN] F_UTIL init partially failed: ' || SQLERRM);
     END;
 END f_util;
-/
-/

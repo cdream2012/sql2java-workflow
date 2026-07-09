@@ -138,10 +138,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE MFG_ERP.F_INVENTORY IS
     );
 
 END f_inventory;
-/
 
 -- 库存收发实现
 -- 三层落地原则: 流水是事实(append-only)，批次是 FIFO 排队的明细，余额是物料+仓库的快照
 -- 每个动作都按 流水 -> 批次 -> 余额 的顺序写，余额走 merge 自愈，避免余额行缺失时整笔失败
 -- 发料的 FIFO 定位用窗口函数算累计可用量,再用 for update 游标逐批扣,锁粒度落到批次行
-/

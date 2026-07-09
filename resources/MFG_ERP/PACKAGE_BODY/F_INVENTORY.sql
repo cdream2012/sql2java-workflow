@@ -32,12 +32,12 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
             ref_doc_type, ref_doc_id, operator, remark
         ) VALUES (
             v_txn_id,
-            F_UTIL.gen_doc_no('IT', v_txn_id, F_UTIL.curr_biz_date()),
+            MFG_ERP.F_UTIL.gen_doc_no('IT', v_txn_id, MFG_ERP.F_UTIL.curr_biz_date()),
             ii_item_id, ii_warehouse_id, ii_lot_id,
             is_txn_type, is_direction, ii_qty, ii_unit_cost,
             ROUND(ii_qty * NVL(ii_unit_cost, 0), 4),
-            ii_qty_before, ii_qty_after, F_UTIL.curr_biz_date(), CURRENT_TIMESTAMP,
-            is_ref_doc_type, ii_ref_doc_id, F_UTIL.get_operator(), is_remark
+            ii_qty_before, ii_qty_after, MFG_ERP.F_UTIL.curr_biz_date(), CURRENT_TIMESTAMP,
+            is_ref_doc_type, ii_ref_doc_id, MFG_ERP.F_UTIL.get_operator(), is_remark
         );
         RETURN v_txn_id;
     END post_txn;
@@ -70,14 +70,14 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
                     ELSE b.avg_cost
                 END,
                 b.qty_on_hand   = b.qty_on_hand + ii_delta_qty,
-                b.last_txn_date = F_UTIL.curr_biz_date(),
+                b.last_txn_date = MFG_ERP.F_UTIL.curr_biz_date(),
                 b.version       = b.version + 1,
                 b.updated_at    = CURRENT_TIMESTAMP
         WHEN NOT MATCHED THEN
             INSERT (item_id, warehouse_id, qty_on_hand, qty_allocated,
                     avg_cost, last_txn_date, version, updated_at)
             VALUES (s.item_id, s.warehouse_id, ii_delta_qty, 0,
-                    NVL(ii_in_cost, 0), F_UTIL.curr_biz_date(), 0, CURRENT_TIMESTAMP);
+                    NVL(ii_in_cost, 0), MFG_ERP.F_UTIL.curr_biz_date(), 0, CURRENT_TIMESTAMP);
     END upsert_balance;
 
 
@@ -102,8 +102,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
         v_lot_no     VARCHAR2(40);
     BEGIN
         IF ii_qty IS NULL OR ii_qty <= 0 THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_stock_negative, F_CONST.c_mod_inv, 'receive_stock',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_stock_negative, MFG_ERP.F_CONST.c_mod_inv, 'receive_stock',
                 '收货数量必须 > 0', TO_CHAR(ii_item_id));
         END IF;
 
@@ -112,7 +112,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
          WHERE item_id = ii_item_id AND warehouse_id = ii_warehouse_id;
 
         -- 批次号缺省自动生成确保唯一; returning into 取回入库后的 lot_id 作为出参
-        v_lot_no := NVL(is_lot_no, F_UTIL.gen_doc_no('LOT', v_lot_id, F_UTIL.curr_biz_date()));
+        v_lot_no := NVL(is_lot_no, MFG_ERP.F_UTIL.gen_doc_no('LOT', v_lot_id, MFG_ERP.F_UTIL.curr_biz_date()));
 
         INSERT INTO t_inventory_lot(
             lot_id, lot_no, item_id, warehouse_id,
@@ -120,8 +120,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
             receipt_date, status, source_doc_type, source_doc_id
         ) VALUES (
             v_lot_id, v_lot_no, ii_item_id, ii_warehouse_id,
-            ii_qty, 0, NVL(ii_unit_cost, 0), F_CONST.c_default_currency,
-            F_UTIL.curr_biz_date(), F_CONST.c_lot_available, is_ref_doc_type, ii_ref_doc_id
+            ii_qty, 0, NVL(ii_unit_cost, 0), MFG_ERP.F_CONST.c_default_currency,
+            MFG_ERP.F_UTIL.curr_biz_date(), MFG_ERP.F_CONST.c_lot_available, is_ref_doc_type, ii_ref_doc_id
         )
         RETURNING lot_id INTO oi_lot_id;
 
@@ -129,8 +129,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
             p_item_id      => ii_item_id,
             p_warehouse_id => ii_warehouse_id,
             p_lot_id       => oi_lot_id,
-            p_txn_type     => F_CONST.c_txn_recv,
-            p_direction    => F_CONST.c_dir_in,
+            p_txn_type     => MFG_ERP.F_CONST.c_txn_recv,
+            p_direction    => MFG_ERP.F_CONST.c_dir_in,
             p_qty          => ii_qty,
             p_unit_cost    => NVL(ii_unit_cost, 0),
             p_qty_before   => v_qty_before,
@@ -166,8 +166,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
               FROM t_item WHERE item_code = is_item_code;
         EXCEPTION
             WHEN NO_DATA_FOUND THEN
-                F_EXC.raise_biz_error(
-                    F_CONST.c_err_item_not_found, F_CONST.c_mod_inv, 'receive_stock',
+                MFG_ERP.F_EXC.raise_biz_error(
+                    MFG_ERP.F_CONST.c_err_item_not_found, MFG_ERP.F_CONST.c_mod_inv, 'receive_stock',
                     '物料编码不存在 ' || is_item_code, is_item_code);
         END;
 
@@ -176,8 +176,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
               FROM t_warehouse WHERE warehouse_code = is_warehouse_code;
         EXCEPTION
             WHEN NO_DATA_FOUND THEN
-                F_EXC.raise_biz_error(
-                    F_CONST.c_err_balance_not_found, F_CONST.c_mod_inv, 'receive_stock',
+                MFG_ERP.F_EXC.raise_biz_error(
+                    MFG_ERP.F_CONST.c_err_balance_not_found, MFG_ERP.F_CONST.c_mod_inv, 'receive_stock',
                     '仓库编码不存在 ' || is_warehouse_code, is_warehouse_code);
         END;
 
@@ -217,7 +217,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
               FROM t_inventory_lot
              WHERE item_id = ii_item_id
                AND warehouse_id = ii_warehouse_id
-               AND status = F_CONST.c_lot_available
+               AND status = MFG_ERP.F_CONST.c_lot_available
                AND qty_on_hand - qty_allocated > 0
              ORDER BY receipt_date, lot_id
              FOR UPDATE OF qty_on_hand;
@@ -230,16 +230,16 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
         v_idx         PLS_INTEGER := 0;
     BEGIN
         IF ii_qty IS NULL OR ii_qty <= 0 THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_stock_negative, F_CONST.c_mod_inv, 'issue_stock',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_stock_negative, MFG_ERP.F_CONST.c_mod_inv, 'issue_stock',
                 '发料数量必须 > 0', TO_CHAR(ii_item_id));
         END IF;
 
         -- 先用余额快照挡一道,不足直接抛,省去无谓的逐批锁
         v_total_avail := get_available(ii_item_id, ii_warehouse_id);
         IF v_total_avail < ii_qty THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_stock_insufficient, F_CONST.c_mod_inv, 'issue_stock',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_stock_insufficient, MFG_ERP.F_CONST.c_mod_inv, 'issue_stock',
                 '可用量不足 avail=' || v_total_avail || ' need=' || ii_qty,
                 TO_CHAR(ii_item_id) || '/' || TO_CHAR(ii_warehouse_id));
         END IF;
@@ -258,7 +258,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
             UPDATE t_inventory_lot
                SET qty_on_hand = qty_on_hand - v_take,
                    status = CASE WHEN qty_on_hand - v_take = 0
-                                 THEN F_CONST.c_lot_consumed
+                                 THEN MFG_ERP.F_CONST.c_lot_consumed
                                  ELSE status END
              WHERE CURRENT OF cur_fifo;
 
@@ -275,8 +275,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
                     p_item_id      => ii_item_id,
                     p_warehouse_id => ii_warehouse_id,
                     p_lot_id       => r.lot_id,
-                    p_txn_type     => F_CONST.c_txn_issue,
-                    p_direction    => F_CONST.c_dir_out,
+                    p_txn_type     => MFG_ERP.F_CONST.c_txn_issue,
+                    p_direction    => MFG_ERP.F_CONST.c_dir_out,
                     p_qty          => v_take,
                     p_unit_cost    => r.unit_cost,
                     p_qty_before   => v_qty_run + v_take,
@@ -334,10 +334,10 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
                 ) VALUES (
                     v_lot_ids(i),
                     NVL(it_lines(i).lot_no,
-                        F_UTIL.gen_doc_no('LOT', v_lot_ids(i), F_UTIL.curr_biz_date())),
+                        MFG_ERP.F_UTIL.gen_doc_no('LOT', v_lot_ids(i), MFG_ERP.F_UTIL.curr_biz_date())),
                     it_lines(i).item_id, it_lines(i).warehouse_id,
-                    it_lines(i).qty, 0, NVL(it_lines(i).unit_cost, 0), F_CONST.c_default_currency,
-                    F_UTIL.curr_biz_date(), F_CONST.c_lot_available,
+                    it_lines(i).qty, 0, NVL(it_lines(i).unit_cost, 0), MFG_ERP.F_CONST.c_default_currency,
+                    MFG_ERP.F_UTIL.curr_biz_date(), MFG_ERP.F_CONST.c_lot_available,
                     it_lines(i).ref_doc_type, it_lines(i).ref_doc_id
                 );
             oi_ok_count := it_lines.COUNT;
@@ -351,9 +351,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
                     FOR j IN 1 .. v_dml_err LOOP
                         -- error_index 是 forall 迭代序号,需折算回 p_lines 的实际下标
                         v_failed(it_lines.FIRST + SQL%BULK_EXCEPTIONS(j).error_index - 1) := TRUE;
-                        F_EXC.log_error(
-                            is_error_code  => F_CONST.c_err_stock_negative,
-                            is_module      => F_CONST.c_mod_inv,
+                        MFG_ERP.F_EXC.log_error(
+                            is_error_code  => MFG_ERP.F_CONST.c_err_stock_negative,
+                            is_module      => MFG_ERP.F_CONST.c_mod_inv,
                             is_procedure   => 'bulk_receive',
                             is_error_msg   => '批量收货行失败 idx='
                                           || SQL%BULK_EXCEPTIONS(j).error_index
@@ -374,8 +374,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
                 p_item_id      => it_lines(i).item_id,
                 p_warehouse_id => it_lines(i).warehouse_id,
                 p_lot_id       => v_lot_ids(i),
-                p_txn_type     => F_CONST.c_txn_recv,
-                p_direction    => F_CONST.c_dir_in,
+                p_txn_type     => MFG_ERP.F_CONST.c_txn_recv,
+                p_direction    => MFG_ERP.F_CONST.c_dir_in,
                 p_qty          => it_lines(i).qty,
                 p_unit_cost    => NVL(it_lines(i).unit_cost, 0),
                 p_qty_before   => NULL,
@@ -387,9 +387,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
                            it_lines(i).qty, it_lines(i).qty, NVL(it_lines(i).unit_cost, 0));
         END LOOP;
 
-        F_EXC.log_error(
+        MFG_ERP.F_EXC.log_error(
             is_error_code  => 'I3001',
-            is_module      => F_CONST.c_mod_inv,
+            is_module      => MFG_ERP.F_CONST.c_mod_inv,
             is_procedure   => 'bulk_receive',
             is_error_msg   => '批量收货 total=' || it_lines.COUNT
                           || ' ok=' || oi_ok_count || ' fail=' || oi_fail_count,
@@ -415,8 +415,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
         v_lot_id   NUMBER;
     BEGIN
         IF ii_new_qty IS NULL OR ii_new_qty < 0 THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_stock_negative, F_CONST.c_mod_inv, 'adjust_stock',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_stock_negative, MFG_ERP.F_CONST.c_mod_inv, 'adjust_stock',
                 '盘点数量不能为负', TO_CHAR(ii_item_id));
         END IF;
 
@@ -444,14 +444,14 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
                 ii_qty          => v_diff,
                 ii_unit_cost    => v_avg_cost,
                 is_lot_no       => NULL,
-                is_ref_doc_type => F_CONST.c_txn_adj,
+                is_ref_doc_type => MFG_ERP.F_CONST.c_txn_adj,
                 ii_ref_doc_id   => NULL,
                 oi_lot_id       => v_lot_id,
                 oi_txn_id       => v_dummy);
 
             -- 把 RECV 流水改记成 ADJ 口径(同事务,语义更准)
             UPDATE t_inventory_txn
-               SET txn_type = F_CONST.c_txn_adj,
+               SET txn_type = MFG_ERP.F_CONST.c_txn_adj,
                    remark   = '盘盈 ' || is_reason
              WHERE txn_id = v_dummy;
         ELSE
@@ -463,19 +463,19 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
                     ii_item_id      => ii_item_id,
                     ii_warehouse_id => ii_warehouse_id,
                     ii_qty          => -v_diff,
-                    is_ref_doc_type => F_CONST.c_txn_adj,
+                    is_ref_doc_type => MFG_ERP.F_CONST.c_txn_adj,
                     ii_ref_doc_id   => NULL,
                     ot_alloc        => v_alloc);
             END;
 
             UPDATE t_inventory_txn
-               SET txn_type = F_CONST.c_txn_adj,
+               SET txn_type = MFG_ERP.F_CONST.c_txn_adj,
                    remark   = '盘亏 ' || is_reason
              WHERE item_id = ii_item_id
                AND warehouse_id = ii_warehouse_id
-               AND txn_type = F_CONST.c_txn_issue
-               AND txn_date = F_UTIL.curr_biz_date()
-               AND ref_doc_type = F_CONST.c_txn_adj;
+               AND txn_type = MFG_ERP.F_CONST.c_txn_issue
+               AND txn_date = MFG_ERP.F_UTIL.curr_biz_date()
+               AND ref_doc_type = MFG_ERP.F_CONST.c_txn_adj;
         END IF;
 
         sync_balance(ii_item_id, ii_warehouse_id);
@@ -500,13 +500,13 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
         v_dummy      NUMBER;
     BEGIN
         IF ii_from_wh = ii_to_wh THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_balance_not_found, F_CONST.c_mod_inv, 'transfer_stock',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_balance_not_found, MFG_ERP.F_CONST.c_mod_inv, 'transfer_stock',
                 '调出调入仓库不能相同', TO_CHAR(ii_from_wh));
         END IF;
         IF ii_qty IS NULL OR ii_qty <= 0 THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_stock_negative, F_CONST.c_mod_inv, 'transfer_stock',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_stock_negative, MFG_ERP.F_CONST.c_mod_inv, 'transfer_stock',
                 '调拨数量必须 > 0', TO_CHAR(ii_item_id));
         END IF;
 
@@ -515,7 +515,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
             ii_item_id      => ii_item_id,
             ii_warehouse_id => ii_from_wh,
             ii_qty          => ii_qty,
-            is_ref_doc_type => F_CONST.c_txn_xfer_out,
+            is_ref_doc_type => MFG_ERP.F_CONST.c_txn_xfer_out,
             ii_ref_doc_id   => ii_to_wh,
             ot_alloc        => v_alloc);
 
@@ -528,12 +528,12 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
 
         -- 把出库流水类型从 ISSUE 改记 XFER_OUT(同事务)
         UPDATE t_inventory_txn
-           SET txn_type = F_CONST.c_txn_xfer_out
+           SET txn_type = MFG_ERP.F_CONST.c_txn_xfer_out
          WHERE item_id = ii_item_id
            AND warehouse_id = ii_from_wh
-           AND txn_type = F_CONST.c_txn_issue
-           AND txn_date = F_UTIL.curr_biz_date()
-           AND ref_doc_type = F_CONST.c_txn_xfer_out
+           AND txn_type = MFG_ERP.F_CONST.c_txn_issue
+           AND txn_date = MFG_ERP.F_UTIL.curr_biz_date()
+           AND ref_doc_type = MFG_ERP.F_CONST.c_txn_xfer_out
            AND ref_doc_id = ii_to_wh;
 
         -- 调入新建批次(入库 XFER_IN),与出库同一事务
@@ -543,13 +543,13 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
             ii_qty          => ii_qty,
             ii_unit_cost    => v_xfer_cost,
             is_lot_no       => NULL,
-            is_ref_doc_type => F_CONST.c_txn_xfer_in,
+            is_ref_doc_type => MFG_ERP.F_CONST.c_txn_xfer_in,
             ii_ref_doc_id   => ii_from_wh,
             oi_lot_id       => v_lot_id,
             oi_txn_id       => v_dummy);
 
         UPDATE t_inventory_txn
-           SET txn_type = F_CONST.c_txn_xfer_in
+           SET txn_type = MFG_ERP.F_CONST.c_txn_xfer_in
          WHERE txn_id = v_dummy;
     END transfer_stock;
 
@@ -574,7 +574,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
           FROM t_inventory_lot
          WHERE item_id = ii_item_id
            AND warehouse_id = ii_warehouse_id
-           AND status IN (F_CONST.c_lot_available, F_CONST.c_lot_quarantine);
+           AND status IN (MFG_ERP.F_CONST.c_lot_available, MFG_ERP.F_CONST.c_lot_quarantine);
 
         MERGE INTO t_inventory_balance b
         USING (SELECT ii_item_id AS item_id, ii_warehouse_id AS warehouse_id FROM DUAL) s
@@ -584,14 +584,14 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
                 b.qty_on_hand   = v_qty,
                 b.qty_allocated = v_alloc,
                 b.avg_cost      = v_avg,
-                b.last_txn_date = F_UTIL.curr_biz_date(),
+                b.last_txn_date = MFG_ERP.F_UTIL.curr_biz_date(),
                 b.version       = b.version + 1,
                 b.updated_at    = CURRENT_TIMESTAMP
         WHEN NOT MATCHED THEN
             INSERT (item_id, warehouse_id, qty_on_hand, qty_allocated,
                     avg_cost, last_txn_date, version, updated_at)
             VALUES (s.item_id, s.warehouse_id, v_qty, v_alloc,
-                    v_avg, F_UTIL.curr_biz_date(), 0, CURRENT_TIMESTAMP);
+                    v_avg, MFG_ERP.F_UTIL.curr_biz_date(), 0, CURRENT_TIMESTAMP);
     END sync_balance;
 
 
@@ -646,9 +646,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
         EXECUTE IMMEDIATE 'delete from t_inventory_txn where txn_date < :1'
             USING id_before_date;
 
-        F_EXC.log_error(
+        MFG_ERP.F_EXC.log_error(
             is_error_code  => 'I3090',
-            is_module      => F_CONST.c_mod_inv,
+            is_module      => MFG_ERP.F_CONST.c_mod_inv,
             is_procedure   => 'archive_txns_before',
             is_error_msg   => '流水归档 tab=' || v_tab || ' before='
                           || TO_CHAR(id_before_date, 'YYYY-MM-DD') || ' rows=' || oi_archived,
@@ -657,9 +657,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
     EXCEPTION
         WHEN OTHERS THEN
             -- 归档动了真数据，失败必须抛出去让外层回滚，不能像普通日志那样吞掉
-            F_EXC.log_error(
-                is_error_code => F_CONST.c_err_system,
-                is_module     => F_CONST.c_mod_inv,
+            MFG_ERP.F_EXC.log_error(
+                is_error_code => MFG_ERP.F_CONST.c_err_system,
+                is_module     => MFG_ERP.F_CONST.c_mod_inv,
                 is_procedure  => 'archive_txns_before',
                 is_error_msg  => '归档失败 tab=' || v_tab || ': ' || SQLERRM,
                 is_biz_key    => v_tab);
@@ -667,5 +667,3 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
     END archive_txns_before;
 
 END f_inventory;
-/
-/

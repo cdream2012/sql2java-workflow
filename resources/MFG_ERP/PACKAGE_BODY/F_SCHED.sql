@@ -38,16 +38,16 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_SCHED AS
         DBMS_SCHEDULER.CREATE_JOB(
             job_name        => c_job_nightly_mrp,
             job_type        => 'PLSQL_BLOCK',
-            job_action      => 'declare v_run_id number; begin F_MRP.run_mrp(oi_run_id => v_run_id); end;',
+            job_action      => 'declare v_run_id number; begin MFG_ERP.F_MRP.run_mrp(oi_run_id => v_run_id); end;',
             start_date      => TRUNC(SYSDATE) + 1 + 2 / 24,
             repeat_interval => 'FREQ=DAILY;BYHOUR=2',
             enabled         => TRUE,
             auto_drop       => FALSE,
             comments        => '每日 02:00 物料需求计划 MRP 跑批');
 
-        F_EXC.log_error(
+        MFG_ERP.F_EXC.log_error(
             is_error_code  => 'I9001',
-            is_module      => F_CONST.c_mod_sched,
+            is_module      => MFG_ERP.F_CONST.c_mod_sched,
             is_procedure   => 'schedule_nightly_mrp',
             is_error_msg   => '已注册作业 ' || c_job_nightly_mrp || ' FREQ=DAILY;BYHOUR=2',
             is_biz_key     => c_job_nightly_mrp,
@@ -68,16 +68,16 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_SCHED AS
         DBMS_SCHEDULER.CREATE_JOB(
             job_name        => c_job_monthly_fc,
             job_type        => 'PLSQL_BLOCK',
-            job_action      => 'begin F_FORECAST.generate_forecast; end;',
+            job_action      => 'begin MFG_ERP.F_FORECAST.generate_forecast; end;',
             start_date      => TRUNC(SYSDATE, 'MM') + 1 / 24,
             repeat_interval => 'FREQ=MONTHLY;BYMONTHDAY=1;BYHOUR=1',
             enabled         => TRUE,
             auto_drop       => FALSE,
             comments        => '每月 1 号 01:00 需求预测刷新');
 
-        F_EXC.log_error(
+        MFG_ERP.F_EXC.log_error(
             is_error_code  => 'I9002',
-            is_module      => F_CONST.c_mod_sched,
+            is_module      => MFG_ERP.F_CONST.c_mod_sched,
             is_procedure   => 'schedule_monthly_forecast',
             is_error_msg   => '已注册作业 ' || c_job_monthly_fc || ' FREQ=MONTHLY;BYMONTHDAY=1;BYHOUR=1',
             is_biz_key     => c_job_monthly_fc,
@@ -95,9 +95,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_SCHED AS
         -- use_current_session=>false 走调度器后台跑，不卡当前会话
         DBMS_SCHEDULER.RUN_JOB(job_name => is_job_name, use_current_session => FALSE);
 
-        F_EXC.log_error(
+        MFG_ERP.F_EXC.log_error(
             is_error_code  => 'I9003',
-            is_module      => F_CONST.c_mod_sched,
+            is_module      => MFG_ERP.F_CONST.c_mod_sched,
             is_procedure   => 'run_job_now',
             is_error_msg   => '手工触发作业 ' || is_job_name,
             is_biz_key     => is_job_name,
@@ -106,8 +106,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_SCHED AS
         WHEN OTHERS THEN
             -- -27475 作业不存在时给业务错误，比裸 ORA 更可读
             IF SQLCODE = -27475 THEN
-                F_EXC.raise_biz_error(
-                    F_CONST.c_err_system, F_CONST.c_mod_sched, 'run_job_now',
+                MFG_ERP.F_EXC.raise_biz_error(
+                    MFG_ERP.F_CONST.c_err_system, MFG_ERP.F_CONST.c_mod_sched, 'run_job_now',
                     '作业不存在 ' || is_job_name, is_job_name);
             ELSE
                 RAISE;
@@ -125,9 +125,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_SCHED AS
         -- force=>true: 即便作业正在运行也强制停掉再删
         DBMS_SCHEDULER.DROP_JOB(job_name => is_job_name, force => TRUE);
 
-        F_EXC.log_error(
+        MFG_ERP.F_EXC.log_error(
             is_error_code  => 'I9004',
-            is_module      => F_CONST.c_mod_sched,
+            is_module      => MFG_ERP.F_CONST.c_mod_sched,
             is_procedure   => 'drop_job',
             is_error_msg   => '删除作业 ' || is_job_name,
             is_biz_key     => is_job_name,
@@ -179,5 +179,3 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_SCHED AS
     END list_jobs;
 
 END f_sched;
-/
-/

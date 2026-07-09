@@ -154,7 +154,7 @@ describe("advance() — blocking 拒绝达上限后降级放行", () => {
 
     const { readFileSync } = require("node:fs")
     const { join } = require("node:path")
-    const log = readFileSync(join(ctx.dir, RUN_ID, "_events.log"), "utf-8")
+    const log = readFileSync(join(ctx.dir, RUN_ID, "logs", "_events.log"), "utf-8")
     expect(log).toContain("[rejection-bound-exceeded]")
     expect(log).toContain("降级为 warning 放行")
   })

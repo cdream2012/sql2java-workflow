@@ -36,8 +36,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_ITEM AS
                      WHERE item_id    = v_item.item_id
                        AND status     = 'ACTIVE'
                        AND is_default  = 'Y'
-                       AND effective_from <= F_UTIL.curr_biz_date()
-                       AND (effective_to IS NULL OR effective_to >= F_UTIL.curr_biz_date())
+                       AND effective_from <= MFG_ERP.F_UTIL.curr_biz_date()
+                       AND (effective_to IS NULL OR effective_to >= MFG_ERP.F_UTIL.curr_biz_date())
                        AND ROWNUM = 1;
                 EXCEPTION
                     WHEN NO_DATA_FOUND THEN
@@ -63,8 +63,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_ITEM AS
         RETURN v_item;
     EXCEPTION
         WHEN NO_DATA_FOUND THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_item_not_found, F_CONST.c_mod_item, 'get_item',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_item_not_found, MFG_ERP.F_CONST.c_mod_item, 'get_item',
                 '物料不存在 item_id=' || ii_item_id, TO_CHAR(ii_item_id));
             RETURN v_item;
     END get_item;
@@ -82,8 +82,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_ITEM AS
         RETURN v_id;
     EXCEPTION
         WHEN NO_DATA_FOUND THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_item_not_found, F_CONST.c_mod_item, 'find_item_id',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_item_not_found, MFG_ERP.F_CONST.c_mod_item, 'find_item_id',
                 '物料编码不存在 code=' || is_item_code, is_item_code);
             RETURN NULL;
     END find_item_id;
@@ -107,8 +107,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_ITEM AS
     ) IS
     BEGIN
         IF is_item_type NOT IN (c_item_raw, c_item_semi, c_item_fg, c_item_svc) THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_item_not_found, F_CONST.c_mod_item, 'create_item',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_item_not_found, MFG_ERP.F_CONST.c_mod_item, 'create_item',
                 '非法物料类型 ' || is_item_type, is_item_code);
         END IF;
 
@@ -126,7 +126,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_ITEM AS
                              WHEN c_item_raw THEN c_val_fifo
                              ELSE c_val_std END,
             it_dim, it_tags,
-            F_UTIL.get_operator(), CURRENT_TIMESTAMP
+            MFG_ERP.F_UTIL.get_operator(), CURRENT_TIMESTAMP
         );
     END create_item;
 
@@ -150,8 +150,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_ITEM AS
         RETURN v_path;
     EXCEPTION
         WHEN NO_DATA_FOUND THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_category_not_found, F_CONST.c_mod_item, 'get_category_path',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_category_not_found, MFG_ERP.F_CONST.c_mod_item, 'get_category_path',
                 '分类不存在或未挂到根 category_id=' || ii_category_id, TO_CHAR(ii_category_id));
             RETURN NULL;
     END get_category_path;
@@ -216,8 +216,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_ITEM AS
     功能描述：reclassify_abc
     *****************************************************************/
     PROCEDURE reclassify_abc(id_from_date IN DATE, id_to_date IN DATE) IS
-        v_a_pct NUMBER := F_UTIL.get_param('ABC_A_PCT', 0.80);
-        v_b_pct NUMBER := F_UTIL.get_param('ABC_B_PCT', 0.95);
+        v_a_pct NUMBER := MFG_ERP.F_UTIL.get_param('ABC_A_PCT', 0.80);
+        v_b_pct NUMBER := MFG_ERP.F_UTIL.get_param('ABC_B_PCT', 0.95);
     BEGIN
         -- 经典 ABC 帕累托: 按窗口期出库消耗金额降序排，算累计占比(到本物料为止占总消耗的比例)
         -- 落在 A 阈值内的是 A 类(少数物料占大头金额)，依次 B/C。窗口函数 sum() over(order by) 出累计，
@@ -237,7 +237,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_ITEM AS
                       FROM (
                             SELECT item_id, SUM(total_cost) AS consume_amt
                               FROM t_inventory_txn
-                             WHERE direction = F_CONST.c_dir_out
+                             WHERE direction = MFG_ERP.F_CONST.c_dir_out
                                AND txn_date BETWEEN id_from_date AND id_to_date
                              GROUP BY item_id
                             HAVING SUM(total_cost) > 0
@@ -247,7 +247,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_ITEM AS
         ON (tgt.item_id = src.item_id)
         WHEN MATCHED THEN
             UPDATE SET tgt.abc_class = src.abc_class,
-                       tgt.updated_by = F_UTIL.get_operator(),
+                       tgt.updated_by = MFG_ERP.F_UTIL.get_operator(),
                        tgt.updated_at = CURRENT_TIMESTAMP;
     END reclassify_abc;
 
@@ -285,17 +285,15 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_ITEM AS
                list_price = NVL(ii_list_price, list_price),
                status     = NVL(is_status, status),
                dim        = v_dim,
-               updated_by = F_UTIL.get_operator(),
+               updated_by = MFG_ERP.F_UTIL.get_operator(),
                updated_at = CURRENT_TIMESTAMP
          WHERE item_id = ii_item_id;
 
         IF SQL%ROWCOUNT = 0 THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_item_not_found, F_CONST.c_mod_item, 'apply_item_flat',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_item_not_found, MFG_ERP.F_CONST.c_mod_item, 'apply_item_flat',
                 '物料不存在 item_id=' || ii_item_id, TO_CHAR(ii_item_id));
         END IF;
     END apply_item_flat;
 
 END f_item;
-/
-/

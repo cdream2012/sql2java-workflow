@@ -12,8 +12,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_REPORT AS
         SELECT COUNT(*) INTO v_exists
           FROM t_bom_header WHERE bom_id = ii_bom_id;
         IF v_exists = 0 THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_bom_not_found, F_CONST.c_mod_report, 'bom_component_list',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_bom_not_found, MFG_ERP.F_CONST.c_mod_report, 'bom_component_list',
                 'BOM 头不存在 bom_id=' || ii_bom_id, TO_CHAR(ii_bom_id));
         END IF;
 
@@ -21,7 +21,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_REPORT AS
         -- 排序键放进 listagg 的 within group，保证拼出来按工艺行号
         SELECT LISTAGG(
                    l.line_no || ':' || i.item_code || ' ' || i.item_name
-                       || ' x' || F_UTIL.format_qty(l.qty_per, l.uom),
+                       || ' x' || MFG_ERP.F_UTIL.format_qty(l.qty_per, l.uom),
                    '; ') WITHIN GROUP (ORDER BY l.line_no)
           INTO v_result
           FROM t_bom_line l
@@ -40,7 +40,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_REPORT AS
     PROCEDURE inventory_by_warehouse(or_cur OUT SYS_REFCURSOR) IS
     BEGIN
         -- 静态 pivot: 仓库就那三个(WH-RAW/WH-FG/WH-WIP)，列写死
-        -- 新增仓库要改这里，动态列数的场景见 F_FORECAST.pivot_demand_dynamic 走 DBMS_SQL
+        -- 新增仓库要改这里，动态列数的场景见 MFG_ERP.F_FORECAST.pivot_demand_dynamic 走 DBMS_SQL
         OPEN or_cur FOR
             SELECT item_id,
                    item_code,
@@ -82,8 +82,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_REPORT AS
     BEGIN
         v_mode := UPPER(NVL(is_group_mode, 'ROLLUP'));
         IF v_mode NOT IN ('ROLLUP', 'CUBE') THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_system, F_CONST.c_mod_report, 'sales_summary',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_system, MFG_ERP.F_CONST.c_mod_report, 'sales_summary',
                 'p_group_mode 只支持 ROLLUP / CUBE，传入=' || is_group_mode);
         END IF;
 
@@ -111,7 +111,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_REPORT AS
                   LEFT JOIN t_item_category cat ON cat.category_id = it.category_id
                   JOIN t_customer     cu  ON cu.customer_id = so.customer_id
                  WHERE so.order_date BETWEEN id_from_date AND id_to_date
-                   AND so.status <> F_CONST.c_line_cancel
+                   AND so.status <> MFG_ERP.F_CONST.c_line_cancel
                  GROUP BY CUBE(cat.category_id, so.customer_id),
                           cat.category_name, cu.customer_name
                  ORDER BY GROUPING_ID(cat.category_id, so.customer_id),
@@ -135,7 +135,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_REPORT AS
                   LEFT JOIN t_item_category cat ON cat.category_id = it.category_id
                   JOIN t_customer     cu  ON cu.customer_id = so.customer_id
                  WHERE so.order_date BETWEEN id_from_date AND id_to_date
-                   AND so.status <> F_CONST.c_line_cancel
+                   AND so.status <> MFG_ERP.F_CONST.c_line_cancel
                  GROUP BY ROLLUP(cat.category_id, so.customer_id),
                           cat.category_name, cu.customer_name
                  ORDER BY GROUPING_ID(cat.category_id, so.customer_id),
@@ -167,7 +167,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_REPORT AS
                        TRUNC(SYSDATE) - TRUNC(l.receipt_date) AS age_days
                   FROM t_inventory_lot l
                   JOIN t_item i ON i.item_id = l.item_id
-                 WHERE l.status = F_CONST.c_lot_available
+                 WHERE l.status = MFG_ERP.F_CONST.c_lot_available
                    AND l.qty_on_hand > 0
             )
             SELECT lot_id,
@@ -214,8 +214,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_REPORT AS
                        SUM(t.total_cost) AS consumed_cost,
                        COUNT(*)          AS txn_count
                   FROM t_inventory_txn t
-                 WHERE t.direction = F_CONST.c_dir_out
-                   AND t.txn_type IN (F_CONST.c_txn_issue, F_CONST.c_txn_prod_out)
+                 WHERE t.direction = MFG_ERP.F_CONST.c_dir_out
+                   AND t.txn_type IN (MFG_ERP.F_CONST.c_txn_issue, MFG_ERP.F_CONST.c_txn_prod_out)
                    AND t.txn_date BETWEEN id_from_date AND id_to_date
                  GROUP BY t.item_id
             )
@@ -291,5 +291,3 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_REPORT AS
     END inventory_pareto;
 
 END f_report;
-/
-/

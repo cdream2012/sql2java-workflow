@@ -37,7 +37,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_COSTING AS
               FROM t_inventory_lot
              WHERE item_id = ii_item_id
                AND warehouse_id = ii_warehouse_id
-               AND status = F_CONST.c_lot_available
+               AND status = MFG_ERP.F_CONST.c_lot_available
                AND qty_on_hand - qty_allocated > 0
              ORDER BY receipt_date, lot_id;
     END fifo_layers;
@@ -63,18 +63,18 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_COSTING AS
                    it.item_name,
                    it.valuation_method,
                    b.qty_on_hand,
-                   CASE WHEN it.valuation_method = F_CONST.c_val_std
+                   CASE WHEN it.valuation_method = MFG_ERP.F_CONST.c_val_std
                         THEN it.std_cost ELSE b.avg_cost END AS val_unit_cost,
                    ROUND(b.qty_on_hand *
-                         CASE WHEN it.valuation_method = F_CONST.c_val_std
+                         CASE WHEN it.valuation_method = MFG_ERP.F_CONST.c_val_std
                               THEN it.std_cost ELSE b.avg_cost END, 4) AS stock_value,
                    SUM(ROUND(b.qty_on_hand *
-                         CASE WHEN it.valuation_method = F_CONST.c_val_std
+                         CASE WHEN it.valuation_method = MFG_ERP.F_CONST.c_val_std
                               THEN it.std_cost ELSE b.avg_cost END, 4))
                        OVER (PARTITION BY b.warehouse_id) AS wh_total_value,
                    ROUND(RATIO_TO_REPORT(
                          b.qty_on_hand *
-                         CASE WHEN it.valuation_method = F_CONST.c_val_std
+                         CASE WHEN it.valuation_method = MFG_ERP.F_CONST.c_val_std
                               THEN it.std_cost ELSE b.avg_cost END)
                        OVER (PARTITION BY b.warehouse_id), 6) AS value_ratio
               FROM t_inventory_balance b
@@ -105,7 +105,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_COSTING AS
           FROM t_inventory_lot
          WHERE item_id = ii_item_id
            AND warehouse_id = ii_warehouse_id
-           AND status = F_CONST.c_lot_available;
+           AND status = MFG_ERP.F_CONST.c_lot_available;
 
         UPDATE t_inventory_balance
            SET avg_cost   = v_avg,
@@ -115,8 +115,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_COSTING AS
            AND warehouse_id = ii_warehouse_id;
 
         IF SQL%ROWCOUNT = 0 THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_balance_not_found, F_CONST.c_mod_cost, 'recompute_avg_cost',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_balance_not_found, MFG_ERP.F_CONST.c_mod_cost, 'recompute_avg_cost',
                 '余额行不存在,无法回写均价', TO_CHAR(ii_item_id) || '/' || TO_CHAR(ii_warehouse_id));
         END IF;
     END recompute_avg_cost;
@@ -131,16 +131,16 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_COSTING AS
         ii_po_id  IN  NUMBER,
         or_cur    OUT SYS_REFCURSOR
     ) IS
-        v_freight NUMBER := F_UTIL.get_param('LANDED_FREIGHT', TO_NUMBER(0));
-        v_duty    NUMBER := F_UTIL.get_param('LANDED_DUTY',    TO_NUMBER(0));
+        v_freight NUMBER := MFG_ERP.F_UTIL.get_param('LANDED_FREIGHT', TO_NUMBER(0));
+        v_duty    NUMBER := MFG_ERP.F_UTIL.get_param('LANDED_DUTY',    TO_NUMBER(0));
         -- 分摊基准: AMT 按金额, WGT 按重量(取物料重量*数量),默认按金额
-        v_basis   VARCHAR2(8) := F_UTIL.get_param('LANDED_BASIS', 'AMT');
+        v_basis   VARCHAR2(8) := MFG_ERP.F_UTIL.get_param('LANDED_BASIS', 'AMT');
         v_exists  NUMBER;
     BEGIN
         SELECT COUNT(*) INTO v_exists FROM t_purchase_order WHERE po_id = ii_po_id;
         IF v_exists = 0 THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_po_not_found, F_CONST.c_mod_cost, 'landed_cost_report',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_po_not_found, MFG_ERP.F_CONST.c_mod_cost, 'landed_cost_report',
                 'PO 不存在 po_id=' || ii_po_id, TO_CHAR(ii_po_id));
         END IF;
 
@@ -205,28 +205,28 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_COSTING AS
     功能描述：roll_standard_cost
     *****************************************************************/
     PROCEDURE roll_standard_cost(id_as_of IN DATE DEFAULT NULL) IS
-        v_as_of   DATE := NVL(id_as_of, F_UTIL.curr_biz_date());
+        v_as_of   DATE := NVL(id_as_of, MFG_ERP.F_UTIL.curr_biz_date());
         v_rolled  NUMBER;
         v_cnt     NUMBER := 0;
         v_fail    NUMBER := 0;
     BEGIN
         -- 只对成品/半成品卷算(原料/服务无 BOM,标准成本由采购或人工维护)
-        -- 逐料调 F_BOM.rolled_cost 沿 BOM 自底向上累加;单料失败不阻断整批
+        -- 逐料调 MFG_ERP.F_BOM.rolled_cost 沿 BOM 自底向上累加;单料失败不阻断整批
         FOR r IN (
             SELECT item_id, item_code
               FROM t_item
-             WHERE item_type IN (F_CONST.c_item_fg, F_CONST.c_item_semi)
+             WHERE item_type IN (MFG_ERP.F_CONST.c_item_fg, MFG_ERP.F_CONST.c_item_semi)
                AND status = 'ACTIVE'
         ) LOOP
             BEGIN
-                v_rolled := F_BOM.rolled_cost(r.item_id, v_as_of);
+                v_rolled := MFG_ERP.F_BOM.rolled_cost(r.item_id, v_as_of);
 
                 MERGE INTO t_item t
                 USING (SELECT r.item_id AS item_id FROM DUAL) s
                 ON (t.item_id = s.item_id)
                 WHEN MATCHED THEN
                     UPDATE SET t.std_cost   = ROUND(v_rolled, 6),
-                               t.updated_by  = F_UTIL.get_operator(),
+                               t.updated_by  = MFG_ERP.F_UTIL.get_operator(),
                                t.updated_at  = CURRENT_TIMESTAMP;
 
                 v_cnt := v_cnt + 1;
@@ -234,9 +234,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_COSTING AS
                 WHEN OTHERS THEN
                     -- 缺 ACTIVE BOM、环路等单料异常记 WARN 继续,跑批不因一个料崩
                     v_fail := v_fail + 1;
-                    F_EXC.log_error(
-                        is_error_code  => F_CONST.c_err_bom_no_active,
-                        is_module      => F_CONST.c_mod_cost,
+                    MFG_ERP.F_EXC.log_error(
+                        is_error_code  => MFG_ERP.F_CONST.c_err_bom_no_active,
+                        is_module      => MFG_ERP.F_CONST.c_mod_cost,
                         is_procedure   => 'roll_standard_cost',
                         is_error_msg   => '卷算失败 item=' || r.item_code || ' err=' || SQLERRM,
                         is_biz_key     => TO_CHAR(r.item_id),
@@ -244,9 +244,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_COSTING AS
             END;
         END LOOP;
 
-        F_EXC.log_error(
+        MFG_ERP.F_EXC.log_error(
             is_error_code  => 'I3010',
-            is_module      => F_CONST.c_mod_cost,
+            is_module      => MFG_ERP.F_CONST.c_mod_cost,
             is_procedure   => 'roll_standard_cost',
             is_error_msg   => '标准成本卷算完成 as_of=' || TO_CHAR(v_as_of, 'YYYY-MM-DD')
                           || ' ok=' || v_cnt || ' fail=' || v_fail,
@@ -254,5 +254,3 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_COSTING AS
     END roll_standard_cost;
 
 END f_costing;
-/
-/

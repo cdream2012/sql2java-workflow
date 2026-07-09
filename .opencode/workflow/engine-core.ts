@@ -29,8 +29,8 @@ import { readScope } from "./scope-computer"
  * 从 artifactsDir/run.json 读 scoped run 的「期望覆盖包」集（metadata.scopePackages）。
  * 非 scoped run（无 scopePackages）返回 null，调用方回退到 inventory.packageNames。
  *
- * lazy inventory 下 inventory.json.packageNames 是入口包闭包（⊇ scope.scopePackages），
- * review/verify 的覆盖检查须以 scope.scopePackages 为期望集，否则会误报闭包内但 scope 外的包「缺失」。
+ * lazy inventory 下 inventory.json.packageNames 与 scope.scopePackages 同源（call-closure ∪
+ * 1-hop const-leaf，断传递后两者相等），review/verify 的覆盖检查以 scope.scopePackages 为期望集。
  */
 export function readScopePackagesFromArtifacts(artifactsDir: string): string[] | null {
   try {
@@ -48,8 +48,8 @@ export function readScopePackagesFromArtifacts(artifactsDir: string): string[] |
 
 /** D2: fix 循环双层 exhausted 上限 */
 export const FIX_LIMITS = {
-  globalMax: 5,   // 全局 fix 上限
-  phaseMax: 5,    // 单阶段 fix 上限
+  globalMax: 10,  // 全局 fix 上限
+  phaseMax: 10,   // 单阶段 fix 上限
 } as const
 
 /** L3: Quality gate thresholds — 确定性数值门控阈值 */
@@ -780,7 +780,8 @@ export class WorkflowEngine {
     // 依赖图按需从 subprograms/*.json 的 directCalls 推导（取代旧 dependency-graph.json，已删）
     const graph = buildDependencyGraph(artifactsDir)
 
-    // inventory-index ↔ inventory 一致性已在 inventory 阶段完成时独立校验，此处不重复
+    // inventory.json.packageNames ↔ packages/*.json 文件名一致性由 validateInventoryIndexConsistency
+    // 在 inventory 阶段完成时独立校验（此处不重复）。inventory-index.json 已不再落盘。
 
     // inventory 包名 ↔ 依赖图包名（双向，大小写不敏感）
     const invNames = this.extractPackageNames(inventory)
@@ -1696,13 +1697,17 @@ export class WorkflowEngine {
     safeWriteFile(filePath, JSON.stringify(run, null, 2))
   }
 
-  /** 追加事件日志 */
+  /** 追加事件日志（落盘到 logs/_events.log，与 workflow.log 同目录）*/
   private appendEvent(runId: string, eventType: string, phase: string, message: string): void {
     const dir = join(this.artifactsRoot, runId)
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true })
     }
-    const logPath = join(dir, "_events.log")
+    const logsDir = join(dir, "logs")
+    if (!existsSync(logsDir)) {
+      mkdirSync(logsDir, { recursive: true })
+    }
+    const logPath = join(logsDir, "_events.log")
     const now = new Date().toISOString()
     const line = `[${now}] [${eventType}] [${runId}] [${phase}] ${message}\n`
     try { appendFileSync(logPath, line, "utf-8") } catch (e: any) { /* 日志写入失败不阻塞主流程 */ if (typeof process !== "undefined" && process.stderr) process.stderr.write(`[engine-core] appendEvent failed: ${e.message}\n`) }

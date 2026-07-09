@@ -46,7 +46,6 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE MFG_ERP.F_FORECAST IS
     );
 
 END f_forecast;
-/
 
 -- 需求预测 包体
 -- generate_forecast 是本库 MODEL 子句的唯一落点: 把历史按 (物料, 期序号) 排成单元格,
@@ -54,4 +53,3 @@ END f_forecast;
 --   MA3/MA6 = 前 N 期移动平均(引用 cv()-1..cv()-N 的相对偏移),TREND = 末期 + 平均环比增量
 -- pivot_demand_dynamic 是本库 DBMS_SQL 的唯一落点: 透视的列(期数)编译期未知,
 --   先查出区间内有哪些 period 动态拼 select ... pivot(...),再 dbms_sql.to_refcursor 转出参
-/

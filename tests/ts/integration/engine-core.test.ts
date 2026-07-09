@@ -444,7 +444,7 @@ describe("WorkflowEngine _events.log", () => {
 
   it("start 写入 START 事件", () => {
     ctx.engine.start("sql2java", "run-110")
-    const logPath = join(ctx.dir, "run-110", "_events.log")
+    const logPath = join(ctx.dir, "run-110", "logs", "_events.log")
     expect(existsSync(logPath)).toBe(true)
     const content = readFileSync(logPath, "utf-8")
     expect(content).toContain("[START]")
@@ -454,7 +454,7 @@ describe("WorkflowEngine _events.log", () => {
   it("advance 写入 ADVANCE 事件", () => {
     ctx.engine.start("sql2java", "run-111")
     ctx.engine.advance("run-111")
-    const content = readFileSync(join(ctx.dir, "run-111", "_events.log"), "utf-8")
+    const content = readFileSync(join(ctx.dir, "run-111", "logs", "_events.log"), "utf-8")
     expect(content).toContain("[ADVANCE]")
   })
 })

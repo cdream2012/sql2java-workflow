@@ -2,13 +2,13 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
 
     -- PO 状态机: DRAFT -> APPROVED -> PARTIAL -> RECEIVED -> CLOSED，旁路 CANCELLED
     -- 头状态是行状态的汇总投影: 收货时先算行状态(满->CLOSED/部分->PARTIAL)，再回推头状态
-    -- 收货过账委托 F_INVENTORY.receive_stock，库存与 qty_received 必须同事务，避免账实不符
+    -- 收货过账委托 MFG_ERP.F_INVENTORY.receive_stock，库存与 qty_received 必须同事务，避免账实不符
 
     -- 私有: 锁单头并校验存在，返回 rowtype 供调用方复用
     /*****************************************************************
     创建作者：sql2java-workflow
     创建日期：2026-07-03
-    功能描述：PO 状态机: DRAFT -> APPROVED -> PARTIAL -> RECEIVED -> CLOSED，旁路 CANCELLED / 头状态是行状态的汇总投影: 收货时先算行状态(满->CLOSED/部分->PARTIAL)，再回推头状态 / 收货过账委托 F_INVENTORY.receive_stock，库存与 qty_received 必须同事务，避免账实不符 / 私有: 锁单头并校验存在，返回 rowtype 供调用方复用
+    功能描述：PO 状态机: DRAFT -> APPROVED -> PARTIAL -> RECEIVED -> CLOSED，旁路 CANCELLED / 头状态是行状态的汇总投影: 收货时先算行状态(满->CLOSED/部分->PARTIAL)，再回推头状态 / 收货过账委托 MFG_ERP.F_INVENTORY.receive_stock，库存与 qty_received 必须同事务，避免账实不符 / 私有: 锁单头并校验存在，返回 rowtype 供调用方复用
     *****************************************************************/
     FUNCTION lock_po(ii_po_id IN NUMBER, is_proc IN VARCHAR2) RETURN t_purchase_order%ROWTYPE IS
         v_po t_purchase_order%ROWTYPE;
@@ -17,8 +17,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
         RETURN v_po;
     EXCEPTION
         WHEN NO_DATA_FOUND THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_po_not_found, F_CONST.c_mod_procure, is_proc,
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_po_not_found, MFG_ERP.F_CONST.c_mod_procure, is_proc,
                 'PO 不存在 po_id=' || ii_po_id, TO_CHAR(ii_po_id));
     END lock_po;
 
@@ -34,28 +34,28 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
         v_open_or_partial NUMBER;
         v_any_received    NUMBER;
     BEGIN
-        SELECT COUNT(CASE WHEN line_status IN (F_CONST.c_line_open, F_CONST.c_line_partial)
+        SELECT COUNT(CASE WHEN line_status IN (MFG_ERP.F_CONST.c_line_open, MFG_ERP.F_CONST.c_line_partial)
                           THEN 1 END),
                COUNT(CASE WHEN qty_received > 0 THEN 1 END)
           INTO v_open_or_partial, v_any_received
           FROM t_po_line
          WHERE po_id = ii_po_id
-           AND line_status <> F_CONST.c_line_cancel;
+           AND line_status <> MFG_ERP.F_CONST.c_line_cancel;
 
         IF v_open_or_partial > 0 THEN
             -- 还有未收满的行: 只要收过一点就是 PARTIAL，否则停在 APPROVED
             UPDATE t_purchase_order
                SET status = CASE WHEN v_any_received > 0
-                                 THEN F_CONST.c_po_partial
-                                 ELSE F_CONST.c_po_approved END
+                                 THEN MFG_ERP.F_CONST.c_po_partial
+                                 ELSE MFG_ERP.F_CONST.c_po_approved END
              WHERE po_id = ii_po_id
-               AND status NOT IN (F_CONST.c_po_cancelled, F_CONST.c_po_closed);
+               AND status NOT IN (MFG_ERP.F_CONST.c_po_cancelled, MFG_ERP.F_CONST.c_po_closed);
         ELSE
             -- 所有有效行收满: 头进 RECEIVED(留 RECEIVED->CLOSED 给后续对账/入账动作)
             UPDATE t_purchase_order
-               SET status = F_CONST.c_po_received
+               SET status = MFG_ERP.F_CONST.c_po_received
              WHERE po_id = ii_po_id
-               AND status NOT IN (F_CONST.c_po_cancelled, F_CONST.c_po_closed);
+               AND status NOT IN (MFG_ERP.F_CONST.c_po_cancelled, MFG_ERP.F_CONST.c_po_closed);
         END IF;
     END refresh_po_header_status;
 
@@ -81,28 +81,28 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
               FROM t_supplier WHERE supplier_id = ii_supplier_id;
         EXCEPTION
             WHEN NO_DATA_FOUND THEN
-                F_EXC.raise_biz_error(
-                    F_CONST.c_err_po_not_found, F_CONST.c_mod_procure, 'create_po',
+                MFG_ERP.F_EXC.raise_biz_error(
+                    MFG_ERP.F_CONST.c_err_po_not_found, MFG_ERP.F_CONST.c_mod_procure, 'create_po',
                     '供应商不存在 supplier_id=' || ii_supplier_id, TO_CHAR(ii_supplier_id));
         END;
 
         -- 冻结供应商不允许建单(审核环节还会再查一次，这里早拦省得建废单)
         IF v_sup_status = 'BLOCKED' THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_supplier_blocked, F_CONST.c_mod_procure, 'create_po',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_supplier_blocked, MFG_ERP.F_CONST.c_mod_procure, 'create_po',
                 '供应商已冻结 supplier_id=' || ii_supplier_id, TO_CHAR(ii_supplier_id));
         END IF;
 
         v_id := seq_po_id.NEXTVAL;
-        v_no := F_UTIL.gen_doc_no('PO', v_id);
+        v_no := MFG_ERP.F_UTIL.gen_doc_no('PO', v_id);
 
         INSERT INTO t_purchase_order(
             po_id, po_no, supplier_id, order_date, expected_date,
             status, currency_code, total_amount, warehouse_id, created_by, created_at
         ) VALUES (
-            v_id, v_no, ii_supplier_id, F_UTIL.curr_biz_date(), id_expected_date,
-            F_CONST.c_po_draft, F_CONST.c_default_currency, 0, ii_warehouse_id,
-            F_UTIL.get_operator(), CURRENT_TIMESTAMP
+            v_id, v_no, ii_supplier_id, MFG_ERP.F_UTIL.curr_biz_date(), id_expected_date,
+            MFG_ERP.F_CONST.c_po_draft, MFG_ERP.F_CONST.c_default_currency, 0, ii_warehouse_id,
+            MFG_ERP.F_UTIL.get_operator(), CURRENT_TIMESTAMP
         );
 
         oi_po_id := v_id;
@@ -128,17 +128,17 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
         v_next_ln  t_po_line.line_no%TYPE;
     BEGIN
         IF ii_qty IS NULL OR ii_qty <= 0 THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_po_status_invalid, F_CONST.c_mod_procure, 'add_po_line',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_po_status_invalid, MFG_ERP.F_CONST.c_mod_procure, 'add_po_line',
                 '采购数量必须 > 0', TO_CHAR(ii_po_id));
         END IF;
 
         v_po := lock_po(ii_po_id, 'add_po_line');
 
         -- 只有草稿单能继续加行，已审/已收的单要改得先撤回
-        IF v_po.status <> F_CONST.c_po_draft THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_po_status_invalid, F_CONST.c_mod_procure, 'add_po_line',
+        IF v_po.status <> MFG_ERP.F_CONST.c_po_draft THEN
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_po_status_invalid, MFG_ERP.F_CONST.c_mod_procure, 'add_po_line',
                 '仅草稿单可加行 status=' || v_po.status, TO_CHAR(ii_po_id));
         END IF;
 
@@ -147,8 +147,8 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
             SELECT base_uom INTO v_uom FROM t_item WHERE item_id = ii_item_id;
         EXCEPTION
             WHEN NO_DATA_FOUND THEN
-                F_EXC.raise_biz_error(
-                    F_CONST.c_err_item_not_found, F_CONST.c_mod_procure, 'add_po_line',
+                MFG_ERP.F_EXC.raise_biz_error(
+                    MFG_ERP.F_CONST.c_err_item_not_found, MFG_ERP.F_CONST.c_mod_procure, 'add_po_line',
                     '物料不存在 item_id=' || ii_item_id, TO_CHAR(ii_item_id));
         END;
         v_uom := NVL(is_uom, v_uom);
@@ -161,7 +161,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
             unit_price, uom, need_date, line_status
         ) VALUES (
             seq_po_line_id.NEXTVAL, ii_po_id, v_next_ln, ii_item_id, ii_qty, 0,
-            ii_unit_price, v_uom, id_need_date, F_CONST.c_line_open
+            ii_unit_price, v_uom, id_need_date, MFG_ERP.F_CONST.c_line_open
         );
 
         -- 头金额随行变动累加
@@ -183,34 +183,34 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
     BEGIN
         v_po := lock_po(ii_po_id, 'approve_po');
 
-        IF v_po.status = F_CONST.c_po_approved THEN
+        IF v_po.status = MFG_ERP.F_CONST.c_po_approved THEN
             RETURN;  -- 已审，幂等
         END IF;
-        IF v_po.status <> F_CONST.c_po_draft THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_po_status_invalid, F_CONST.c_mod_procure, 'approve_po',
+        IF v_po.status <> MFG_ERP.F_CONST.c_po_draft THEN
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_po_status_invalid, MFG_ERP.F_CONST.c_mod_procure, 'approve_po',
                 '仅草稿单可审核 status=' || v_po.status, TO_CHAR(ii_po_id));
         END IF;
 
         SELECT COUNT(*) INTO v_line_cnt FROM t_po_line
-         WHERE po_id = ii_po_id AND line_status <> F_CONST.c_line_cancel;
+         WHERE po_id = ii_po_id AND line_status <> MFG_ERP.F_CONST.c_line_cancel;
         IF v_line_cnt = 0 THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_po_status_invalid, F_CONST.c_mod_procure, 'approve_po',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_po_status_invalid, MFG_ERP.F_CONST.c_mod_procure, 'approve_po',
                 '空单不可审核 po_id=' || ii_po_id, TO_CHAR(ii_po_id));
         END IF;
 
         SELECT status INTO v_sup_status
           FROM t_supplier WHERE supplier_id = v_po.supplier_id;
         IF v_sup_status = 'BLOCKED' THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_supplier_blocked, F_CONST.c_mod_procure, 'approve_po',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_supplier_blocked, MFG_ERP.F_CONST.c_mod_procure, 'approve_po',
                 '供应商已冻结不可审核 supplier_id=' || v_po.supplier_id, TO_CHAR(ii_po_id));
         END IF;
 
         UPDATE t_purchase_order
-           SET status      = F_CONST.c_po_approved,
-               approved_by = F_UTIL.get_operator(),
+           SET status      = MFG_ERP.F_CONST.c_po_approved,
+               approved_by = MFG_ERP.F_UTIL.get_operator(),
                approved_at = CURRENT_TIMESTAMP
          WHERE po_id = ii_po_id;
     END approve_po;
@@ -236,17 +236,17 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
         v_new_stat  t_po_line.line_status%TYPE;
     BEGIN
         IF ii_qty IS NULL OR ii_qty <= 0 THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_po_status_invalid, F_CONST.c_mod_procure, 'receive_po_line',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_po_status_invalid, MFG_ERP.F_CONST.c_mod_procure, 'receive_po_line',
                 '收货数量必须 > 0', TO_CHAR(ii_po_id));
         END IF;
 
         v_po := lock_po(ii_po_id, 'receive_po_line');
 
         -- 只有已审/部分收的单能继续收货
-        IF v_po.status NOT IN (F_CONST.c_po_approved, F_CONST.c_po_partial) THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_po_status_invalid, F_CONST.c_mod_procure, 'receive_po_line',
+        IF v_po.status NOT IN (MFG_ERP.F_CONST.c_po_approved, MFG_ERP.F_CONST.c_po_partial) THEN
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_po_status_invalid, MFG_ERP.F_CONST.c_mod_procure, 'receive_po_line',
                 '当前状态不可收货 status=' || v_po.status, TO_CHAR(ii_po_id));
         END IF;
 
@@ -255,22 +255,22 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
              WHERE po_id = ii_po_id AND line_no = ii_line_no FOR UPDATE;
         EXCEPTION
             WHEN NO_DATA_FOUND THEN
-                F_EXC.raise_biz_error(
-                    F_CONST.c_err_po_not_found, F_CONST.c_mod_procure, 'receive_po_line',
+                MFG_ERP.F_EXC.raise_biz_error(
+                    MFG_ERP.F_CONST.c_err_po_not_found, MFG_ERP.F_CONST.c_mod_procure, 'receive_po_line',
                     'PO 行不存在 po_id=' || ii_po_id || ' line=' || ii_line_no, TO_CHAR(ii_po_id));
         END;
 
-        IF v_line.line_status IN (F_CONST.c_line_closed, F_CONST.c_line_cancel) THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_po_status_invalid, F_CONST.c_mod_procure, 'receive_po_line',
+        IF v_line.line_status IN (MFG_ERP.F_CONST.c_line_closed, MFG_ERP.F_CONST.c_line_cancel) THEN
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_po_status_invalid, MFG_ERP.F_CONST.c_mod_procure, 'receive_po_line',
                 '行已关闭/取消不可收货 line_status=' || v_line.line_status, TO_CHAR(ii_po_id));
         END IF;
 
         -- 超收拦截: 累计收货不得超过订货量
         v_new_recv := v_line.qty_received + ii_qty;
         IF v_new_recv > v_line.qty_ordered THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_po_over_receipt, F_CONST.c_mod_procure, 'receive_po_line',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_po_over_receipt, MFG_ERP.F_CONST.c_mod_procure, 'receive_po_line',
                 '超收 ordered=' || v_line.qty_ordered || ' received=' || v_line.qty_received
                 || ' now=' || ii_qty, TO_CHAR(ii_po_id));
         END IF;
@@ -279,7 +279,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
         v_cost := NVL(ii_unit_cost, v_line.unit_price);
 
         -- 过账入库: 库存与 PO 行同事务，F_INVENTORY 负责建批次/写流水/同步余额
-        F_INVENTORY.receive_stock(
+        MFG_ERP.F_INVENTORY.receive_stock(
             ii_item_id      => v_line.item_id,
             ii_warehouse_id => v_po.warehouse_id,
             ii_qty          => ii_qty,
@@ -292,9 +292,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
 
         -- 行状态机: 收满 CLOSED，部分 PARTIAL
         IF v_new_recv >= v_line.qty_ordered THEN
-            v_new_stat := F_CONST.c_line_closed;
+            v_new_stat := MFG_ERP.F_CONST.c_line_closed;
         ELSE
-            v_new_stat := F_CONST.c_line_partial;
+            v_new_stat := MFG_ERP.F_CONST.c_line_partial;
         END IF;
 
         UPDATE t_po_line
@@ -328,7 +328,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
         v_uom        t_item.base_uom%TYPE;
         v_price      NUMBER;
         v_line_no    NUMBER;
-        v_as_of      DATE := F_UTIL.curr_biz_date();
+        v_as_of      DATE := MFG_ERP.F_UTIL.curr_biz_date();
     BEGIN
         oi_po_count := 0;
 
@@ -336,13 +336,13 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
             SELECT status INTO v_run_status FROM t_mrp_run WHERE run_id = ii_run_id;
         EXCEPTION
             WHEN NO_DATA_FOUND THEN
-                F_EXC.raise_biz_error(
-                    F_CONST.c_err_mrp_run_not_found, F_CONST.c_mod_procure, 'create_po_from_mrp',
+                MFG_ERP.F_EXC.raise_biz_error(
+                    MFG_ERP.F_CONST.c_err_mrp_run_not_found, MFG_ERP.F_CONST.c_mod_procure, 'create_po_from_mrp',
                     'MRP 运行不存在 run_id=' || ii_run_id, TO_CHAR(ii_run_id));
         END;
-        IF v_run_status = F_CONST.c_mrp_running THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_mrp_running, F_CONST.c_mod_procure, 'create_po_from_mrp',
+        IF v_run_status = MFG_ERP.F_CONST.c_mrp_running THEN
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_mrp_running, MFG_ERP.F_CONST.c_mod_procure, 'create_po_from_mrp',
                 'MRP 仍在运行，待完成再转单 run_id=' || ii_run_id, TO_CHAR(ii_run_id));
         END IF;
 
@@ -354,7 +354,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
           JOIN t_item i ON i.item_id = p.item_id
          WHERE p.run_id = ii_run_id
            AND p.planned_order_qty > 0
-           AND i.item_type = F_CONST.c_item_raw
+           AND i.item_type = MFG_ERP.F_CONST.c_item_raw
            AND i.preferred_supplier IS NOT NULL
          ORDER BY i.preferred_supplier, p.item_id;
 
@@ -390,7 +390,7 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
             ) VALUES (
                 seq_po_line_id.NEXTVAL, v_po_id, v_line_no, v_plans(i).item_id,
                 v_plans(i).planned_order_qty, 0,
-                v_price, v_uom, v_plans(i).planned_order_date, F_CONST.c_line_open
+                v_price, v_uom, v_plans(i).planned_order_date, MFG_ERP.F_CONST.c_line_open
             );
 
             UPDATE t_purchase_order
@@ -398,9 +398,9 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
              WHERE po_id = v_po_id;
         END LOOP;
 
-        F_EXC.log_error(
+        MFG_ERP.F_EXC.log_error(
             is_error_code  => 'I6010',
-            is_module      => F_CONST.c_mod_procure,
+            is_module      => MFG_ERP.F_CONST.c_mod_procure,
             is_procedure   => 'create_po_from_mrp',
             is_error_msg   => 'MRP 转采购完成 run=' || ii_run_id || ' po_count=' || oi_po_count
                           || ' line_count=' || v_plans.COUNT,
@@ -449,16 +449,16 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
 
             -- where current of 落最后扫描时间(借 last_txn_date 标记本次已看过)
             UPDATE t_inventory_balance
-               SET last_txn_date = F_UTIL.curr_biz_date(),
+               SET last_txn_date = MFG_ERP.F_UTIL.curr_biz_date(),
                    updated_at    = CURRENT_TIMESTAMP
              WHERE CURRENT OF c_low;
 
             oi_suggest_count := oi_suggest_count + 1;
 
             -- 建议落信息日志，供采购员或 create_po_from_mrp 之外的人工补单参考
-            F_EXC.log_error(
+            MFG_ERP.F_EXC.log_error(
                 is_error_code  => 'I6020',
-                is_module      => F_CONST.c_mod_procure,
+                is_module      => MFG_ERP.F_CONST.c_mod_procure,
                 is_procedure   => 'reorder_scan',
                 is_error_msg   => '补货建议 item=' || r.item_code
                               || ' avail=' || (r.qty_on_hand - r.qty_allocated)
@@ -490,14 +490,14 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
                        po.po_id,
                        po.expected_date,
                        SUM(pl.qty_received * pl.unit_price) AS recv_amount,
-                       CASE WHEN po.status IN (F_CONST.c_po_received, F_CONST.c_po_closed)
+                       CASE WHEN po.status IN (MFG_ERP.F_CONST.c_po_received, MFG_ERP.F_CONST.c_po_closed)
                              AND (po.expected_date IS NULL
                                   OR po.expected_date >= po.order_date)
                             THEN 1 ELSE 0 END AS on_time_flag
                   FROM t_purchase_order po
                   JOIN t_po_line pl ON pl.po_id = po.po_id
                  WHERE po.order_date BETWEEN id_from_date AND id_to_date
-                   AND po.status <> F_CONST.c_po_cancelled
+                   AND po.status <> MFG_ERP.F_CONST.c_po_cancelled
                  GROUP BY po.supplier_id, po.po_id, po.expected_date, po.status, po.order_date
             ),
             agg AS (
@@ -542,36 +542,36 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
     BEGIN
         v_po := lock_po(ii_po_id, 'cancel_po');
 
-        IF v_po.status = F_CONST.c_po_cancelled THEN
+        IF v_po.status = MFG_ERP.F_CONST.c_po_cancelled THEN
             RETURN;  -- 已取消，幂等
         END IF;
 
         -- 已收过货的单不允许直接取消，得先做退货冲销
-        IF v_po.status IN (F_CONST.c_po_received, F_CONST.c_po_closed) THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_po_status_invalid, F_CONST.c_mod_procure, 'cancel_po',
+        IF v_po.status IN (MFG_ERP.F_CONST.c_po_received, MFG_ERP.F_CONST.c_po_closed) THEN
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_po_status_invalid, MFG_ERP.F_CONST.c_mod_procure, 'cancel_po',
                 '已收货单不可取消 status=' || v_po.status, TO_CHAR(ii_po_id));
         END IF;
         SELECT COUNT(*) INTO v_recv_lines FROM t_po_line
          WHERE po_id = ii_po_id AND qty_received > 0;
         IF v_recv_lines > 0 THEN
-            F_EXC.raise_biz_error(
-                F_CONST.c_err_po_status_invalid, F_CONST.c_mod_procure, 'cancel_po',
+            MFG_ERP.F_EXC.raise_biz_error(
+                MFG_ERP.F_CONST.c_err_po_status_invalid, MFG_ERP.F_CONST.c_mod_procure, 'cancel_po',
                 '存在已收货行不可取消 recv_lines=' || v_recv_lines, TO_CHAR(ii_po_id));
         END IF;
 
         UPDATE t_po_line
-           SET line_status = F_CONST.c_line_cancel
+           SET line_status = MFG_ERP.F_CONST.c_line_cancel
          WHERE po_id = ii_po_id
-           AND line_status <> F_CONST.c_line_cancel;
+           AND line_status <> MFG_ERP.F_CONST.c_line_cancel;
 
         UPDATE t_purchase_order
-           SET status = F_CONST.c_po_cancelled
+           SET status = MFG_ERP.F_CONST.c_po_cancelled
          WHERE po_id = ii_po_id;
 
-        F_EXC.log_error(
+        MFG_ERP.F_EXC.log_error(
             is_error_code  => 'I6030',
-            is_module      => F_CONST.c_mod_procure,
+            is_module      => MFG_ERP.F_CONST.c_mod_procure,
             is_procedure   => 'cancel_po',
             is_error_msg   => 'PO 取消 po_no=' || v_po.po_no || ' reason=' || is_reason,
             is_biz_key     => TO_CHAR(ii_po_id),
@@ -579,5 +579,3 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_PROCUREMENT AS
     END cancel_po;
 
 END f_procurement;
-/
-/
