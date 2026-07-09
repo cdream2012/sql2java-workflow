@@ -814,6 +814,77 @@ export function lineRangeOf(code: string, startIdx: number, endIdx: number): [nu
   return [startLine, endLine]
 }
 
+/** 转义正则元字符（标识符一般无元字符，但引号标识符可能含特殊字符，保险起见） */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+/**
+ * 在包体/包头文件文本里，按 (包名, 子程序名, 类型, 重载序号) 定位声明行号范围。
+ *
+ * AST 语法错误恢复可能漏抽子程序节点致 bodyLocation/headerLocation 为 null（见 parseFileAst 注释），
+ * 本函数用纯 regex 兜底补齐，绕过语法错误恢复：
+ *   start = 顶层 (PROCEDURE|FUNCTION) METHOD 声明行（按 overloadIndex 1-based 取第 N 个，null 取第 1 个）；
+ *   end   = start 到下一个顶层子程序声明前(或包 END PKG; 前)区间内最后一个 END [METHOD]; 行；
+ *           区间内无 END（如 spec 声明无 END）则退到区间末行。
+ * 大小写全程不敏感（i flag）：parseFileAst 用 UpperCaseCharStream 使 name 存大写，源码可能小写/混合写，
+ * 不敏感匹配才能对上。嵌套块的 END IF;/END LOOP;/END CASE 不匹配（其后跟标识符再分号，不符合 end\s+(name)?\s*;）。
+ * 找不到返回 null（调用方记 TODO warning，location 保持 null）。
+ */
+export function locateSubprogramRange(
+  code: string,
+  pkgName: string,
+  methodName: string,
+  type: "PROCEDURE" | "FUNCTION",
+  overloadIndex: number | null,
+): { lineRange: [number, number] } | null {
+  const kw = type === "PROCEDURE" ? "procedure" : "function"
+  const nameRe = escapeRegExp(methodName)
+
+  // start：收集所有顶层声明匹配的字符偏移，按重载序号取第 N 个。
+  // 前导用 [ \t]* 而非 \s*：\s 含换行，声明前有空行时 ^ 会锚到空行行首、\s* 吞掉空行+\n+下行缩进
+  // 再匹配关键字，致 match.index 落到空行（行号错）。[ \t]* 只匹配同行空白。
+  const startG = new RegExp(`^[ \\t]*${kw}\\s+${nameRe}\\b`, "gim")
+  const starts: number[] = []
+  let m: RegExpExecArray | null
+  while ((m = startG.exec(code)) !== null) {
+    starts.push(m.index)
+    if (m.index === startG.lastIndex) startG.lastIndex++ // 防零宽死循环
+  }
+  const n = overloadIndex ?? 1
+  if (n < 1 || n > starts.length) return null
+  const startIdx = starts[n - 1]
+
+  // 区间上界：下一个顶层子程序声明，或包 END PKG;，或文件末尾。
+  // 注意：非全局 regex 的 lastIndex 被忽略（总从开头搜），必须用 g flag 才能从 startIdx 之后找。
+  const nextDeclRe = new RegExp(`^[ \\t]*(?:procedure|function)\\s+\\w+`, "gim")
+  nextDeclRe.lastIndex = startIdx + 1
+  const declM = nextDeclRe.exec(code)
+  let upperIdx: number
+  if (declM && declM.index > startIdx) {
+    upperIdx = declM.index
+  } else {
+    const pkgEndRe = new RegExp(`^[ \\t]*end\\s+${escapeRegExp(pkgName)}\\b\\s*;`, "gim")
+    pkgEndRe.lastIndex = startIdx + 1
+    const pkgM = pkgEndRe.exec(code)
+    upperIdx = pkgM && pkgM.index > startIdx ? pkgM.index : code.length
+  }
+
+  // end：[startIdx, upperIdx) 内最后一个 END [METHOD]; 行（END transfer_money; / END;）。
+  const endRe = new RegExp(`^[ \\t]*end\\s+(?:${nameRe})?\\s*;`, "gim")
+  endRe.lastIndex = startIdx + 1
+  let lastEndIdx = -1
+  let em: RegExpExecArray | null
+  while ((em = endRe.exec(code)) !== null) {
+    if (em.index >= upperIdx) break
+    lastEndIdx = em.index + em[0].length - 1
+  }
+  const endIdx = lastEndIdx >= 0 ? lastEndIdx : Math.max(startIdx, upperIdx - 1)
+
+  const lineRange = lineRangeOf(code, startIdx, endIdx)
+  return lineRange ? { lineRange } : null
+}
+
 /** 从文本提取表 + 列 + 主键 + 外键 */
 export function extractTableFromText(code: string, tables: TableIndex[], relPath: string): void {
   for (const m of code.matchAll(/CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+([\w.]+)/gi)) {
