@@ -248,11 +248,29 @@ export function stripSqlPlusCommands(code: string): string {
   // 此处所列命令（SPOOL/DEFINE/...）从不出现在 PL/SQL 单元内，只按行首关键字 + 括号外判断即可。
   // 括号内不剥：CREATE TABLE 列定义里可能恰好是这些词作列名（括号深度跨行累积）。
   const sqlPlusLine = /^(SPOOL|DEFINE|UNDEFINE|VARIABLE|ACCEPT|WHENEVER|HOST|COLUMN|TTITLE|BTITLE|BREAK|COMPUTE)\b/i
+  // GRANT 权限语句：顶层 DDL、可能跨行（到分号止）。grammar 虽有 GRANT token 但不全认
+  // `GRANT EXECUTE ON PACKAGE schema.obj TO role` 形式（报 missing 'TO'），且权限语句对
+  // 包/过程/表分析无信息贡献 → 剥掉。行首 GRANT 起，到含 `;` 的行止；跨行续行用 inGrant 状态剥。
+  // 不检查 parenDepth：GRANT 是顶层 DDL，绝不会出现在 CREATE TABLE 列定义括号内（不像 SPOOL 可能
+  // 作列名）；PL/SQL 块内的 GRANT 须经 EXECUTE IMMEDIATE 'GRANT...'（行首非 GRANT，不误剥）。
+  // 行注释 `-- GRANT`/块注释内的 GRANT 行首非 GRANT，不匹配。
+  const grantLine = /^\s*GRANT\b/i
   let parenDepth = 0
+  let inGrant = false
   return code
     .split("\n")
     .map(line => {
       const trimmed = line.trimStart()
+      if (inGrant) {
+        parenDepth += parenDelta(line)
+        if (line.includes(";")) inGrant = false
+        return ""
+      }
+      if (grantLine.test(trimmed)) {
+        parenDepth += parenDelta(line)
+        if (!line.includes(";")) inGrant = true
+        return ""
+      }
       if (parenDepth === 0 && sqlPlusLine.test(trimmed)) {
         parenDepth += parenDelta(line)
         return ""
@@ -812,6 +830,77 @@ export function lineRangeOf(code: string, startIdx: number, endIdx: number): [nu
   const startLine = code.slice(0, startIdx).split("\n").length
   const endLine = code.slice(0, endIdx).split("\n").length
   return [startLine, endLine]
+}
+
+/** 转义正则元字符（标识符一般无元字符，但引号标识符可能含特殊字符，保险起见） */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+/**
+ * 在包体/包头文件文本里，按 (包名, 子程序名, 类型, 重载序号) 定位声明行号范围。
+ *
+ * AST 语法错误恢复可能漏抽子程序节点致 bodyLocation/headerLocation 为 null（见 parseFileAst 注释），
+ * 本函数用纯 regex 兜底补齐，绕过语法错误恢复：
+ *   start = 顶层 (PROCEDURE|FUNCTION) METHOD 声明行（按 overloadIndex 1-based 取第 N 个，null 取第 1 个）；
+ *   end   = start 到下一个顶层子程序声明前(或包 END PKG; 前)区间内最后一个 END [METHOD]; 行；
+ *           区间内无 END（如 spec 声明无 END）则退到区间末行。
+ * 大小写全程不敏感（i flag）：parseFileAst 用 UpperCaseCharStream 使 name 存大写，源码可能小写/混合写，
+ * 不敏感匹配才能对上。嵌套块的 END IF;/END LOOP;/END CASE 不匹配（其后跟标识符再分号，不符合 end\s+(name)?\s*;）。
+ * 找不到返回 null（调用方记 TODO warning，location 保持 null）。
+ */
+export function locateSubprogramRange(
+  code: string,
+  pkgName: string,
+  methodName: string,
+  type: "PROCEDURE" | "FUNCTION",
+  overloadIndex: number | null,
+): { lineRange: [number, number] } | null {
+  const kw = type === "PROCEDURE" ? "procedure" : "function"
+  const nameRe = escapeRegExp(methodName)
+
+  // start：收集所有顶层声明匹配的字符偏移，按重载序号取第 N 个。
+  // 前导用 [ \t]* 而非 \s*：\s 含换行，声明前有空行时 ^ 会锚到空行行首、\s* 吞掉空行+\n+下行缩进
+  // 再匹配关键字，致 match.index 落到空行（行号错）。[ \t]* 只匹配同行空白。
+  const startG = new RegExp(`^[ \\t]*${kw}\\s+${nameRe}\\b`, "gim")
+  const starts: number[] = []
+  let m: RegExpExecArray | null
+  while ((m = startG.exec(code)) !== null) {
+    starts.push(m.index)
+    if (m.index === startG.lastIndex) startG.lastIndex++ // 防零宽死循环
+  }
+  const n = overloadIndex ?? 1
+  if (n < 1 || n > starts.length) return null
+  const startIdx = starts[n - 1]
+
+  // 区间上界：下一个顶层子程序声明，或包 END PKG;，或文件末尾。
+  // 注意：非全局 regex 的 lastIndex 被忽略（总从开头搜），必须用 g flag 才能从 startIdx 之后找。
+  const nextDeclRe = new RegExp(`^[ \\t]*(?:procedure|function)\\s+\\w+`, "gim")
+  nextDeclRe.lastIndex = startIdx + 1
+  const declM = nextDeclRe.exec(code)
+  let upperIdx: number
+  if (declM && declM.index > startIdx) {
+    upperIdx = declM.index
+  } else {
+    const pkgEndRe = new RegExp(`^[ \\t]*end\\s+${escapeRegExp(pkgName)}\\b\\s*;`, "gim")
+    pkgEndRe.lastIndex = startIdx + 1
+    const pkgM = pkgEndRe.exec(code)
+    upperIdx = pkgM && pkgM.index > startIdx ? pkgM.index : code.length
+  }
+
+  // end：[startIdx, upperIdx) 内最后一个 END [METHOD]; 行（END transfer_money; / END;）。
+  const endRe = new RegExp(`^[ \\t]*end\\s+(?:${nameRe})?\\s*;`, "gim")
+  endRe.lastIndex = startIdx + 1
+  let lastEndIdx = -1
+  let em: RegExpExecArray | null
+  while ((em = endRe.exec(code)) !== null) {
+    if (em.index >= upperIdx) break
+    lastEndIdx = em.index + em[0].length - 1
+  }
+  const endIdx = lastEndIdx >= 0 ? lastEndIdx : Math.max(startIdx, upperIdx - 1)
+
+  const lineRange = lineRangeOf(code, startIdx, endIdx)
+  return lineRange ? { lineRange } : null
 }
 
 /** 从文本提取表 + 列 + 主键 + 外键 */

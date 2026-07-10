@@ -13,7 +13,7 @@
  *（避免大模型读到全量包源码路径等无关上下文）。本函数直接接收内存 index 对象。
  */
 
-import { mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import {
   InventorySchema,
@@ -25,6 +25,7 @@ import { formatZodIssues } from "./engine-core"
 import { getLogger } from "./workflow-logger"
 import { refNameOf } from "./refname"
 import { clearDependencyGraphCache } from "./dependency-graph"
+import { locateSubprogramRange, storedFilePath } from "./plsql-file-scanner"
 import type {
   PackageInfo, SubprogramInfo, TableIndex, TriggerIndex, ViewIndex, SequenceIndex, InventoryIndex,
 } from "./plsql-scanner"
@@ -57,6 +58,14 @@ export function buildInventoryFromIndex(artifactsDir: string, idx: InventoryInde
   mkdirSync(packagesDir, { recursive: true })
   mkdirSync(subprogramsDir, { recursive: true })
   mkdirSync(tablesDir, { recursive: true })
+
+  // 运行时 warnings：scanner 原有 + 本函数软校验 + location 补齐 TODO 统一在此累计。
+  // （修复 latent bug：原 packages 循环里 warnings.push 推到未声明变量，触发即 ReferenceError；
+  // 且 return 用 idx.warnings 不含运行时 push 的项。现统一本地数组。）
+  const warnings: string[] = [...(idx.warnings ?? [])]
+
+  // 0) 补齐 AST 漏抽的 headerLocation/bodyLocation（语法错误恢复致子程序节点缺失，见 parseFileAst 注释）。
+  repairMissingLocations(idx, warnings)
 
   // 1) packages/{PKG}.json
   for (const p of idx.packages) {
@@ -142,6 +151,60 @@ export function buildInventoryFromIndex(artifactsDir: string, idx: InventoryInde
     packageCount: idx.packages.length,
     subprogramCount: idx.subprograms.length,
     tableCount: idx.tables.length,
-    warnings: idx.warnings ?? [],
+    warnings,
+  }
+}
+
+/**
+ * 补齐 subprograms 里 headerLocation/bodyLocation 缺失的子程序位置。
+ *
+ * AST 语法错误恢复可能漏抽 create_procedure/function_body 节点致 location 为 null
+ * （见 plsql-file-scanner.ts parseFileAst 注释）。包级 headerPath/bodyPath 更外层、通常仍有值，
+ * 故按包名+子程序名用 regex 在包体/包头文件里重新定位 lineRange（locateSubprogramRange）。
+ * 命中则回填 LocationInfo（absolutePath 用 storedFilePath 规范化）；未命中记 TODO warning，
+ * location 保持 null（与 review-focus 现有「lineRange 未找到」兜底一致）。不调 LLM、不重跑 AST。
+ */
+function repairMissingLocations(idx: InventoryIndex, warnings: string[]): void {
+  if (!idx.subprograms.some(s => !s.headerLocation || !s.bodyLocation)) return
+
+  const pkgByName = new Map<string, PackageInfo>()
+  for (const p of idx.packages) pkgByName.set(p.packageName, p)
+
+  const codeCache = new Map<string, string | null>()
+  const readCode = (file: string | null | undefined): string | null => {
+    if (!file) return null
+    if (codeCache.has(file)) return codeCache.get(file) ?? null
+    let code: string | null = null
+    try { code = readFileSync(file, "utf-8").replace(/\r\n?/g, "\n") } catch { code = null }
+    codeCache.set(file, code)
+    return code
+  }
+
+  for (const s of idx.subprograms) {
+    const pkg = pkgByName.get(s.belongToPackage)
+    if (!pkg) continue
+
+    if (!s.bodyLocation) {
+      const file = pkg.bodyPath
+      const code = readCode(file)
+      const r = code ? locateSubprogramRange(code, pkg.packageName, s.name, s.type, s.overloadIndex) : null
+      if (r && file) {
+        s.bodyLocation = { absolutePath: storedFilePath(file), lineRange: r.lineRange }
+      } else {
+        warnings.push(`TODO[body-location]: ${s.belongToPackage}.${refNameOf(s)} 未在 ${file ?? "(无 bodyPath)"} 定位到声明（AST 漏抽且 regex 兜底未命中）`)
+      }
+    }
+
+    if (!s.headerLocation) {
+      const file = pkg.headerPath
+      const code = readCode(file)
+      const r = code ? locateSubprogramRange(code, pkg.packageName, s.name, s.type, s.overloadIndex) : null
+      if (r && file) {
+        s.headerLocation = { absolutePath: storedFilePath(file), lineRange: r.lineRange }
+      }
+      // 找不到不标 TODO：headerLocation=null 大概率是合法 body-only 私有过程（isPrivate 由
+      // headerLocation===null 推导，扫描产物里 header 缺失必为私有，spec 本无其声明），非 AST 漏抽。
+      // 且下游（review-focus/切片/转译）只消费 bodyLocation，不读 headerLocation，缺失不影响转译。
+    }
   }
 }

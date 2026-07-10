@@ -458,9 +458,9 @@ export async function scanSource(sourceOrOpts: string | ScanSourceOpts): Promise
   const opts = typeof sourceOrOpts === "string" ? { sourcePath: sourceOrOpts } : sourceOrOpts
   const { sourcePath, headerPath, bodyPath, entry } = opts
   const twoDir = !!(headerPath && bodyPath)
-  // primaryBase 优先 sourcePath：三路径(sourcePath+headerPath+bodyPath)时用它做相对路径基准，
-  // 让 type/schema 等非包文件也存成可移植相对路径（TABLE/ITEM.sql 而非绝对路径）。
-  const primaryBase = sourcePath ?? (twoDir ? headerPath! : (headerPath ?? bodyPath))
+  // primaryBase 优先 sourcePath：有主目录（含 header/body 之外的 type/schema 等代码）就用它做相对路径基准；
+  // 否则回落 bodyPath（实现更全），最后才 headerPath（仅声明）。即 sourcePath > bodyPath > headerPath。
+  const primaryBase = sourcePath ?? bodyPath ?? headerPath
   if (!primaryBase) throw new Error("scanSource 需要 sourcePath 或 (headerPath + bodyPath)")
   // 双目录模式 header/body 优先（保 header-first）；同时给了 sourcePath 则追加为额外 root，
   // collectSourceFiles 递归扫到 type/schema 等非包 DDL，重复文件按绝对路径去重（processed 集合）。
@@ -516,8 +516,8 @@ export type ScanSourceLazyOpts = { sourcePath?: string; headerPath?: string; bod
 export async function scanSourceLazy(opts: ScanSourceLazyOpts): Promise<InventoryIndex> {
   const { sourcePath, headerPath, bodyPath, mainEntry } = opts
   const twoDir = !!(headerPath && bodyPath)
-  // primaryBase 优先 sourcePath：三路径(sourcePath+headerPath+bodyPath)时用它做相对路径基准。
-  const primaryBase = sourcePath ?? (twoDir ? headerPath! : (headerPath ?? bodyPath))
+  // primaryBase 优先 sourcePath，否则回落 bodyPath，最后 headerPath（与 scanSource 一致：sourcePath > bodyPath > headerPath）。
+  const primaryBase = sourcePath ?? bodyPath ?? headerPath
   if (!primaryBase) throw new Error("scanSourceLazy 需要 sourcePath 或 (headerPath + bodyPath)")
   // 双目录模式 header/body 优先（保 header-first）；同时给了 sourcePath 则追加为额外 root，
   // 让闭包扫描的 Phase 0 全量抽表也能覆盖到 sourcePath 下的 type/schema（重复文件去重）。

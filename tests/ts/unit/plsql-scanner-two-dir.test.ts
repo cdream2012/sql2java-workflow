@@ -19,8 +19,8 @@ describe("scanSource 双目录模式", () => {
   it("header/body 分两目录，按包名配对，body-only 私有过程被捕获（header 先处理）", async () => {
     const index = await scanSource({ headerPath: HEADER_DIR, bodyPath: BODY_DIR }) as InventoryIndex
 
-    // 双目录模式：sourcePath = headerPath（主路径）
-    expect(index.sourcePath).toBe(HEADER_DIR)
+    // 双目录模式：无主目录 sourcePath 时回落 bodyPath（实现更全），最后才 headerPath
+    expect(index.sourcePath).toBe(BODY_DIR)
 
     const pkg = index.packages.find(p => p.packageName.toUpperCase() === "ACCOUNT_MANAGEMENT_PKG")
     expect(pkg, "account_management_pkg 应被跨目录配对").toBeDefined()
