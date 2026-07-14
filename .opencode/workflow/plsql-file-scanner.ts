@@ -17,7 +17,7 @@ import { PlSqlLexer } from "./plsql-ast/PlSqlLexer"
 import { PlSqlParser } from "./plsql-ast/PlSqlParser"
 import { PlSqlParserListener } from "./plsql-ast/PlSqlParserListener"
 import type { Procedure_specContext, Function_specContext, Procedure_bodyContext, Function_bodyContext, Create_packageContext, Create_package_bodyContext, Create_function_bodyContext, Create_procedure_bodyContext, Variable_declarationContext, Exception_declarationContext, Type_declarationContext, Call_statementContext, Standard_functionContext, Routine_nameContext, ParameterContext } from "./plsql-ast/PlSqlParser"
-import { CharStreams, CommonTokenStream, Interval } from "antlr4ts"
+import { CharStreams, CommonTokenStream, type Interval } from "antlr4ts"
 import type { CharStream } from "antlr4ts/CharStream"
 import { ParseTreeWalker } from "antlr4ts/tree/ParseTreeWalker"
 import { ParserRuleContext } from "antlr4ts/ParserRuleContext"
@@ -701,7 +701,11 @@ export class PlSqlStructListener implements PlSqlParserListener {
     if (method.length < 2 || SQL_PSEUDO.has(method)) return
     // 排除 :NEW/:OLD 绑定变量上下文（routine_name 不会匹配，但防 :NEW.X 误入）
     if (pkg === "NEW" || pkg === "OLD") return
-    if (pkg === caller.belongToPackage && method === caller.name) return // 自递归
+    // 同名包内调用（method === caller.name）**不在此丢弃**：可能是跨重载调用
+    //（如 receive_stock overload 2 裸名委托 overload 1）。此处若按"自递归"丢弃，会让
+    // callGraph 缺 __2→__1 边 → 拓扑层级算反 → __2 先于 __1 翻译 → 前向引用 TODO。
+    // 真自递归（非重载，或重载但确为自身）由 dependency-graph.ts 的 resolveCalleeRefNames
+    // 展开同名全部重载 refName + `if (calleeKey === callerKey) continue` 自环跳过兜住。
     caller.directCalls.push({ package: pkg, name: method, line, kind })
   }
 

@@ -959,7 +959,7 @@ export class WorkflowEngine {
             const unit = this.loadArtifactJson(join(artifactsDir, "translations", pkg), ref) as any
             if (!unit) continue // 缺失由 validateArtifactOnDisk 完整性检查覆盖
             const completed = (unit.completedSubprograms as string[]) ?? []
-            // G1-unit: 单元必须 completed（根 + cargo 全译）
+            // G1-unit: 单元必须 completed（本 unit 根译完）
             if (unit.status !== "completed") {
               findings.push({
                 message: `${pkg}.${ref}: unit status="${unit.status}" 非 completed。本分片单元须全部完成`,
@@ -1231,21 +1231,23 @@ export class WorkflowEngine {
    */
 
   /**
-   * 按阶段决定分片所用的序列：analyze/review 拍平 SCC 组（每元素一层，真正一元素一分片），
-   * translate 保留入参原貌（SCC 互依赖组必须共处）。
+   * 按阶段决定分片所用的序列：review 拍平 SCC 组（每元素一层，真正一元素一分片）；
+   * analyze/translate 保留入参原貌（SCC 互依赖组共处同一分片）。
    *
-   * 入参语义随阶段而异：analyze 传单元级 procedureOrder（`PKG.refName`，PROCEDURE 为 unit，
-   * FUNCTION 跟随属主——下沉到 PROCEDURE 级后由 dispatch 注入）；review 传包级 translationOrder；
-   * translate 传单元级 procedureOrder。三者都是 string[][] 拓扑层，本函数仅按阶段决定是否拍平，
+   * 入参语义随阶段而异：analyze/translate 传单元级 procedureOrder（`PKG.refName`，每 subprogram 独立成 unit）；
+   * review 传包级 translationOrder。三者都是 string[][] 拓扑层，本函数仅按阶段决定是否拍平，
    * 不关心元素是包名还是 unit id。
    *
-   * 为什么 analyze/review 可拆 SCC：analyze 现下沉到 PROCEDURE 级，每 procedure 的子程序结构 / FSD
-   * 独立产出，跨包/跨单元调用关系（callGraph）已由 inventory 代码预算，不依赖同组其它单元的在 session
-   * 产物；review 每包审查独立。为什么 translate 不可拆：互依赖 unit 翻译时需同 session 拿到对方的
-   * Java 方法签名，拆开会让循环引用沦为 TODO 占位。
+   * 为什么 analyze 与 translate **同策略**（保留 SCC）：analyze 的 per-unit FSD/结构虽独立产出、
+   * 原本可拆 SCC 换并行度，但让两阶段分片**完全一致**（同一 unit 在 analyze/translate 落到同一分片）
+   * 便于追踪、摊销小 unit 的 dispatch 开销；SCC 合并对 analyze 同样安全（只是少几路并行），translate
+   * 本就被迫合且更重，analyze 扛得住。分片只决定"一个 session 处理哪些 unit"，artifact 仍 per-unit
+   *（fsd/{pkg}/{ref}.md、analysis-packages/{pkg}/{ref}.json）。
+   *
+   * 为什么 review 仍拍平：review 是包级、每包审查独立，拆 SCC 包无副作用且并行度更高。
    */
   shardOrderForPhase(translationOrder: string[][], phase: string): string[][] {
-    if (phase === "analyze" || phase === "review") {
+    if (phase === "review") {
       return translationOrder
         .flat()
         .filter((p): p is string => typeof p === "string" && p.length > 0)
@@ -1256,26 +1258,67 @@ export class WorkflowEngine {
 
   computeShardPlan(
     translationOrder: string[][],
-    maxPackagesPerShard: number,
     phase: string,
+    opts?: {
+      /** unit → 拓扑层级（到叶子最长路径，叶子=0，取自 DependencyGraph.unitLevels）。
+       *  提供则按层 antichain 批量（同层 unit 互不调用，可合并同分片）；缺省则每层赋唯一 level（其索引）→ 不跨层合并。 */
+      levelOf?: (unit: string) => number
+      /** 单分片 unit 个数上限（兜底海量同层 unit）。默认 16。下限 1。 */
+      maxUnitsPerShard?: number
+      /** 单分片源码行数预算（防大 unit 撑爆上下文）。默认 3000。下限 1。 */
+      maxLinesPerShard?: number
+      /** unit → body 源码行数（取自 DependencyGraph.unitLines）；缺则按 0 计。 */
+      sizeOf?: (unit: string) => number
+    },
   ): ShardPlan {
+    // 按拓扑层 antichain 批量（取代旧的"只批量叶子"）：
+    //   level(u) = u 到叶子的最长路径（叶子=0）。同层 unit 必无 caller→callee 边（u→v ⇒ level(v)≥level(u)+1），
+    //   故同层 = antichain，可安全合并同分片——callee 必在更低层 = 更早分片已译完、签名落盘可读。
+    //   这把旧的"仅 L0 叶子批量"推广到"每一层都批量"，压缩同层兄弟非叶子（如 POST_TXN/UPSERT_BALANCE/SYNC_BALANCE）。
+    //   多 unit SCC 作为原子 item 不拆（内部有边，非 antichain），整体落在成员最高层。
+    //   levelOf 缺省 → 每层赋唯一 level（其索引）→ 不跨层合并 → 每层 1/shard（等价旧无 isLeaf 行为）。
+    //   双限制 + ≥1 保证：行数预算/个数上限超限即 flush（当前片非空才 flush）；超大 item 独占一片不拆。
+    const levelOf = opts?.levelOf
+    const maxUnits = Math.max(1, opts?.maxUnitsPerShard ?? 16)
+    const maxLines = Math.max(1, opts?.maxLinesPerShard ?? 3000)
+    const sizeOf = opts?.sizeOf
+    const pkgKey = (u: string) => { const i = u.lastIndexOf("."); return i < 0 ? u : u.slice(0, i) }
+
+    // 每个 SCC layer 作为一个原子 item（多 unit SCC 不可拆），按 level 分桶。
+    type Item = { units: string[]; lines: number; count: number; key: string }
+    const byLevel = new Map<number, Item[]>()
+    translationOrder.forEach((layer, idx) => {
+      if (!layer || layer.length === 0) return
+      const lv = levelOf ? (levelOf(layer[0]) ?? 0) : idx  // 缺省用 idx → 不合并
+      const lines = layer.reduce((s, u) => s + (sizeOf ? (sizeOf(u) ?? 0) : 0), 0)
+      const item: Item = { units: [...layer], lines, count: layer.length, key: layer[0] }
+      const arr = byLevel.get(lv) ?? []
+      arr.push(item)
+      byLevel.set(lv, arr)
+    })
+
     const shards: string[][] = []
-    let current: string[] = []
-    for (const layer of translationOrder) {
-      if (!layer || layer.length === 0) continue
-      // 当前分片非空且加入本层会超限 → 先 flush（本层作为新分片开头）
-      if (current.length > 0 && current.length + layer.length > maxPackagesPerShard) {
-        shards.push(current)
-        current = []
+    for (const lv of [...byLevel.keys()].sort((a, b) => a - b)) {
+      const items = byLevel.get(lv)!
+      // 同包优先排序（软聚拢，同包共享 DDD 组件文件编辑更连贯）
+      items.sort((a, b) => {
+        const pa = pkgKey(a.key), pb = pkgKey(b.key)
+        return pa === pb ? a.key.localeCompare(b.key) : pa.localeCompare(pb)
+      })
+      // 双限制 bin-pack + ≥1 保证
+      let cur: string[] = []
+      let curLines = 0
+      let curCount = 0
+      for (const item of items) {
+        if (cur.length >= 1 && (curLines + item.lines > maxLines || curCount + item.count > maxUnits)) {
+          shards.push(cur); cur = []; curLines = 0; curCount = 0
+        }
+        cur.push(...item.units)
+        curLines += item.lines
+        curCount += item.count
       }
-      current.push(...layer)
-      // 单个 SCC 组本身就超限（current 仅含本层）→ 整组作为超大分片立即 flush
-      if (current.length > maxPackagesPerShard && current.length === layer.length) {
-        shards.push(current)
-        current = []
-      }
+      if (cur.length > 0) shards.push(cur)
     }
-    if (current.length > 0) shards.push(current)
     return { phase, shards, completedShards: [] }
   }
 

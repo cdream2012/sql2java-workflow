@@ -4,7 +4,7 @@
  *     写入 packages/{PKG}.json（取代旧 dependency-graph.json.complexity，已删）。
  *   - 无子程序包的空 analysis-packages/{PKG}.json 兜底（有子程序的包由 analyze map 阶段填充）。
  *
- * callGraph / packageDependency / translationOrder / sccGroups / procedureOrder / functionOwnership
+ * callGraph / packageDependency / translationOrder / sccGroups / procedureOrder
  * 不再落盘（dependency-graph.json 已删），由 dependency-graph.ts 从 subprograms/*.json 的 directCalls
  * 按需推导（进程内缓存）。本模块仅保留 complexity——它读源码做 grep 启发式，非纯图算法，
  * 不适合放进纯 artifact→图的 dependency-graph.ts。出边数复用 dependency-graph.ts 推导的 callGraph。
@@ -146,6 +146,6 @@ export function buildDependencyGraphFromIndex(artifactsDir: string): {
     writeFileSync(join(analysisPkgDir, `${pkg.packageName}.json`), JSON.stringify(r.data, null, 2), "utf-8")
   }
 
-  getLogger().info("[analysis-builder]", `complexity 写入 ${packages.length} 个 packages/*.json; 依赖图按需推导: ${graph.sccGroups.length} SCC 组, ${graph.procedureOrder.flat().length} PROCEDURE 单元, ${Object.keys(graph.functionOwnership).length} 被拥有 FUNCTION`)
+  getLogger().info("[analysis-builder]", `complexity 写入 ${packages.length} 个 packages/*.json; 依赖图按需推导: ${graph.sccGroups.length} SCC 组, ${graph.procedureOrder.flat().length} 子程序单元`)
   return { packageCount: packages.length, sccGroupCount: graph.sccGroups.length, warnings }
 }

@@ -2,11 +2,11 @@
  * analysis-builder.test.ts — analyze reduce（代码）核心逻辑测试
  *
  * 新形状：buildDependencyGraphFromIndex 仅做 complexity（写入 packages/{PKG}.json）+ 无子程序包空
- * analysis-packages 兜底；调用图（callGraph/packageDependency/translationOrder/sccGroups/procedureOrder/
- * functionOwnership）由 dependency-graph.ts 从 subprograms.directCalls 按需推导（buildDependencyGraph）。
+ * analysis-packages 兜底；调用图（callGraph/packageDependency/translationOrder/sccGroups/procedureOrder）
+ * 由 dependency-graph.ts 从 subprograms.directCalls 按需推导（buildDependencyGraph）。
  *
  * 覆盖：① tiny fixture 上 complexity/backstop 产出 + buildDependencyGraph 推导；② Tarjan SCC（含环）；
- * ③ FUNCTION 属主归属 + 单元级 procedureOrder；④ 合成 fixture 跨包调用。
+ * ③ 单元级 procedureOrder（subprogram 独立成 unit，含合成环消除）；④ 合成 fixture 跨包调用。
  */
 
 import { describe, it, expect, beforeAll } from "vitest"
@@ -18,7 +18,7 @@ import { scanSource } from "@workflow/plsql-scanner"
 import { buildInventoryFromIndex } from "@workflow/inventory-builder"
 import { buildDependencyGraphFromIndex } from "@workflow/analysis-builder"
 import {
-  buildDependencyGraph, tarjanSCC, assignFunctionOwnership, buildProcedureOrder,
+  buildDependencyGraph, tarjanSCC, buildProcedureOrder, computeUnitLevels,
   type RefIndexEntry,
 } from "@workflow/dependency-graph"
 import { AnalysisPackageSchema } from "@workflow/artifact-schemas"
@@ -119,7 +119,7 @@ describe("tarjanSCC", () => {
   })
 })
 
-// ── refIndex 构造辅助 + FUNCTION 属主归属 + 单元级 procedureOrder ──────────
+// ── refIndex 构造辅助 + 单元级 procedureOrder ──────────
 
 /** 从 {name, procs:[{name,type}]} 构造 refIndex（复用 refNamesForPackage 推导重载 refName） */
 function makeRefIndex(pkgs: { name: string; procs: { name: string; type: "procedure" | "function" }[] }[]): Map<string, RefIndexEntry> {
@@ -154,74 +154,19 @@ describe("refName 索引（重载）", () => {
   })
 })
 
-describe("assignFunctionOwnership（FUNCTION 属主归属）", () => {
-  it("单属主：func 仅被 1 个 proc 调用 → 归它", () => {
-    const ref = makeRefIndex([{ name: "P", procs: [
-      { name: "p1", type: "procedure" }, { name: "f1", type: "function" },
-    ] }])
-    const own = assignFunctionOwnership({ "P.p1": ["P.f1"] }, ref)
-    expect(own.get("P.f1")).toBe("P.p1")
-  })
-
-  it("多调用者等距：取 refName 字典序最小", () => {
-    const ref = makeRefIndex([{ name: "P", procs: [
-      { name: "p1", type: "procedure" }, { name: "p2", type: "procedure" },
-      { name: "f1", type: "function" },
-    ] }])
-    const own = assignFunctionOwnership({ "P.p1": ["P.f1"], "P.p2": ["P.f1"] }, ref)
-    expect(own.get("P.f1")).toBe("P.p1")
-  })
-
-  it("多调用者不同距：取最近（最直接）属主", () => {
-    const ref = makeRefIndex([{ name: "P", procs: [
-      { name: "p1", type: "procedure" }, { name: "p2", type: "procedure" },
-      { name: "f1", type: "function" }, { name: "f2", type: "function" },
-    ] }])
-    const own = assignFunctionOwnership({ "P.p1": ["P.f1"], "P.f1": ["P.f2"], "P.p2": ["P.f2"] }, ref)
-    expect(own.get("P.f1")).toBe("P.p1")
-    expect(own.get("P.f2")).toBe("P.p2")
-  })
-
-  it("孤儿：func 无任何 proc 调用 → 不入 ownership", () => {
-    const ref = makeRefIndex([{ name: "P", procs: [{ name: "f1", type: "function" }] }])
-    const own = assignFunctionOwnership({}, ref)
-    expect(own.has("P.f1")).toBe(false)
-  })
-
-  it("仅跨包调用不建立属主", () => {
-    const ref = makeRefIndex([
-      { name: "P", procs: [{ name: "f1", type: "function" }] },
-      { name: "Q", procs: [{ name: "q1", type: "procedure" }] },
-    ])
-    const own = assignFunctionOwnership({ "Q.q1": ["P.f1"] }, ref)
-    expect(own.has("P.f1")).toBe(false)
-  })
-
-  it("经 function 链传递归属", () => {
-    const ref = makeRefIndex([{ name: "P", procs: [
-      { name: "p1", type: "procedure" },
-      { name: "f1", type: "function" }, { name: "f2", type: "function" },
-    ] }])
-    const own = assignFunctionOwnership({ "P.p1": ["P.f1"], "P.f1": ["P.f2"] }, ref)
-    expect(own.get("P.f1")).toBe("P.p1")
-    expect(own.get("P.f2")).toBe("P.p1")
-  })
-})
-
 describe("buildProcedureOrder（单元级拓扑序）", () => {
-  it("被拥有 FUNCTION 折叠进 owner 单元，不独立成 unit", () => {
+  it("FUNCTION 独立成 unit（不再折叠进 owner），叶子在前", () => {
     const ref = makeRefIndex([{ name: "P", procs: [
       { name: "p1", type: "procedure" }, { name: "f1", type: "function" },
     ] }])
-    const own = assignFunctionOwnership({ "P.p1": ["P.f1"] }, ref)
-    const order = buildProcedureOrder({ "P.p1": ["P.f1"] }, ref, own)
-    expect(order.flat()).toEqual(["P.p1"])
+    const order = buildProcedureOrder({ "P.p1": ["P.f1"] }, ref)
+    // f1 是叶子（无出边），p1 调 f1 → f1 在前、p1 在后；两者各自独立成 unit
+    expect(order.flat()).toEqual(["P.f1", "P.p1"])
   })
 
   it("孤儿 FUNCTION 独立成 unit", () => {
     const ref = makeRefIndex([{ name: "P", procs: [{ name: "f1", type: "function" }] }])
-    const own = assignFunctionOwnership({}, ref)
-    const order = buildProcedureOrder({}, ref, own)
+    const order = buildProcedureOrder({}, ref)
     expect(order.flat()).toEqual(["P.f1"])
   })
 
@@ -230,8 +175,7 @@ describe("buildProcedureOrder（单元级拓扑序）", () => {
       { name: "P", procs: [{ name: "f1", type: "function" }] },
       { name: "Q", procs: [{ name: "q1", type: "procedure" }] },
     ])
-    const own = assignFunctionOwnership({ "Q.q1": ["P.f1"] }, ref)
-    const order = buildProcedureOrder({ "Q.q1": ["P.f1"] }, ref, own).flat()
+    const order = buildProcedureOrder({ "Q.q1": ["P.f1"] }, ref).flat()
     expect(order.indexOf("P.f1")).toBeLessThan(order.indexOf("Q.q1"))
   })
 
@@ -239,10 +183,114 @@ describe("buildProcedureOrder（单元级拓扑序）", () => {
     const ref = makeRefIndex([{ name: "P", procs: [
       { name: "p1", type: "procedure" }, { name: "p2", type: "procedure" },
     ] }])
-    const own = assignFunctionOwnership({ "P.p1": ["P.p2"], "P.p2": ["P.p1"] }, ref)
-    const order = buildProcedureOrder({ "P.p1": ["P.p2"], "P.p2": ["P.p1"] }, ref, own)
+    const order = buildProcedureOrder({ "P.p1": ["P.p2"], "P.p2": ["P.p1"] }, ref)
     expect(order.length).toBe(1)
     expect(order[0].sort()).toEqual(["P.p1", "P.p2"])
+  })
+
+  it("合成环消除：B 调 A 的 cargo 函数 F 不再造 A↔B 环（F 独立成叶子 unit）", () => {
+    // 旧属主折叠会把 F 判给 A → B→A（经 F 属主）+ A→B = 环。
+    // F 独立后：A→B、B→F，DAG 无环；F 叶子在前。
+    const ref = makeRefIndex([{ name: "P", procs: [
+      { name: "A", type: "procedure" }, { name: "B", type: "procedure" },
+      { name: "F", type: "function" },
+    ] }])
+    const order = buildProcedureOrder({ "P.A": ["P.B"], "P.B": ["P.F"] }, ref)
+    expect(order.length).toBe(3) // 三个独立 unit，无 SCC
+    const flat = order.flat()
+    expect(flat.indexOf("P.F")).toBeLessThan(flat.indexOf("P.B"))
+    expect(flat.indexOf("P.B")).toBeLessThan(flat.indexOf("P.A"))
+  })
+})
+
+describe("computeUnitLevels（拓扑层级 = 到叶子最长路径）", () => {
+  it("叶子=0，caller=叶子层级+1", () => {
+    // f1 叶子；p1 调 f1 → f1=0, p1=1
+    const ref = makeRefIndex([{ name: "P", procs: [
+      { name: "p1", type: "procedure" }, { name: "f1", type: "function" },
+    ] }])
+    const order = buildProcedureOrder({ "P.p1": ["P.f1"] }, ref)
+    const levels = computeUnitLevels(order, { "P.p1": ["P.f1"] })
+    expect(levels["P.f1"]).toBe(0)
+    expect(levels["P.p1"]).toBe(1)
+  })
+
+  it("深调用链：每层 +1", () => {
+    // F ← B ← A（A→B→F）：F=0, B=1, A=2
+    const ref = makeRefIndex([{ name: "P", procs: [
+      { name: "A", type: "procedure" }, { name: "B", type: "procedure" },
+      { name: "F", type: "function" },
+    ] }])
+    const cg = { "P.A": ["P.B"], "P.B": ["P.F"] }
+    const order = buildProcedureOrder(cg, ref)
+    const levels = computeUnitLevels(order, cg)
+    expect(levels["P.F"]).toBe(0)
+    expect(levels["P.B"]).toBe(1)
+    expect(levels["P.A"]).toBe(2)
+  })
+
+  it("共享 callee + 链上：a→b,a→c,b→c → c=0,b=1,a=2", () => {
+    const ref = makeRefIndex([{ name: "P", procs: [
+      { name: "a", type: "procedure" }, { name: "b", type: "procedure" },
+      { name: "c", type: "procedure" },
+    ] }])
+    const cg = { "P.a": ["P.b", "P.c"], "P.b": ["P.c"] }
+    const order = buildProcedureOrder(cg, ref)
+    const levels = computeUnitLevels(order, cg)
+    expect(levels["P.c"]).toBe(0)
+    expect(levels["P.b"]).toBe(1)
+    expect(levels["P.a"]).toBe(2)
+  })
+
+  it("同层兄弟：三者同调一叶子、互不调用 → 同 level 1", () => {
+    // z=叶子；a/b/c 都调 z、互不调用 → z=0, a/b/c=1
+    const ref = makeRefIndex([{ name: "P", procs: [
+      { name: "z", type: "function" }, { name: "a", type: "procedure" },
+      { name: "b", type: "procedure" }, { name: "c", type: "procedure" },
+    ] }])
+    const cg = { "P.a": ["P.z"], "P.b": ["P.z"], "P.c": ["P.z"] }
+    const order = buildProcedureOrder(cg, ref)
+    const levels = computeUnitLevels(order, cg)
+    expect(levels["P.z"]).toBe(0)
+    expect(levels["P.a"]).toBe(1)
+    expect(levels["P.b"]).toBe(1)
+    expect(levels["P.c"]).toBe(1)
+  })
+
+  it("多 unit SCC 整体取成员最高层（作为超级 unit）", () => {
+    // p1↔p2 互递归 SCC，二者都调 f（叶子）→ SCC level=1（f=0）；p1/p2 同 level
+    const ref = makeRefIndex([{ name: "P", procs: [
+      { name: "p1", type: "procedure" }, { name: "p2", type: "procedure" },
+      { name: "f", type: "function" },
+    ] }])
+    const cg = { "P.p1": ["P.p2", "P.f"], "P.p2": ["P.p1"] }
+    const order = buildProcedureOrder(cg, ref)
+    const levels = computeUnitLevels(order, cg)
+    expect(levels["P.f"]).toBe(0)
+    expect(levels["P.p1"]).toBe(1)
+    expect(levels["P.p2"]).toBe(1)
+  })
+
+  it("同层 = antichain：同层 unit 间无 caller→callee 边", () => {
+    // 构造 a→b→c 链 + d→c（d 与 b 同层=1，互不调用）
+    const ref = makeRefIndex([{ name: "P", procs: [
+      { name: "a", type: "procedure" }, { name: "b", type: "procedure" },
+      { name: "c", type: "procedure" }, { name: "d", type: "procedure" },
+    ] }])
+    const cg = { "P.a": ["P.b"], "P.b": ["P.c"], "P.d": ["P.c"] }
+    const order = buildProcedureOrder(cg, ref)
+    const levels = computeUnitLevels(order, cg)
+    // 同层的 b,d 互不调用（antichain）；任何 u→v 必 level(v)≥level(u)+1
+    expect(levels["P.c"]).toBe(0)
+    expect(levels["P.b"]).toBe(1)
+    expect(levels["P.d"]).toBe(1)
+    expect(levels["P.a"]).toBe(2)
+    for (const [u, vs] of Object.entries(cg)) {
+      for (const v of vs) {
+        // u→v：u 是 caller，层级更高（u 到叶子最长路径 ≥ v 的 +1）
+        expect(levels[u]).toBeGreaterThanOrEqual(levels[v] + 1)
+      }
+    }
   })
 })
 

@@ -43,7 +43,7 @@ describe("buildShardedWorkerOrder — analyze", () => {
     mkdirSync(art, { recursive: true })
     const index = await scanSource(FIXTURE_TINY)
     buildInventoryFromIndex(art, index)
-    buildDependencyGraphFromIndex(art) // 产出 dependency-graph.json（含 procedureOrder/functionOwnership）
+    buildDependencyGraphFromIndex(art) // 产出 dependency-graph.json（含 procedureOrder）
   }, 60000)
 
   it("渲染 analyze shard 0 workOrder：含分片硬约束 + targetUnits + 切片目录 + 落盘", () => {

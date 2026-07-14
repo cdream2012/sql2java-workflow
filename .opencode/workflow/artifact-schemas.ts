@@ -267,18 +267,18 @@ export const AnalysisPackageSchema = z.object({
 /**
  * analysis-packages/{pkg}/{unitRef}.json — PROCEDURE 级 analyze 产物（per-unit）。
  *
- * analyze 下沉到 PROCEDURE 级后，一个 unit = 一个 PROCEDURE（或孤儿 FUNCTION）+ 其 cargo FUNCTION。
- * agent 只写本 unit 的 per-procedure 文件（根 + cargo 的 subprogram 结构）；engine 在每个 analyze
+ * analyze 下沉到 subprogram 级后，一个 unit = 一个 subprogram（PROCEDURE 或 FUNCTION，各自独立）。
+ * agent 只写本 unit 的 per-procedure 文件（本 unit 根的 subprogram 结构）；engine 在每个 analyze
  * 分片 advance 后 merge 同包所有 per-unit 文件 → 聚合 `analysis-packages/{pkg}.json`
  * （AnalysisPackageSchema），下游 plan/review/translator 读聚合，形状不变。
  *
  * 与 [[translate-procedure-level]] 的 UnitTranslationSchema 同模式（per-unit + engine merge）。
  */
 export const UnitAnalysisSchema = z.object({
-  /** unit 根子程序的 refName（PROCEDURE 或孤儿 FUNCTION），与文件名 {unitRef}.json 一致 */
+  /** unit 根子程序的 refName（本 unit 唯一 subprogram），与文件名 {unitRef}.json 一致 */
   unitRefName: z.string(),
   packageName: z.string(),
-  /** 本单元子程序结构（根 + cargo FUNCTION），merge 后并入聚合 subprograms */
+  /** 本单元子程序结构（本 unit 根），merge 后并入聚合 subprograms */
   subprograms: z.array(SubprogramSchema),
 }).passthrough()
 
@@ -476,19 +476,19 @@ export const TranslationSchema = z.object({
 /**
  * per-unit 翻译产物：`translations/{pkg}/{unitRef}.json`。
  *
- * unit = 一个 PROCEDURE（主）或孤儿 FUNCTION；被 owner 拥有的 FUNCTION 是 owner 单元的
- * cargo，随 owner 在同一分片翻译，其方法登记在本单元的 subprogramMethods。
+ * unit = 一个 subprogram（PROCEDURE 或 FUNCTION，各自独立成 unit）；本单元的 subprogramMethods
+ * 登记该 subprogram 的 Java 调用入口。
  *
  * engine 在每个 translate 分片 advance 后 merge 同包所有 per-unit 文件 → 聚合
  * `translations/{pkg}/translation.json`（TranslationSchema），后者是跨包调用对接的稳定契约。
  * agent 只写本 per-unit 文件，不直接写聚合 translation.json。
  */
 export const UnitTranslationSchema = z.object({
-  /** unit 根子程序的 refName（PROCEDURE 或孤儿 FUNCTION），与文件名 {unitRef}.json 一致 */
+  /** unit 根子程序的 refName（本 unit 唯一 subprogram），与文件名 {unitRef}.json 一致 */
   unitRefName: z.string(),
   packageName: z.string(),
   status: z.string(),
-  /** 本单元已完成的子程序 refName（根 + cargo FUNCTION） */
+  /** 本单元已完成的子程序 refName（本 unit 根） */
   completedSubprograms: z.array(z.string()),
   files: z.array(z.object({
     path: z.string(),
@@ -507,7 +507,7 @@ export const UnitTranslationSchema = z.object({
     oracleLine: z.coerce.number(),
     suggestion: z.string(),
   })),
-  /** 本单元子程序（根 + cargo FUNCTION）→ Java 调用入口索引；merge 后并入聚合 translation.json */
+  /** 本单元子程序（本 unit 根）→ Java 调用入口索引；merge 后并入聚合 translation.json */
   subprogramMethods: z.array(z.object({
     oracleName: z.string(),
     javaClass: z.string(),

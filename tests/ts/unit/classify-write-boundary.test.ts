@@ -1,15 +1,15 @@
 /**
  * classify-write-boundary.test.ts — per-unit 写入边界测试（Phase 1）
  *
- * 验证 unitWriteBoundaryViolation：unit 模式下只允许写本分片 targetUnits（含 cargo FUNCTION）
- * 的 per-unit 产物；聚合文件 / 其他 unit / 非两级路径放行或拦截。
+ * 验证 unitWriteBoundaryViolation：unit 模式下只允许写本分片 targetUnits 的 per-unit 产物；
+ * 聚合文件 / 其他 unit / 非两级路径放行或拦截。
  */
 
 import { describe, it, expect } from "vitest"
 import { unitWriteBoundaryViolation } from "@plugins/workflow-engine"
 
 describe("unitWriteBoundaryViolation", () => {
-  // 本分片 targetUnits = PKG_A.proc1，cargo = PKG_A.calc_total
+  // 本分片 targetUnits 的 root ref 集合（大写）
   const allowed = new Set(["PROC1", "CALC_TOTAL"])
 
   it("本 unit 根 per-unit 产物：放行", () => {
@@ -18,7 +18,7 @@ describe("unitWriteBoundaryViolation", () => {
     expect(unitWriteBoundaryViolation("translations/PKG_A/proc1.json", allowed)).toBeNull()
   })
 
-  it("cargo FUNCTION per-unit 产物：放行（allowed 含 cargo ref）", () => {
+  it("allowed 集合内的其它 ref 产物：放行", () => {
     expect(unitWriteBoundaryViolation("fsd/PKG_A/calc_total.md", allowed)).toBeNull()
   })
 

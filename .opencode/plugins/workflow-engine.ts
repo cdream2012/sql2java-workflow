@@ -10,7 +10,7 @@
  *   - 大输出截断
  *   - 依赖自动安装（node_modules 缺失时自动 npm/bun install）
  */
-import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, statSync, realpathSync, rmSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, statSync, realpathSync, rmSync, renameSync, unlinkSync } from "node:fs"
 import { join, dirname, resolve, sep, relative, isAbsolute, basename } from "node:path"
 import { safeWriteFile, extractLineRange } from "../workflow/cross-platform"
 import { WorkflowEngine, WorkflowEngineError, formatZodIssues, type WorkflowRun } from "../workflow/engine-core"
@@ -70,9 +70,6 @@ let activeCollector: PhaseMetricsCollector | null = null
 
 /** 编排 session ID 集合 — chat.params hook 中记录，system.transform hook 中用于跳过编排 session 的 prompt 注入 */
 const orchestratorSessionIds = new Set<string>()
-
-/** 已落盘系统提示的 session 计数 — system.transform 每条 message 都触发，按 session 计数每条都 dump（追踪多轮 dispatch/重试中提示变化） */
-const dumpedSystemPrompts = new Map<string, number>()
 
 /**
  * 生成 run-<project>-YYYYMMDD-HHMMSS 格式的 runId。
@@ -277,7 +274,7 @@ function setWorkflowContext(run: WorkflowRun): void {
 }
 
 /**
- * 按需解析本分片 per-unit 写入边界的 allowed ref 集合（root + cargo FUNCTION，大写）。
+ * 按需解析本分片 per-unit 写入边界的 allowed ref 集合（本分片 targetUnits 的 root ref，大写）。
  *
  * 不在 setWorkflowContext 里缓存——setWorkflowContext 在首分片 dispatch 时早于分片计划设置
  * targetUnits 调用，缓存会取到空值导致边界失效。worker 实际写入时 targetUnits 必已就绪
@@ -292,12 +289,8 @@ function resolveUnitAllowedRefs(): Set<string> | undefined {
   const currentEntry = run ? engine.findCurrentEntry(run) : undefined
   const targetUnits = currentEntry?.incrementalContext?.targetUnits as string[] | undefined
   if (!targetUnits || targetUnits.length === 0) return undefined
-  const ownership = buildDependencyGraph(join(ARTIFACT_DIR, ctx.runId)).functionOwnership
-  const refs = new Set<string>(targetUnits.map(u => refOf(u).toUpperCase()))
-  for (const [func, owner] of Object.entries(ownership)) {
-    if (targetUnits.includes(owner)) refs.add(refOf(func).toUpperCase())
-  }
-  return refs
+  // 每个 subprogram 独立成 unit：allowed ref = 本分片各 unit 的 root ref（无 cargo）。
+  return new Set(targetUnits.map(u => refOf(u).toUpperCase()))
 }
 
 /** 统一的 fixIndex 递增逻辑：优先读内存 Map，回退到磁盘文件计数 */
@@ -329,7 +322,6 @@ function clearWorkflowContext(): void {
   }
   // 工作流结束时清理编排 session 注册表，避免长期运行后 Set 无限增长
   orchestratorSessionIds.clear()
-  dumpedSystemPrompts.clear()
   currentWorkflowContext = null
   activeCollector = null
   _cachedJavaCodeSpec = null
@@ -1075,13 +1067,8 @@ export function buildShardedWorkerOrder(
   // 2) upstream 收窄
   let upstream = UPSTREAM_ARTIFACTS[phase] ? [...UPSTREAM_ARTIFACTS[phase]] : []
   if (upstream.length > 0 && activeShardPlan && si !== undefined) {
-    let functionOwnership: Record<string, string> | undefined
-    if (isUnitMode) {
-      functionOwnership = buildDependencyGraph(artDir).functionOwnership
-    }
     upstream = narrowUpstreamForShard(upstream, phase, shardTargetPkgs, completedUnitIds, {
       targetUnits: shardTargetUnits,
-      functionOwnership,
       scopeConstOnlyPkgs: constOnlyScopePkgs(readScope(run.metadata as Record<string, unknown>), shardTargetUnits),
     })
   }
@@ -1495,6 +1482,60 @@ function validateFsdStubs(artifactsDir: string): string | null {
 }
 
 /**
+ * 规范化 FSD 文件名到大写 refName。analyze worker 偶发小写命名 FSD
+ *（如 `format_error_stack.md` 而非 `FORMAT_ERROR_STACK.md`），但下游一律用大写
+ * `refOf(unit)` 定位 FSD：analyze 完整性校验 `existsSync(fsd/{pkg}/{ref}.md)`（unit 模式）
+ * 与 translate prompt 注入的 FSD 输入路径都是大写。macOS 大小写不敏感 FS 能蒙混；
+ * Linux 大小写敏感 FS 上 analyze advance 会因 existsSync 失败直接阻断、translate 读不到 FSD。
+ *
+ * 此处在 analyze advance 校验前，按 targetUnits 把 `fsd/{pkg}/` 下 case-insensitive
+ * 匹配到的 .md 重命名为规范 `refName.md`（幂等：已规范则不动；有重复小写副本则清理）。
+ * 缺失文件不报（由完整性校验负责）。
+ */
+export function normalizeFsdFilenames(artifactsDir: string, targetUnits: readonly string[]): void {
+  const fsdDir = join(artifactsDir, "fsd")
+  if (!existsSync(fsdDir)) return
+  // pkg(原样) → 规范 refName 列表
+  const byPkg = new Map<string, string[]>()
+  for (const u of targetUnits) {
+    const pkg = pkgOf(u)
+    const ref = refOf(u)
+    if (!pkg || !ref) continue
+    const arr = byPkg.get(pkg) ?? []
+    arr.push(ref)
+    byPkg.set(pkg, arr)
+  }
+  for (const [pkg, refs] of byPkg) {
+    const pkgDirName = findDirCaseInsensitive(fsdDir, pkg)
+    if (!pkgDirName) continue // 包 FSD 目录缺失由完整性校验报
+    const pkgDir = join(fsdDir, pkgDirName)
+    let entries: import("node:fs").Dirent[]
+    try { entries = readdirSync(pkgDir, { withFileTypes: true }) } catch { continue }
+    for (const refCanonical of refs) {
+      const canonical = `${refCanonical}.md`
+      const refUpper = refCanonical.toUpperCase()
+      const matches = entries.filter(e => e.isFile() && e.name.replace(/\.md$/i, "").toUpperCase() === refUpper)
+      if (matches.length === 0) continue // 缺失由完整性校验报
+      if (matches.some(e => e.name === canonical)) {
+        // 已有规范名文件 → 清理任何 case 变体重复副本
+        for (const e of matches) {
+          if (e.name === canonical) continue
+          try { unlinkSync(join(pkgDir, e.name)) } catch {}
+          getLogger().warn("[fsd-normalize]", `删除重复 FSD: fsd/${pkgDirName}/${e.name}（保留规范 ${canonical}）`)
+        }
+      } else {
+        // 无规范名 → 取首个 case 变体重命名
+        try {
+          renameSync(join(pkgDir, matches[0].name), join(pkgDir, canonical))
+        } catch (e: any) {
+          getLogger().warn("[fsd-normalize]", `重命名失败 fsd/${pkgDirName}/${matches[0].name} → ${canonical}: ${e?.message ?? e}`)
+        }
+      }
+    }
+  }
+}
+
+/**
  * translate PROCEDURE 级：合并某包的所有 per-unit 产物 → 聚合 translations/{pkg}/translation.json。
  *
  * 单元文件按「本包期望 unit ref 集合」白名单过滤（期望集取自 analysis.procedureOrder），天然排除
@@ -1596,7 +1637,7 @@ export function mergeUnitTranslations(artifactsDir: string, pkgName: string): st
  * analyze PROCEDURE 级：合并某包的所有 per-unit 产物 → 聚合 analysis-packages/{pkg}.json。
  *
  * 镜像 mergeUnitTranslations（零 LLM 代码 reduce）。per-unit 文件位于子目录
- * `analysis-packages/{pkg}/{refName}.json`（UnitAnalysisSchema，含根 + cargo FUNCTION 的 subprogram
+ * `analysis-packages/{pkg}/{refName}.json`（UnitAnalysisSchema，本 unit 根 subprogram
  * 结构）；聚合文件 `analysis-packages/{pkg}.json`（AnalysisPackageSchema = {packageName, subprograms}）
  * 在父目录，供 plan/review/translator 消费，形状不变。
  *
@@ -1696,7 +1737,6 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
       const scope = readScope(run.metadata as Record<string, unknown>)
       // 增量分片：本分片 targetUnits；scope 单分片：scopeUnits；否则全量 procedureOrder 全部 unit
       const units = targetUnits && targetUnits.length > 0 ? targetUnits : (scope?.scopeUnits ?? procedureOrder.flat())
-      const ownership = graph.functionOwnership
 
       // merge 本分片 unit 所属包的聚合 analysis-packages/{pkg}.json
       const touchedPkgs = [...new Set(units.map(pkgOf))]
@@ -1705,7 +1745,11 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
         if (err) return err
       }
 
-      // 完整性：本分片每个 unit 的 per-procedure analysis-packages + FSD（根 + cargo FUNCTION）必须存在
+      // 规范化 FSD 文件名到大写 refName（worker 偶发小写命名，Linux 大小写敏感 FS 上
+      // 会让下方 existsSync 阻断 advance、translate 读不到 FSD）。须在完整性校验前。
+      normalizeFsdFilenames(artifactsDir, units)
+
+      // 完整性：本分片每个 unit 的 per-procedure analysis-packages + FSD 必须存在
       for (const u of units) {
         const pkg = pkgOf(u)
         const ref = refOf(u)
@@ -1715,14 +1759,6 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
         }
         if (!existsSync(join(artifactsDir, "fsd", pkg, `${ref}.md`))) {
           return `Missing FSD: fsd/${pkg}/${ref}.md`
-        }
-        for (const [func, owner] of Object.entries(ownership)) {
-          if (owner === u) {
-            const fPkg = pkgOf(func), fRef = refOf(func)
-            if (!existsSync(join(artifactsDir, "fsd", fPkg, `${fRef}.md`))) {
-              return `Missing FSD (cargo FUNCTION): fsd/${fPkg}/${fRef}.md`
-            }
-          }
         }
       }
 
@@ -1734,6 +1770,20 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
 
     // 包级回退（procedureOrder 缺失旧 run）
     const targetPkgs = currentEntry?.incrementalContext?.targetPackages
+    // FSD 文件名规范化（同 unit 模式）：从 targetPkgs 推导期望 unit，无 targetPkgs 则全量包
+    let normPkgs: string[] = targetPkgs && targetPkgs.length > 0 ? targetPkgs : []
+    if (normPkgs.length === 0) {
+      try {
+        const inv = JSON.parse(readFileSync(join(artifactsDir, "inventory.json"), "utf-8")) as { packageNames?: string[] }
+        normPkgs = inv.packageNames ?? []
+      } catch { normPkgs = [] }
+    }
+    const normUnits: string[] = []
+    for (const pkg of normPkgs) {
+      const parsed = parseInventoryPackage(artifactsDir, pkg)
+      if (parsed) for (const ref of parsed.refNames) normUnits.push(`${pkg}.${ref}`)
+    }
+    normalizeFsdFilenames(artifactsDir, normUnits)
     const pkgError = validateAnalysisPackages(artifactsDir, targetPkgs)
     if (pkgError) return pkgError
     const fsdError = validateFsds(artifactsDir, targetPkgs)
@@ -2499,7 +2549,7 @@ const UNIT_WRITE_BOUNDARY_PHASES = new Set(["analyze", "translate"])
  * 聚合文件（translations/{pkg}/translation.json 等只一级目录）不匹配 → 放行。
  *
  * @param relPath 相对 artifactsDir 的路径（或 normalized 后的 artifacts 子路径）
- * @param allowedRefs 本分片允许的 ref 集合（targetUnits 的 root ref + cargo FUNCTION ref，大写）。
+ * @param allowedRefs 本分片允许的 ref 集合（targetUnits 的 root ref，大写）。
  *                    undefined/空 → 不启用边界（包级阶段）。
  * @returns 越界原因字符串；null = 放行
  */
@@ -2515,7 +2565,7 @@ export function unitWriteBoundaryViolation(
   // 聚合文件名保险（理论上两级路径下不会出现，显式放行避免误伤）
   if (ref === "translation" || ref === "review" || ref === "verify") return null
   if (!allowedRefs.has(ref.toUpperCase())) {
-    return `per-unit 越界写入：${ref} 不在本分片 targetUnits（含 cargo），已拦截`
+    return `per-unit 越界写入：${ref} 不在本分片 targetUnits，已拦截`
   }
   return null
 }
@@ -2604,7 +2654,7 @@ function classifyWritePath(
         shouldBlock: false,
       }
     }
-    // per-unit 越界写入拦截（unit 模式）：本分片只允许写 targetUnits（含 cargo）的 per-unit 产物
+    // per-unit 越界写入拦截（unit 模式）：本分片只允许写 targetUnits 的 per-unit 产物
     const relPath = normalized.substring(normArtifacts.length + 1)
     const violation = unitWriteBoundaryViolation(relPath, opts?.unitAllowedRefs)
     if (violation) {
@@ -2698,7 +2748,6 @@ export function narrowUpstreamForShard(
   completedPkgs: readonly string[],
   opts?: {
     targetUnits?: readonly string[]
-    functionOwnership?: Record<string, string>
     /** 闭包内**仅常量/类型被引用、无 unit 被翻译**的包（scopePackages \ pkgsOf(targetUnits)）。
      *  translate 需读这些包的 packages/{pkg}.json 取常量/类型定义；它们无 unit 切片，
      *  整包文件不含被翻译 proc 源码，不破坏切片硬隔离。feat/proc-entry-scope。 */
@@ -2709,13 +2758,11 @@ export function narrowUpstreamForShard(
   const constOnlyInvFiles = (opts?.scopeConstOnlyPkgs ?? []).map(p => `packages/${p}.json`)
 
   // ── translate/analyze PROCEDURE 级（unit 模式）：shards 元素是 unit id `PKG.refName` ──
-  // PROCEDURE 为 unit，FUNCTION 跟随属主（cargo）。收窄到本分片 unit 的源码/FSD + 已完成 unit
-  // 所属包的聚合 translation.json（translate 跨包 + 同包跨单元调用解析）。
+  // 每个 subprogram 独立成 unit。收窄到本分片 unit 的源码/FSD + 已完成 unit 所属包的聚合
+  // translation.json（translate 跨包 + 同包跨单元调用解析）。
   // analyze 的 upstream 不含 fsd/analysis-packages/translations（它是产出方），下列分支对 analyze
   // 仅 packages/subprograms 收窄生效，其余 no-op。
   if ((phase === "translate" || phase === "analyze") && targetUnits.length > 0) {
-    const ownership = opts?.functionOwnership ?? {}
-
     // ── analyze：切片硬隔离 ──
     // 整包 packages/{pkg}.json + subprograms/{pkg}.*.json（含同包全部 proc）→ per-unit 切片
     //（source.sql + inventory-slice.json + meta.json，由 generateUnitSlices 在 dispatch 时落盘）。
@@ -2735,14 +2782,8 @@ export function narrowUpstreamForShard(
     // 整包 packages/subprograms/analysis-packages → per-unit 切片（source.sql + analysis-slice.json + meta.json）。
     // translations/*/translation.json 清空——跨包/同包跨单元调用签名由 buildDependencySignaturesBlock
     // 预注入到 workOrder，worker 不再读 translation.json（消除"读聚合 translation 顺手全做"）。
-    // FSD 已是 per-unit，保留根 + cargo 收窄。
-    const fsdFiles: string[] = []
-    for (const u of targetUnits) {
-      fsdFiles.push(`fsd/${pkgOf(u)}/${refOf(u)}.md`)
-      for (const [func, owner] of Object.entries(ownership)) {
-        if (owner === u) fsdFiles.push(`fsd/${pkgOf(func)}/${refOf(func)}.md`)
-      }
-    }
+    // FSD 已是 per-unit，收窄到本分片 unit 根 FSD。
+    const fsdFiles = targetUnits.map(u => `fsd/${pkgOf(u)}/${refOf(u)}.md`)
     const sliceFiles = targetUnits.flatMap(u => unitSliceRelPaths(u, "translate"))
     const translated = upstream.flatMap(a => {
       // 三个整包结构 glob 都由 per-unit 切片取代（切片含 analysis-slice.json + source.sql + meta.json）
@@ -2869,10 +2910,10 @@ export function unitSliceRelPaths(unitId: string, phase: string): string[] {
 /**
  * 引擎预切 per-unit 切片文件（硬输入边界）。dispatch 前调用，对本分片每个 targetUnit 落盘：
  *   shard-inputs/{pkg}/{ref}/
- *     source.sql            根 + cargo FUNCTION 源码片段（按 lineRange 抽取，注释分隔）
- *     inventory-slice.json  analyze 用：根+cargo 的 inventory proc 条目（name/type/params/lineRange/bodyFile）
- *     analysis-slice.json   translate 用：根+cargo 的 subprogram 结构（从 analysis-packages/{pkg}.json 过滤）
- *     meta.json             { unitId, pkg, ref, cargoFuncs, sourceFiles, analysisMissing? }
+ *     source.sql            本 unit 根源码片段（按 lineRange 抽取，注释分隔）
+ *     inventory-slice.json  analyze 用：根的 inventory proc 条目（name/type/params/lineRange/bodyFile）
+ *     analysis-slice.json   translate 用：根的 subprogram 结构（从 analysis-packages/{pkg}.json 过滤）
+ *     meta.json             { unitId, pkg, ref, cargoFuncs:[], sourceFiles, analysisMissing? }
  *
  * 目的：worker 物理上只拿到本 unit 的源码/结构，看不到同包其他 proc（消除"读整包顺手全做"）。
  * 复用 buildUnitScopeBlock 已验证的 refMapForPkg / ownership 展开逻辑。确定性：每次 dispatch 总是
@@ -2888,8 +2929,6 @@ export function generateUnitSlices(
 ): string[] {
   if (targetUnits.length === 0) return []
   if (phase !== "analyze" && phase !== "translate") return []
-
-  const ownership = buildDependencyGraph(artifactsDir).functionOwnership
 
   const absSrc = (rel: string | null | undefined): string | null => {
     if (!rel) return null
@@ -2939,22 +2978,10 @@ export function generateUnitSlices(
     const rootSub = rootIdx >= 0 ? inv!.subprograms[rootIdx] : null
     const rootProc = procEntry(rootSub)
 
-    // cargo FUNCTION（同包，fPkg = pkgOf(func) 与 owner 同包）
-    const cargoFuncs: Array<{ ref: string; pkg: string; sub: any | null; proc: any | null }> = []
-    for (const [func, owner] of Object.entries(ownership)) {
-      if (owner !== u) continue
-      const fRef = refOf(func)
-      const fPkg = pkgOf(func)
-      const fInv = invForPkg(fPkg)
-      const fIdx = fInv ? fInv.refNames.indexOf(fRef) : -1
-      const fSub = fIdx >= 0 ? fInv!.subprograms[fIdx] : null
-      cargoFuncs.push({ ref: fRef, pkg: fPkg, sub: fSub, proc: procEntry(fSub) })
-    }
-
     const sliceDir = join(artifactsDir, "shard-inputs", pkg, rootRef)
     mkdirSync(sliceDir, { recursive: true })
 
-    // ── source.sql：根 + cargo 源码片段（按 bodyLocation.lineRange 切片）──
+    // ── source.sql：本 unit 根源码片段（按 bodyLocation.lineRange 切片）──
     const sourceParts: string[] = []
     const sourceFiles: Array<{ role: string; ref: string; lineRange: [number, number]; file: string | null }> = []
     const appendSlice = (role: string, ref: string, sub: any | null) => {
@@ -2981,9 +3008,6 @@ export function generateUnitSlices(
       }
     }
     appendSlice("根", rootRef, rootSub)
-    for (const c of cargoFuncs) {
-      appendSlice("cargo FUNCTION", c.ref, c.sub)
-    }
     safeWriteFile(join(sliceDir, "source.sql"), sourceParts.join("\n\n"))
 
     // ── inventory-slice.json（analyze）──
@@ -2992,7 +3016,7 @@ export function generateUnitSlices(
         unitId: u,
         packageName: pkg,
         root: rootProc ? { ref: rootRef, proc: rootProc } : null,
-        cargo: cargoFuncs.map(c => ({ ref: c.ref, pkg: c.pkg, proc: c.proc })),
+        cargo: [],
       }
       safeWriteFile(join(sliceDir, "inventory-slice.json"), JSON.stringify(slice, null, 2))
     }
@@ -3005,10 +3029,9 @@ export function generateUnitSlices(
         analysisMissing = true
         safeWriteFile(join(sliceDir, "analysis-slice.json"), JSON.stringify({ unitId: u, packageName: pkg, subprograms: [] }, null, 2))
       } else {
-        // 按 oracle name 匹配根 + cargo（cargo 同包）
+        // 按 oracle name 匹配根
         const wantNames = new Set<string>()
         if (rootProc?.name) wantNames.add(String(rootProc.name))
-        for (const c of cargoFuncs) if (c.proc?.name) wantNames.add(String(c.proc.name))
         const matched = subs.filter((sp: any) => sp && wantNames.has(String(sp.name)))
         safeWriteFile(join(sliceDir, "analysis-slice.json"), JSON.stringify({ unitId: u, packageName: pkg, subprograms: matched }, null, 2))
       }
@@ -3020,7 +3043,7 @@ export function generateUnitSlices(
       pkg,
       ref: rootRef,
       phase,
-      cargoFuncs: cargoFuncs.map(c => ({ ref: c.ref, pkg: c.pkg })),
+      cargoFuncs: [],
       sourceFiles,
       analysisMissing,
     }
@@ -3050,8 +3073,13 @@ export function buildDependencySignaturesBlock(
   completedUnitIds: readonly string[],
 ): string {
   if (targetUnits.length === 0) return ""
-  const callGraph = buildDependencyGraph(artifactsDir).callGraph
+  const graph = buildDependencyGraph(artifactsDir)
+  const callGraph = graph.callGraph
   const completedPkgsUpper = new Set(completedUnitIds.map(u => pkgOf(u).toUpperCase()))
+  // 同分片判定：callee 本身（subprogram 独立成 unit）落在本分片 targetUnits，说明本 session
+  // 会翻译它且 generateUnitSlices 已为其预切 source 切片——translator 手上有源码，直接翻译并
+  // 对接，不应标 TODO。（历史 functionOwnership 折叠已移除，callee unit 即 callee 自身。）
+  const targetUnitsUpper = new Set(targetUnits.map(u => u.toUpperCase()))
 
   // 包 → 聚合 translation.json 的 subprogramMethods 缓存（多个 callee 命中同包只读一次）
   const methodsCache = new Map<string, Array<{ oracleName: string; javaClass: string; javaMethod: string; javaFile?: string | null }> | null>()
@@ -3084,6 +3112,15 @@ export function buildDependencySignaturesBlock(
     for (const callee of callees) {
       const tPkg = pkgOf(callee)
       const tRef = refOf(callee)
+      // 同分片 callee 优先判定：callee 本身在本分片 targetUnits（真环 SCC 同分片场景），
+      // 本 session 会翻译它且 source 切片已预切——直接对接，不标 TODO。
+      if (targetUnitsUpper.has(callee.toUpperCase())) {
+        lines.push(
+          `- ${callee} → 同分片单元（本 session 翻译，源码见 shard-inputs/${tPkg}/${tRef}/source.sql，直接对接，勿 TODO）`,
+        )
+        unitHas = true
+        continue
+      }
       // 仅已完成包（含同包 prior unit）的签名可读；未完成 → TODO
       if (!completedPkgsUpper.has(tPkg.toUpperCase())) {
         lines.push(`- // TODO: 跨包调用 ${callee} 待对接（目标 unit 尚未翻译）`)
@@ -3120,8 +3157,8 @@ export function buildDependencySignaturesBlock(
 
 /**
  * 构建分片 work order 的「单元读取清单」（中间文件，软约束）：对本分片每个 targetUnit 精准列出
- * 要读的源码文件 + 行范围（sed -n）+ cargo FUNCTION + FSD/依赖聚合路径。数据确定性取自
- * packages/subprograms（bodyLocation.lineRange）+ 依赖图（functionOwnership/callGraph，按需推导）。
+ * 要读的源码文件 + 行范围（sed -n）+ FSD/依赖聚合路径。数据确定性取自
+ * packages/subprograms（bodyLocation.lineRange）+ 依赖图（callGraph，按需推导）。
  *
  * 目的：把「读取单元」收紧到「工作单元」——agent 按清单 sed -n 抽片段，不再读整包 body 顺手全做
  * （详见 [[translate-procedure-level]] / analyze 下沉）。analyze 与 translate 共用。
@@ -3143,8 +3180,6 @@ export function buildUnitScopeBlock(
   void sourcePath
   void completedUnitIds
 
-  const ownership = buildDependencyGraph(artifactsDir).functionOwnership
-
   const lines: string[] = [
     `## 本分片单元读取清单（精准范围 — 只读这些，禁止 read 整包源码）`,
     `引擎已为本分片每个 unit 预切源码/结构到 shard-inputs/{pkg}/{ref}/，直接 read 切片文件；禁止 read 整个包 body/header 文件、packages/{pkg}.json、subprograms/{pkg}.*.json、analysis-packages/{pkg}.json。`,
@@ -3157,18 +3192,13 @@ export function buildUnitScopeBlock(
     const sliceDir = `${artifactsDir}/shard-inputs/${pkg}/${rootRef}`
 
     if (phase === "analyze") {
-      lines.push(`- 切片目录：${sliceDir}/（source.sql + inventory-slice.json + meta.json，引擎已预切，含本 unit 根 + cargo）`)
+      lines.push(`- 切片目录：${sliceDir}/（source.sql + inventory-slice.json + meta.json，引擎已预切，本 unit 根）`)
       const outParts = [`${artifactsDir}/analysis-packages/${pkg}/${rootRef}.json（结构）`, `${artifactsDir}/fsd/${pkg}/${rootRef}.md（FSD）`]
-      for (const [func, owner] of Object.entries(ownership)) {
-        if (owner === u) outParts.push(`${artifactsDir}/fsd/${pkgOf(func)}/${refOf(func)}.md（cargo FSD）`)
-      }
       lines.push(`- 输出：${outParts.join(" + ")}`)
     } else {
       // translate
-      lines.push(`- 切片目录：${sliceDir}/（source.sql + analysis-slice.json + meta.json，引擎已预切，含本 unit 根 + cargo）`)
-      const fsdInputs = [`${artifactsDir}/fsd/${pkg}/${rootRef}.md`]
-      for (const [func, owner] of Object.entries(ownership)) if (owner === u) fsdInputs.push(`${artifactsDir}/fsd/${pkgOf(func)}/${refOf(func)}.md`)
-      lines.push(`- FSD 输入：${fsdInputs.join(", ")}`)
+      lines.push(`- 切片目录：${sliceDir}/（source.sql + analysis-slice.json + meta.json，引擎已预切，本 unit 根）`)
+      lines.push(`- FSD 输入：${artifactsDir}/fsd/${pkg}/${rootRef}.md`)
       lines.push(`- 输出：${artifactsDir}/translations/${pkg}/${rootRef}.json（per-unit 翻译产物）`)
       lines.push(`- 依赖签名：见 workOrder「依赖签名」预注入块（已内联跨包/同包跨单元调用签名，⛔ 勿 read translations/*/translation.json）`)
     }
@@ -3775,7 +3805,7 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
 
           // ── generateDependencyGraph — inventory 阶段 reduce（零 LLM）──
           // dependency-graph.json 已删——调用图（callGraph/packageDependency/translationOrder/sccGroups/
-          // procedureOrder/functionOwnership）由 dependency-graph.ts 从 subprograms/*.json 的 directCalls
+          // procedureOrder）由 dependency-graph.ts 从 subprograms/*.json 的 directCalls
           // 按需推导，不再落盘。本 action 仅做：complexity 启发式写入 packages/{PKG}.json + 无子程序包
           // 空 analysis-packages/{PKG}.json 兜底。agent 在调完 generateInventory 后调本 action。
           // advance 失败时编排者重新 dispatch，workOrder 带校验错误，agent 最小修复 json。
@@ -4419,10 +4449,20 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                   )
                 }
                 if (translationOrder.length > 0) {
-                  // analyze（PROCEDURE 级，每 unit 一分片）/review（包级，每包一分片）拍平 SCC；
-                  // translate 保留 SCC 共处。详见 engine.shardOrderForPhase 的阶段语义说明。
+                  // analyze/translate 同策略（保留 SCC，分片完全一致便于追踪）；review 拍平 SCC。
+                  // 详见 engine.shardOrderForPhase 的阶段语义说明。
                   const effectiveOrder = engine.shardOrderForPhase(translationOrder, run.currentPhase!)
-                  const plan = engine.computeShardPlan(effectiveOrder, phaseConfig.maxPackagesPerShard, run.currentPhase!)
+                  // unit 级阶段传 levelOf：按拓扑层 antichain 批量（同层 unit 互不调用可合并），
+                  // 取代旧的"只批量叶子"。level 取 DependencyGraph.unitLevels（SCC 收缩 DAG 最长路径），
+                  // sizeOf 取 unitLines（body 源码行数）供按行数预算切分。
+                  const unitLines = analysis.unitLines
+                  const unitLevels = analysis.unitLevels
+                  const plan = engine.computeShardPlan(
+                    effectiveOrder, run.currentPhase!,
+                    useUnits
+                      ? { levelOf: (u: string) => unitLevels[u] ?? 0, sizeOf: (u: string) => unitLines[u] ?? 0 }
+                      : undefined,
+                  )
                   // 多分片 → 设 shardPlan；scope 激活时**即使单分片**也设 targetUnits（硬约束），
                   // 否则单分片 scoped run（闭包 ≤ maxPackagesPerShard 个 unit）worker 收不到硬 targetUnits
                   // 清单，仅靠软 scopeLine banner，可能越界处理同包 out-of-scope unit（闭包泄漏）。
@@ -4698,14 +4738,8 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
                     getLogger().warn("[dispatch]", `generateUnitSlices 失败（回退整包 upstream）: ${e.message}`)
                   }
                 }
-                // translate unit 模式需 functionOwnership 展开 cargo FUNCTION 的 FSD
-                let functionOwnership: Record<string, string> | undefined
-                if (shardTargetUnits.length > 0) {
-                  functionOwnership = buildDependencyGraph(`${ARTIFACT_DIR}/${run.runId}`).functionOwnership
-                }
                 upstream = narrowUpstreamForShard(upstream, run.currentPhase ?? "", shardTargetPkgs, completedPkgs, {
                   targetUnits: shardTargetUnits,
-                  functionOwnership,
                   scopeConstOnlyPkgs: constOnlyScopePkgs(readScope(run.metadata as Record<string, unknown>), shardTargetUnits),
                 })
               } else if (currentEntry?.incrementalContext?.targetPackages?.length) {
@@ -5246,24 +5280,6 @@ export const WorkflowEnginePlugin = async ({ $ }: { $: any }) => {
         // opencode 持有原始数组引用，赋值会丢引用导致 worker 收不到注入的 workOrder（只看到默认
         // agent .md 方法论）。与 truncate hook（splice 保持引用）同模式。
         if (output && Array.isArray(output.system)) output.system.splice(0, output.system.length, finalSystem)
-
-        // 备份 worker 实际收到的最终系统提示，供查阅/追踪（插件侧 I/O，不消耗主 agent 上下文）。
-        // system.transform 每条 message 都触发；按 sessionID 计数，每条 message 都落盘（含序号），
-        // 便于追踪多轮 dispatch/rejection 中系统提示的变化（排查「上下文没注入」类问题）。
-        try {
-          const sidKey = sid ? String(sid) : ""
-          const sidShort = sidKey ? sidKey.slice(0, 16) : "nosid"
-          const si = engine.findCurrentEntry(run)?.incrementalContext?.shardIndex as number | undefined
-          const dumpDir = join(ARTIFACT_DIR, currentWorkflowContext.runId, "system-prompt-dumps")
-          if (!existsSync(dumpDir)) mkdirSync(dumpDir, { recursive: true })
-          const key = sidKey || `${currentWorkflowContext.phase}|nosid`
-          const seq = (dumpedSystemPrompts.get(key) ?? 0) + 1
-          dumpedSystemPrompts.set(key, seq)
-          const name = `${currentWorkflowContext.phase}-shard${si !== undefined ? si + 1 : "x"}-${sidShort}-${seq}.md`
-          writeFileSync(join(dumpDir, name), finalSystem, "utf-8")
-        } catch (e: any) {
-          getLogger().warn("[workflow-engine]", `system prompt dump 失败(不影响流程): ${e.message}`)
-        }
       } else {
         getLogger().error("[workflow-engine]", `Agent file not found: ${agentPath}. System prompt will not be injected.`)
       }

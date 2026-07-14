@@ -103,7 +103,6 @@ describe("narrowUpstreamForShard — translate PROCEDURE 级（unit 模式）", 
   it("targetUnits → per-unit 切片 + 根 FSD；整包 packages/analysis-packages 不再注入", () => {
     const result = narrowUpstreamForShard(baseUpstream, "translate", [], [], {
       targetUnits: ["PKG_A.create_order", "PKG_A.cancel_order"],
-      functionOwnership: {},
     })
     // per-unit 切片（source.sql + analysis-slice.json + meta.json）
     expect(result).toContain("shard-inputs/PKG_A/create_order/source.sql")
@@ -120,21 +119,9 @@ describe("narrowUpstreamForShard — translate PROCEDURE 级（unit 模式）", 
     expect(result).not.toContain("fsd/*/*.md")
   })
 
-  it("cargo FUNCTION 的 FSD 按 functionOwnership 展开", () => {
-    // create_order 拥有 calc_total；cancel_order 无 cargo
-    const result = narrowUpstreamForShard(baseUpstream, "translate", [], [], {
-      targetUnits: ["PKG_A.create_order", "PKG_A.cancel_order"],
-      functionOwnership: { "PKG_A.calc_total": "PKG_A.create_order" },
-    })
-    expect(result).toContain("fsd/PKG_A/create_order.md")
-    expect(result).toContain("fsd/PKG_A/calc_total.md") // cargo 展开
-    expect(result).toContain("fsd/PKG_A/cancel_order.md")
-  })
-
   it("跨包 unit：切片覆盖多个包", () => {
     const result = narrowUpstreamForShard(baseUpstream, "translate", [], [], {
       targetUnits: ["PKG_A.p1", "PKG_B.p2"],
-      functionOwnership: {},
     })
     expect(result).toContain("shard-inputs/PKG_A/p1/source.sql")
     expect(result).toContain("shard-inputs/PKG_B/p2/source.sql")
@@ -146,7 +133,6 @@ describe("narrowUpstreamForShard — translate PROCEDURE 级（unit 模式）", 
     // 依赖改由 buildDependencySignaturesBlock 预注入，translations glob 清空
     const result = narrowUpstreamForShard(baseUpstream, "translate", [], ["PKG_A.p0", "PKG_B.q0"], {
       targetUnits: ["PKG_C.p1"],
-      functionOwnership: {},
     })
     expect(result).not.toContain("translations/PKG_A/translation.json")
     expect(result).not.toContain("translations/PKG_B/translation.json")
@@ -168,7 +154,6 @@ describe("narrowUpstreamForShard — analyze PROCEDURE 级（unit 模式，Phase
   it("targetUnits → packages/*.json 替换为 per-unit 切片文件", () => {
     const result = narrowUpstreamForShard(baseUpstream, "analyze", [], [], {
       targetUnits: ["PKG_A.proc1", "PKG_A.proc2"],
-      functionOwnership: {},
     })
     // 每个 unit 的切片三件套
     expect(result).toContain("shard-inputs/PKG_A/proc1/source.sql")
@@ -187,7 +172,6 @@ describe("narrowUpstreamForShard — analyze PROCEDURE 级（unit 模式，Phase
   it("跨包 unit：切片覆盖多个包", () => {
     const result = narrowUpstreamForShard(baseUpstream, "analyze", [], [], {
       targetUnits: ["PKG_A.p1", "PKG_B.p2"],
-      functionOwnership: {},
     })
     expect(result).toContain("shard-inputs/PKG_A/p1/source.sql")
     expect(result).toContain("shard-inputs/PKG_B/p2/source.sql")

@@ -3,9 +3,8 @@
  *
  * 当 `mainEntry` 为过程级（`subdir/PKG.refName`）时，从入口子程序出发计算 callee
  * 传递闭包，作为本次 run 的翻译 scope：
- *   - `scopeUnits`：沿 `callGraph`（子程序级调用边）正向 BFS 到达的子程序 → 映射到 unit。
- *     unit = PROCEDURE 自身，或 owned FUNCTION 的 owner unit（被拥有的 FUNCTION 折叠进 owner），
- *     孤儿 FUNCTION 自身成 unit。**只含被调用的 PROC/FUNC**。
+ *   - `scopeUnits`：沿 `callGraph`（子程序级调用边）正向 BFS 到达的子程序。每个 subprogram
+ *     （过程或函数）独立成 unit，不再折叠进属主。**只含被调用的 PROC/FUNC**。
  *   - `scopePackages`：`scopeUnits` 所属包 ∪ 这些包沿 `packageDependency` **1-hop** 直接引用的
  *     包（常量/类型/跨包调用）。仅常量/类型被引用、无 PROC 被调用的包进 `scopePackages`
  *     （scaffold 出壳）但不进 `scopeUnits`（不译过程体）。**不传递**——与 scanSourceLazy 的
@@ -26,7 +25,6 @@ import { pkgOf, refNameOf, parseQualified } from "./refname"
 export interface AnalysisLike {
   callGraph: Record<string, string[]>
   packageDependency: Record<string, string[]>
-  functionOwnership?: Record<string, string>
 }
 
 export interface InventoryPackageLike {
@@ -76,7 +74,7 @@ export interface EntryResolution {
   ok: true
   /** 入口子程序 callGraph key `PKG.refName`（解析后的真实 refName，保留原始大小写） */
   entrySubprogram: string
-  /** 入口 unit（owned FUNCTION → owner unit；否则自身） */
+  /** 入口 unit（= 入口子程序自身；subprogram 独立成 unit） */
   entryUnit: string
 }
 
@@ -168,7 +166,7 @@ function finalize(
     }
   }
   const entrySubprogram = `${pkg}.${refName}`
-  return { ok: true, entrySubprogram, entryUnit: entrySubprogram } // entryUnit 由 computeClosure 经 functionOwnership 修正
+  return { ok: true, entrySubprogram, entryUnit: entrySubprogram }
 }
 
 // ── 闭包计算 ──
@@ -178,7 +176,7 @@ export interface ClosureResult {
   scopeUnits: string[]
   /** 闭包包集合（scopeUnits 所属包 ∪ 它们 1-hop 直接引用的 const/type/跨包调用包） */
   scopePackages: string[]
-  /** 入口 unit（owned FUNCTION → owner） */
+  /** 入口 unit（= 入口子程序自身；subprogram 独立成 unit） */
   entryUnit: string
   warnings: string[]
 }
@@ -186,14 +184,13 @@ export interface ClosureResult {
 /**
  * 从入口子程序计算闭包。纯函数。
  *
- * scopeUnits：callGraph 正向 BFS（visited 防环）→ 子程序 → 映射 unit（owned FUNCTION 折叠进 owner）。
+ * scopeUnits：callGraph 正向 BFS（visited 防环）→ 子程序即 unit（每 subprogram 独立，不折叠）。
  * scopePackages：scopeUnits 所属包作种子 → packageDependency **1-hop** 平铺（不传递，与
  * scanSourceLazy 断传递一致；const-leaf 包无出边，传递也自然终止，此处显式 1-hop 作防御）。
  */
 export function computeClosure(analysis: AnalysisLike, entrySubprogram: string): ClosureResult {
   const callGraph = analysis.callGraph ?? {}
   const packageDependency = analysis.packageDependency ?? {}
-  const functionOwnership = analysis.functionOwnership ?? {}
   const warnings: string[] = []
 
   // 1) callGraph BFS
@@ -216,14 +213,10 @@ export function computeClosure(analysis: AnalysisLike, entrySubprogram: string):
     warnings.push(`入口 ${entrySubprogram} 在 callGraph 中无出边（叶子或未被扫描到调用）——闭包仅含入口 unit`)
   }
 
-  // 2) 子程序 → unit（owned FUNCTION 折叠进 owner；PROC/孤儿 FUNCTION = 自身）
-  const scopeUnitsSet = new Set<string>()
-  for (const sub of visitedSubprograms) {
-    const unit = functionOwnership[sub] ?? sub
-    scopeUnitsSet.add(unit)
-  }
-  // entryUnit 修正：入口若为 owned FUNCTION，取 owner unit
-  const entryUnit = functionOwnership[entrySubprogram] ?? entrySubprogram
+  // 2) 子程序 → unit：每个 subprogram（过程或函数）独立成 unit，不再折叠进属主。
+  //    visitedSubprograms 本身就是 scopeUnits（BFS 已沿 callGraph 收集所有可达子程序）。
+  const scopeUnitsSet = new Set<string>(visitedSubprograms)
+  const entryUnit = entrySubprogram
 
   // 3) 包级 1-hop：种子 = scopeUnits 所属包；种子包沿 packageDependency 直接引用的包纳入。
   //    **不传递**（方案 C）：const-leaf 包不再展开，避免 const/type 引用图爆炸。与 scanSourceLazy
