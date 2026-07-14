@@ -188,12 +188,36 @@ function finalizeInventoryIndex(
       getLogger().warn("[scan]", w)
     }
   }
+  // 未解析调用 warning：callee 非本项目子程序时记一条（去重，按 caller->callee 不含行号），
+  // 供排查简称未命中 / 拼写错 / 外部依赖。**仅对限定调用（2/3 段，c.package !== callerPkg）记
+  // warning**——裸名调用（c.package === callerPkg）含大量类型构造器 t_rec()、集合访问 arr(i)、
+  // 变量方法 obj.ext 等非过程调用噪声，静默丢弃不 warn。Oracle SYS 工具包（DBMS_/UTL_/HTP/HTF）
+  // 亦静默。边仍丢弃。仅 directCalls 记 warning——packageRefs 捕获大量 localRecord.field / table.col
+  // 噪声，不记 warning（schema 归一化修复照常生效，仅未解析时静默丢弃）。
+  const warnedUnresolved = new Set<string>()
+  const externalUtilPrefixes = ["DBMS_", "UTL_", "HTP", "HTF"]
+  const isExternalUtilPkg = (pkg: string): boolean => {
+    const last = pkg.split(".").pop() ?? pkg
+    return externalUtilPrefixes.some(p => last.startsWith(p))
+  }
   for (const s of subprogramList) {
     const seen = new Set<string>()
     const filtered: DirectCall[] = []
     for (const c of s.directCalls) {
       const methods = subprogramIndex.get(c.package)
-      if (!methods || !methods.has(c.name)) continue  // callee 非本项目子程序，丢弃
+      if (!methods || !methods.has(c.name)) {
+        // 仅限定调用（跨包 2/3 段写法）记 warning；裸名（同包，含类型构造器/集合访问噪声）静默
+        if (c.package !== s.belongToPackage && !isExternalUtilPkg(c.package)) {
+          const wkey = `${s.belongToPackage}.${s.name}->${c.package}.${c.name}`
+          if (!warnedUnresolved.has(wkey)) {
+            warnedUnresolved.add(wkey)
+            const w = `未解析调用 ${s.belongToPackage}.${s.name} -> ${c.package}.${c.name} (line ${c.line})`
+            warnings.push(w)
+            getLogger().warn("[scan]", w)
+          }
+        }
+        continue  // callee 非本项目子程序，丢弃
+      }
       const key = `${c.package}.${c.name}.${c.line}`
       if (seen.has(key)) continue
       seen.add(key)
@@ -204,7 +228,8 @@ function finalizeInventoryIndex(
 
   // packageRefs 后过滤 + 去重：只保留指向「已知项目包」的跨包引用（排除 localRecord.field /
   // schema.table.col / DBMS_OUTPUT 等外部限定）。已知包 = packages + standalone 虚拟包。
-  // 同包引用不产生 packageDependency 边，丢弃。callGraph 不受影响。
+  // 同包引用不产生 packageDependency 边，丢弃。callGraph 不受影响。schema 归一化已在
+  // recordPackageRef 完成（2 段 pkg.member 补 caller schema → 命中声明键）；未解析静默丢弃不 warn。
   const knownPackages = new Set<string>()
   for (const p of pkgList) knownPackages.add(p.packageName.toUpperCase())
   for (const s of subprogramList) {
