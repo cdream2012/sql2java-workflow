@@ -140,6 +140,16 @@ export function registerWorker(
     return
   }
   if (!currentRunId) currentRunId = ctx.runId
+  // 新 worker 登记 = 上一轮 worker 正常完成（编排者 advance 才会派新 worker，串行调度）。
+  // 清理同 run 已 idle 的旧 worker entry（正常完成，不 abort——不再监控已完成的 worker）。
+  // 只有编排者没派新 worker（卡死）时，旧 worker 才会 idleConfirmMs 后 abort。
+  for (const [oldSid, oldE] of sessionMap) {
+    if (oldE.role === "worker" && oldE.runId === ctx.runId && oldSid !== sid && oldE.lastStatus === "idle") {
+      if (oldE.timeoutTimer) clearTimeout(oldE.timeoutTimer)
+      sessionMap.delete(oldSid)
+      wlog("INFO", `worker ${oldSid} 正常完成清理（phase=${oldE.phase}），新 worker ${sid} 登记`)
+    }
+  }
   const timeoutMs = workerTimeoutFor(ctx.phase)
   const entry: WatchdogEntry = {
     role: "worker",
@@ -203,7 +213,7 @@ export function handleSessionStatus(sid: string, status: any): void {
     // worker idle：切到 idle 确认 timer（idleConfirmMs 后 abort 杀透，防恢复重复执行）
     if (e.timeoutTimer) clearTimeout(e.timeoutTimer)
     e.timeoutTimer = setTimeout(() => onWorkerTimeout(sid), cfg.idleConfirmMs)
-    wlog("INFO", `worker idle sid=${sid} phase=${e.phase}，${cfg.idleConfirmMs}ms 后确认 abort`)
+    wlog("INFO", `worker idle sid=${sid} phase=${e.phase}，启动 idle 确认 ${cfg.idleConfirmMs}ms（期间若无新 worker 登记则 abort）`)
   }
 }
 
