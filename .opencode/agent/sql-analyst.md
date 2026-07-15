@@ -9,6 +9,7 @@ tools:
   edit: false
 permission:
   bash: allow
+  doom_loop: deny
   external_directory:
     "/tmp/**": allow
 ---
