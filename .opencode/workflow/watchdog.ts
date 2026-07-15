@@ -61,6 +61,7 @@ interface WatchdogEntry {
   lastStatusAt: number
   timeoutTimer?: ReturnType<typeof setTimeout>  // worker：busy 超时 / idle 确认（按 lastStatus 切换）
   nudgeCount: number                       // 编排者唤醒限频
+  lastPhase?: string                       // 编排者：上次 currentPhase，变化时重置 nudgeCount
   lastNudgeAt?: number
   missingSince?: number                    // crash 检测：session 持续消失起点
   crashAlerted?: boolean                   // crash 告警去重
@@ -121,7 +122,14 @@ export function registerWorker(
   if (!started || !sid || !ctx) return
   const existing = sessionMap.get(sid)
   if (existing && existing.role === "worker") {
-    // 同 session 多次 LLM 请求：不重置 timer（避免长任务永不超时），只刷新活动时间
+    if (existing.lastStatus === "idle") {
+      // idle 后重新 chat.params = 新 busy 段（恢复/重派），重启 busy 超时 timer
+      if (existing.timeoutTimer) clearTimeout(existing.timeoutTimer)
+      existing.timeoutTimer = setTimeout(() => onWorkerTimeout(sid), workerTimeoutFor(existing.phase))
+      existing.lastStatus = "busy"
+      wlog("INFO", `worker 恢复 busy sid=${sid} phase=${existing.phase}，重启 timer`)
+    }
+    // 同 busy 段多次 LLM 请求：不重置 timer（避免长任务永不超时），只刷新活动时间
     existing.lastStatusAt = Date.now()
     return
   }
@@ -170,13 +178,12 @@ export function handleSessionStatus(sid: string, status: any): void {
     if (e.lastStatus === "busy") return  // 降噪：重复 busy
     e.lastStatus = "busy"
     e.lastStatusAt = now
-    if (e.role === "orchestrator") {
-      e.nudgeCount = 0  // 开始干活，重置唤醒计数
-    } else {
+    if (e.role === "worker") {
       // worker 从 idle 恢复（新 busy 段）：重启 busy 超时 timer
       if (e.timeoutTimer) clearTimeout(e.timeoutTimer)
       e.timeoutTimer = setTimeout(() => onWorkerTimeout(sid), workerTimeoutFor(e.phase))
     }
+    // orchestrator busy 不重置 nudgeCount（在 currentPhase 推进时重置，防反复 busy/idle 无限唤醒）
     return
   }
 
@@ -238,6 +245,12 @@ function checkOrchestratorStuck(): void {
       continue
     }
     if (!run.currentPhase) continue
+    // 阶段推进 → 重置唤醒计数（编排者真推进了，新一轮）
+    if (e.lastPhase === undefined) e.lastPhase = run.currentPhase
+    else if (run.currentPhase !== e.lastPhase) {
+      e.lastPhase = run.currentPhase
+      e.nudgeCount = 0
+    }
     // (c) 有活跃 worker → 正常等 worker，不干预
     if (hasActiveWorker(e.runId)) continue
     // (d) 编排者非 idle → busy 靠 provider 5min 兜底，跳过
