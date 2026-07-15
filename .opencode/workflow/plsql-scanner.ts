@@ -18,7 +18,7 @@ export {
   UpperCaseCharStream, cleanName, normalizeTypeText, ctxLineRange, ctxText,
   stripSqlPlusCommands, parenDelta, SQL_PSEUDO, PlSqlStructListener, extractPackageNames,
   extractTableFromText, extractTriggerFromText, extractViewFromText, extractSequenceFromText,
-  nextStatementBoundary, lineRangeOf, storedFilePath, parseFileAst, scanFileSet,
+  nextStatementBoundary, lineRangeOf, storedFilePath, parseFileAst, scanFileSet, normalizeFullwidthSyntax,
   type ParamInfo, type LocationInfo, type DirectCall, type PackageRef,
   type SubprogramInfo, type ConstantInfo, type VariableInfo, type ExceptionInfo, type TypeInfo,
   type PackageInfo, type ColumnIndex, type ForeignKeyInfo,
@@ -34,7 +34,7 @@ import { parseMainEntry } from "./scope-computer"
 import { scanFilesParallel, createPoolSession, type PoolSession } from "./plsql-worker-pool"
 import {
   cleanName, extractTriggerFromText, extractTableFromText, extractViewFromText, extractSequenceFromText,
-  extractPackageNames, stripSqlPlusCommands, storedFilePath, scanFileSet,
+  extractPackageNames, stripSqlPlusCommands, storedFilePath, scanFileSet, normalizeFullwidthSyntax,
   type PackageInfo, type SubprogramInfo, type TableIndex, type TriggerIndex, type ViewIndex, type SequenceIndex,
   type StandaloneProcIndex, type DirectCall, type PackageRef, type InventoryIndex, type FileSetResult,
 } from "./plsql-file-scanner"
@@ -348,7 +348,7 @@ export function partitionFilesByPackage(files: string[]): { fileSets: string[][]
   let totalLines = 0
   for (let i = 0; i < files.length; i++) {
     let code: string
-    try { code = readFileSync(files[i], "utf-8") } catch { continue }
+    try { code = normalizeFullwidthSyntax(readFileSync(files[i], "utf-8")) } catch { continue }
     totalLines += code.split("\n").length
     for (const name of extractPackageNames(code)) {
       let arr = pkgFiles.get(name)
@@ -441,7 +441,7 @@ export function scanWithRegex(roots: string[], primaryBase: string): InventoryIn
   const warnings: string[] = ["regex 兜底模式：仅提取名字，结构字段缺失"]
 
   for (const filePath of files) {
-    const code = readFileSync(filePath, "utf-8").replace(/\r\n?/g, "\n")
+    const code = normalizeFullwidthSyntax(readFileSync(filePath, "utf-8").replace(/\r\n?/g, "\n"))
     const relPath = storedFilePath(filePath)
     extractTableFromText(code, tables, relPath)
     extractTriggerFromText(code, triggers, relPath)
@@ -572,7 +572,10 @@ export async function scanSourceLazy(opts: ScanSourceLazyOpts): Promise<Inventor
     seenFiles.add(filePath)
     const rawCode = readFileSync(filePath, "utf-8").replace(/\r\n?/g, "\n")
     const relPath = storedFilePath(filePath)
-    const code = stripSqlPlusCommands(rawCode)
+    // 先归一化全角语法符号（恢复被中文输入法全角化的字符串边界/包名引号等，串内内容原样保留），
+    // 再 strip SQL*Plus 命令——全角引号会让 extractPackageNames 的引号标识符 regex 失配 →
+    // 包名抽不出 → lazy Phase 0 建不出 packageFileMap → 入口包找不到 → 整个 lazy 扫描抛错。
+    const code = stripSqlPlusCommands(normalizeFullwidthSyntax(rawCode))
     extractTableFromText(code, tables, relPath)
     extractTriggerFromText(code, triggers, relPath)
     extractViewFromText(code, views, relPath)

@@ -169,6 +169,110 @@ export class UpperCaseCharStream implements CharStream {
   get sourceName(): string { return this.src.sourceName }
 }
 
+/**
+ * 全角语法符号归一化器（字符串/注释感知）。
+ *
+ * 仅对 SQL 代码区（字符串字面量、引号标识符、注释之外）的全角语法符号转半角；
+ * 字符串内、引号标识符内、注释内的所有字符原样保留——下游 translate 经
+ * tokens.getText 取到的字面量值字节级不变（含全角逗号、中文标点）。
+ *
+ * 根因：lexer 的 CHAR_STRING 只认 ASCII ' (U+0027) 作字符串边界。中文输入法常把
+ * 边界打成全角 ‘ ’ (U+2018/2019)，lexer 不认 → 字符串未识别 → 串内全角标点暴露
+ * 到语法层 → token recognition error → parse 失败。修法：恢复边界，串内内容继续
+ * 被 CHAR_STRING 通配原样吞掉。
+ *
+ * 状态机覆盖：普通字符串(含 '' 转义)、q-quote(q'X...X')、双引号标识符(含 "" 转义)、
+ * 行注释 --、块注释。引号等价类含全角形态。所有替换 1:1（全角与半角各占 1 个
+ * UTF-16 code unit），归一化前后长度/offset/行号/列号完全对齐，下游基于 index 的
+ * 计算（lineRangeOf / bodyLocation / locateSubprogramRange）不受影响。
+ *
+ * 已知限制：q-quote 的分隔符仅支持半角配对符 ()[]{}<> 与单字符；全角分隔符不识别
+ * （此类文件本就极度不规范，罕见）。全角破折号 —— (U+2014) 作行注释起始不处理。
+ */
+const FULLWIDTH_SYNTAX: Record<string, string> = {
+  "‘": "'", "’": "'",   // ‘ ’
+  "“": '"', "”": '"',   // “ ”
+  "；": ";",                   // ；
+  "（": "(", "）": ")",   // （ ）
+  "：": ":",                   // ：
+  "＝": "=",                   // ＝
+  "，": ",",                   // ，
+  "．": ".",                   // ．
+  "＋": "+", "－": "-",    // ＋ －
+  "＊": "*", "／": "/",    // ＊ ／
+  "％": "%",                   // ％
+  "＜": "<", "＞": ">",    // ＜ ＞
+  "！": "!",                   // ！
+  "＆": "&", "｜": "|",   // ＆ ｜
+}
+const normSyntax = (c: string): string => FULLWIDTH_SYNTAX[c] ?? c
+const isSQuote = (c: string): boolean => c === "'" || c === "‘" || c === "’"
+const isDQuote = (c: string): boolean => c === '"' || c === "“" || c === "”"
+const QQUOTE_PAIR: Record<string, string> = { "(": ")", "[": "]", "{": "}", "<": ">" }
+
+export function normalizeFullwidthSyntax(code: string): string {
+  const n = code.length
+  let out = ""
+  let i = 0
+  let state: "CODE" | "STR" | "QQU" | "DID" | "LINE" | "BLK" = "CODE"
+  let qClose: string | null = null
+
+  while (i < n) {
+    const c = code[i]
+    switch (state) {
+      case "CODE": {
+        const nc = normSyntax(c)
+        const nc2 = i + 1 < n ? normSyntax(code[i + 1]) : ""
+        if (nc === "-" && nc2 === "-") { out += "--"; i += 2; state = "LINE"; continue }
+        if (nc === "/" && nc2 === "*") { out += "/*"; i += 2; state = "BLK"; continue }
+        if (isSQuote(c)) { out += "'"; i += 1; state = "STR"; continue }
+        if (isDQuote(c)) { out += '"'; i += 1; state = "DID"; continue }
+        // q-quote: q/Q 紧跟单引号类
+        if ((c === "q" || c === "Q") && i + 1 < n && isSQuote(code[i + 1])) {
+          out += "q'"; i += 2
+          if (i >= n) break
+          const d = code[i]
+          out += d; i += 1
+          qClose = QQUOTE_PAIR[d] ?? d
+          state = "QQU"; continue
+        }
+        out += nc; i += 1; continue
+      }
+      case "STR": {
+        if (isSQuote(c)) {
+          // '' 转义（含全角连续）→ 输出 '' 吞两个，留在 STR
+          if (i + 1 < n && isSQuote(code[i + 1])) { out += "''"; i += 2; continue }
+          out += "'"; i += 1; state = "CODE"; continue
+        }
+        out += c; i += 1; continue
+      }
+      case "DID": {
+        if (isDQuote(c)) {
+          if (i + 1 < n && isDQuote(code[i + 1])) { out += '""'; i += 2; continue }
+          out += '"'; i += 1; state = "CODE"; continue
+        }
+        out += c; i += 1; continue
+      }
+      case "QQU": {
+        // q-quote 内原样保留；结束分隔符 + 单引号类 → 结束
+        if (c === qClose && i + 1 < n && isSQuote(code[i + 1])) {
+          out += c; out += "'"; i += 2; state = "CODE"; qClose = null; continue
+        }
+        out += c; i += 1; continue
+      }
+      case "LINE": {
+        if (c === "\n") { out += c; i += 1; state = "CODE"; continue }
+        out += c; i += 1; continue
+      }
+      case "BLK": {
+        if (c === "*" && i + 1 < n && code[i + 1] === "/") { out += "*/"; i += 2; state = "CODE"; continue }
+        out += c; i += 1; continue
+      }
+    }
+  }
+  return out
+}
+
 /** 规范化标识符：去引号、去空白、大写、保留点（包名 fm.xxx 的点编码子目录路径） */
 export function cleanName(name: string): string {
   return name.replace(/["`]/g, "").trim().toUpperCase()
@@ -1136,7 +1240,9 @@ export function scanFileSet(filePaths: string[], primaryBase: string): FileSetRe
     processed.add(filePath)
     const rawCode = readFileSync(filePath, "utf-8").replace(/\r\n?/g, "\n")
     const relPath = storedFilePath(filePath)
-    const code = stripSqlPlusCommands(rawCode)
+    // 先归一化全角语法符号（恢复被中文输入法全角化的字符串边界/分号/括号等，串内内容
+    // 原样保留），再 strip SQL*Plus 命令——让 strip 能识别归一化后的执行符 /。
+    const code = stripSqlPlusCommands(normalizeFullwidthSyntax(rawCode))
 
     // table/trigger/view/sequence 仍走文本提取（与包结构无关）
     extractTableFromText(code, tables, relPath)

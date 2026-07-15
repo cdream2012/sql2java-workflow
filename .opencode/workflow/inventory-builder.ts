@@ -25,7 +25,7 @@ import { formatZodIssues } from "./engine-core"
 import { getLogger } from "./workflow-logger"
 import { refNameOf } from "./refname"
 import { clearDependencyGraphCache } from "./dependency-graph"
-import { locateSubprogramRange, storedFilePath } from "./plsql-file-scanner"
+import { locateSubprogramRange, storedFilePath, normalizeFullwidthSyntax } from "./plsql-file-scanner"
 import type {
   PackageInfo, SubprogramInfo, TableIndex, TriggerIndex, ViewIndex, SequenceIndex, InventoryIndex,
 } from "./plsql-scanner"
@@ -175,7 +175,7 @@ function repairMissingLocations(idx: InventoryIndex, warnings: string[]): void {
     if (!file) return null
     if (codeCache.has(file)) return codeCache.get(file) ?? null
     let code: string | null = null
-    try { code = readFileSync(file, "utf-8").replace(/\r\n?/g, "\n") } catch { code = null }
+    try { code = normalizeFullwidthSyntax(readFileSync(file, "utf-8").replace(/\r\n?/g, "\n")) } catch { code = null }
     codeCache.set(file, code)
     return code
   }
