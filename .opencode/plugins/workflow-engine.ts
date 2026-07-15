@@ -1225,15 +1225,20 @@ END_SUMMARY
 **2. TASK_STATUS**（紧凑 JSON，≤200 tokens，必须是回复的【最后一段文本】——主 agent 的工具结果只取你最后一段 text，包成 \`<task_result>\` 注入主 agent 上下文）：
 
 \`\`\`json
-{"status":"completed","files":{写入文件数}}
+{"phase":"{currentPhase}","status":"completed"}
+\`\`\`
+
+分片阶段（analyze/translate）\`phase\` 用 \`{currentPhase}:{shardIndex}\` 形式锚定本分片（shardIndex 1-based，与 status 文件一致）：
+\`\`\`json
+{"phase":"translate:2","status":"completed"}
 \`\`\`
 
 异常/跳过时加 \`notes\`（≤20 字）：
 \`\`\`json
-{"status":"failed","files":3,"notes":"schema 缺 direction 字段"}
+{"phase":"{currentPhase}","status":"failed","notes":"schema 缺 direction 字段"}
 \`\`\`
 
-- 只保留核心字段：\`status\`（必须，completed|failed）+ \`files\`（写入文件数）+ \`notes\`（仅异常时，否则省略）。phase/shard/scope 等主 agent 已知，勿重复。
+- 只保留核心字段：\`phase\`（阶段标识，分片阶段用 \`{currentPhase}:{shardIndex}\`，非分片阶段用 \`{currentPhase}\`）+ \`status\`（必须，completed|failed）+ \`notes\`（仅异常时，否则省略）。禁止再写 \`files\`/文件数——无人消费且 LLM 自数不准。
 - \`status\` 须与 WORKER_SUMMARY 一致。
 
 ⛔ 第 2 段 TASK_STATUS 必须是回复的**最后一段文本**——其后再不得输出任何文字。WORKER_SUMMARY 留在本 subagent session 供人查阅（进入子 session 可见）。禁止在任何一段贴代码/JSON 全文/源码片段（冗长内容只 \`write\` 到文件）。`
