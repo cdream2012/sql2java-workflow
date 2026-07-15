@@ -76,6 +76,7 @@ let started = false
 
 const WD_LOG_GLOBAL = join(".workflow-artifacts", "_watchdog.log")
 let currentRunId: string | undefined
+let manualStopRunId: string | undefined  // 人工终止（ESC session.interrupt）标记的 run，watchdog 不唤醒编排者
 
 function wdLogPath(runId: string): string {
   return join(".workflow-artifacts", runId, "logs", "watchdog.log")
@@ -182,6 +183,19 @@ export function registerOrchestrator(sid: string, runId?: string): void {
   wlog("INFO", `orchestrator 登记 sid=${sid} run=${runId}`)
 }
 
+/**
+ * 标记当前 run 人工终止（ESC session.interrupt）——watchdog 不再唤醒编排者。
+ * 编排者重新 busy（用户 resume/继续输入）时自动清除标记，恢复监控。
+ * 用于区分：人工终止（ESC，不干预）vs 程序异常卡死（无标记，watchdog 干预）。
+ */
+export function markManualStop(): void {
+  if (!started) return
+  if (currentRunId && manualStopRunId !== currentRunId) {
+    manualStopRunId = currentRunId
+    wlog("INFO", `run ${currentRunId} 人工终止标记（session.interrupt），watchdog 不再唤醒；编排者重新 busy 时自动清除`)
+  }
+}
+
 // ── session.status 处理（由 event hook 调用）──────────────────────────────────
 
 export function handleSessionStatus(sid: string, status: any): void {
@@ -200,6 +214,8 @@ export function handleSessionStatus(sid: string, status: any): void {
       // worker 从 idle 恢复（新 busy 段）：重启 busy 超时 timer
       if (e.timeoutTimer) clearTimeout(e.timeoutTimer)
       e.timeoutTimer = setTimeout(() => onWorkerTimeout(sid), workerTimeoutFor(e.phase))
+    } else if (manualStopRunId === e.runId) {
+      manualStopRunId = undefined  // 编排者重新 busy = 用户 resume/继续，清人工终止标记
     }
     // orchestrator busy 不重置 nudgeCount（在 currentPhase 推进时重置，防反复 busy/idle 无限唤醒）
     return
@@ -222,6 +238,12 @@ export function handleSessionStatus(sid: string, status: any): void {
 function onWorkerTimeout(sid: string): void {
   const e = sessionMap.get(sid)
   if (!e || e.role !== "worker") return  // 失效校验：已清除或换主
+  if (e.runId === manualStopRunId) {
+    // 人工终止期间不 abort worker（避免触发编排者 busy 清除 manualStop），清 entry
+    if (e.timeoutTimer) clearTimeout(e.timeoutTimer)
+    sessionMap.delete(sid)
+    return
+  }
   const reason = e.lastStatus === "idle"
     ? `idle 确认超时(${cfg.idleConfirmMs}ms)`
     : `busy 超时(${workerTimeoutFor(e.phase)}ms)`
@@ -264,6 +286,7 @@ function checkOrchestratorStuck(): void {
       continue
     }
     if (!run.currentPhase) continue
+    if (e.runId === manualStopRunId) continue  // 人工终止（ESC interrupt），不唤醒
     // 阶段推进 → 重置唤醒计数（编排者真推进了，新一轮）
     if (e.lastPhase === undefined) e.lastPhase = run.currentPhase
     else if (run.currentPhase !== e.lastPhase) {
