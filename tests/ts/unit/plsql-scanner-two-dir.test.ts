@@ -39,9 +39,8 @@ describe("scanSource 双目录模式", () => {
     expect(transfer, "transfer_money 应在 subprograms 中").toBeDefined()
     if (transfer) {
       expect(transfer.type).toBe("PROCEDURE")
-      expect(transfer.parameters?.length).toBe(4)
-      const outParam = transfer.parameters?.find(p => p.name === "P_STATUS_MSG")
-      expect(outParam?.mode).toBe("OUT")
+      // parameters 留空交 LLM 兜底（regex 主路径不抽参数，引擎按 bodyLocation.lineRange 预切 source.sql）
+      expect(transfer.parameters).toEqual([])
     }
 
     // body-only 私有函数 check_balance_sufficient：header 未声明（headerLocation=null），靠 body 后补捕获

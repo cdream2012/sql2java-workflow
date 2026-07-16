@@ -18,7 +18,7 @@ export {
   UpperCaseCharStream, cleanName, normalizeTypeText, ctxLineRange, ctxText,
   stripSqlPlusCommands, parenDelta, SQL_PSEUDO, PlSqlStructListener, extractPackageNames,
   extractTableFromText, extractTriggerFromText, extractViewFromText, extractSequenceFromText,
-  nextStatementBoundary, lineRangeOf, storedFilePath, parseFileAst, scanFileSet, normalizeFullwidthSyntax,
+  nextStatementBoundary, lineRangeOf, storedFilePath, parseFileAst, scanFileSet, scanFileSetRegex, normalizeFullwidthSyntax,
   type ParamInfo, type LocationInfo, type DirectCall, type PackageRef,
   type SubprogramInfo, type ConstantInfo, type VariableInfo, type ExceptionInfo, type TypeInfo,
   type PackageInfo, type ColumnIndex, type ForeignKeyInfo,
@@ -34,7 +34,7 @@ import { parseMainEntry } from "./scope-computer"
 import { scanFilesParallel, createPoolSession, type PoolSession } from "./plsql-worker-pool"
 import {
   cleanName, extractTriggerFromText, extractTableFromText, extractViewFromText, extractSequenceFromText,
-  extractPackageNames, stripSqlPlusCommands, storedFilePath, scanFileSet, normalizeFullwidthSyntax,
+  extractPackageNames, stripSqlPlusCommands, storedFilePath, scanFileSet, scanFileSetRegex, normalizeFullwidthSyntax,
   type PackageInfo, type SubprogramInfo, type TableIndex, type TriggerIndex, type ViewIndex, type SequenceIndex,
   type StandaloneProcIndex, type DirectCall, type PackageRef, type InventoryIndex, type FileSetResult,
 } from "./plsql-file-scanner"
@@ -406,10 +406,9 @@ export function partitionFilesByPackage(files: string[]): { fileSets: string[][]
 export async function scanWithAST(roots: string[], primaryBase: string): Promise<InventoryIndex> {
   const files = collectSourceFiles(roots)
   const { fileSets, totalLines } = partitionFilesByPackage(files)
-  getLogger().info("[scan]", `AST: ${files.length} 文件 / ${totalLines} 行 / ${fileSets.length} file-set → worker 池（含崩溃隔离）`)
-  // 一律走 scanFilesParallel：Worker 可用时每个 file-set 在独立 worker isolate 解析，
-  // antlr4ts 硬崩只死 worker（主进程存活），由池跳过+告警。主进程内串行（serialScanFileSets）
-  // 对硬崩无防护（绕过 try/catch 拖垮主进程），仅 Worker 不可用的测试环境用。
+  getLogger().info("[scan]", `regex 主路径: ${files.length} 文件 / ${totalLines} 行 / ${fileSets.length} file-set → worker 池（scanFileSetRegex，AST 保留不启用）`)
+  // 主路径已切到 scanFileSetRegex（纯 regex，无 antlr）：worker 池内 scanFileSetRegex 抽包/子程序/
+  // directCalls。原 scanFileSet（AST）保留不启用（对照/回退）。scannerUsed 沿用 "ast" 枚举兼容下游。
   const results = await scanFilesParallel(fileSets, primaryBase)
   return finalizeFileSetResults(results, primaryBase, "ast")
 }
@@ -418,10 +417,10 @@ export async function scanWithAST(roots: string[], primaryBase: string): Promise
 async function serialScanFileSets(fileSets: string[][], primaryBase: string): Promise<FileSetResult[]> {
   const results: FileSetResult[] = []
   for (const fs of fileSets) {
-    try { results.push(scanFileSet(fs, primaryBase)) }
+    try { results.push(scanFileSetRegex(fs, primaryBase)) }
     catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      results.push({ packages: [], subprograms: [], standaloneProcedures: [], standaloneSlots: [], tables: [], triggers: [], views: [], sequences: [], warnings: [`scanFileSet 失败: ${msg}`] })
+      results.push({ packages: [], subprograms: [], standaloneProcedures: [], standaloneSlots: [], tables: [], triggers: [], views: [], sequences: [], warnings: [`scanFileSetRegex 失败: ${msg}`] })
     }
   }
   return results

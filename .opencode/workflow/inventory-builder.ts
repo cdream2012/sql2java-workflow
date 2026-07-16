@@ -25,7 +25,7 @@ import { formatZodIssues } from "./engine-core"
 import { getLogger } from "./workflow-logger"
 import { refNameOf } from "./refname"
 import { clearDependencyGraphCache } from "./dependency-graph"
-import { locateSubprogramRange, extractCallsByRegex, storedFilePath, normalizeFullwidthSyntax } from "./plsql-file-scanner"
+import { locateSubprogramRange, storedFilePath, normalizeFullwidthSyntax } from "./plsql-file-scanner"
 import type {
   PackageInfo, SubprogramInfo, TableIndex, TriggerIndex, ViewIndex, SequenceIndex, InventoryIndex,
 } from "./plsql-scanner"
@@ -64,11 +64,8 @@ export function buildInventoryFromIndex(artifactsDir: string, idx: InventoryInde
   // 且 return 用 idx.warnings 不含运行时 push 的项。现统一本地数组。）
   const warnings: string[] = [...(idx.warnings ?? [])]
 
-  // 0) 补齐 AST 漏抽的 headerLocation/bodyLocation（语法错误恢复致子程序节点缺失，见 parseFileAst 注释）。
+  // 0) 补齐漏抽的 headerLocation/bodyLocation（regex 主路径通常已抽，缺失时 regex 补齐作 source.sql 切片用）。
   repairMissingLocations(idx, warnings)
-  // 0b) 正则兜底补齐 directCalls 为空的子程序调用关系（AST 漏抽调用节点，见 extractCallsByRegex 注释）。
-  //     须在 repairMissingLocations 之后——依赖已补齐的 bodyLocation.lineRange 作抽取区间。
-  repairMissingDirectCalls(idx, warnings)
 
   // 1) packages/{PKG}.json
   for (const p of idx.packages) {
@@ -215,54 +212,6 @@ function repairMissingLocations(idx: InventoryIndex, warnings: string[]): void {
 /**
  * 正则兜底补齐 directCalls 为空的子程序调用关系。
  *
- * AST 语法错误恢复漏抽调用节点 / 漏抽 caller body 节点时 directCalls 为空（见
- * plsql-file-scanner.ts extractCallsByRegex 注释）。对这类子程序，按 bodyLocation.lineRange
- * 在包 body 文件文本里用正则抽调用，三段形式（schema.pkg.proc / pkg.proc / proc）兼容，
- * 走 resolveQualifiedName 归一化 + 已知子程序收窄。复用 repairMissingLocations 的 codeCache 模式。
- *
- * 仅对 directCalls 为空者跑：已正常解析的子程序不重抽（避免与 AST 结果冲突 / 重复）。
- * bodyLocation 为 null（连 locateSubprogramRange 都未命中）者跳过——无区间可抽。
- * 不救 lazy scoped run 的闭包漏包（out-of-closure 包未扫入 idx，收窄自然丢弃其边）。
+ * 已移除：scan 阶段 scanFileSetRegex 已用 extractCallsByRegex 抽 directCalls（不收窄，救 lazy 闭包
+ * 扩展），generateInventory 阶段兜底冗余。保留 repairMissingLocations（补 bodyLocation 给 source.sql 切片）。
  */
-function repairMissingDirectCalls(idx: InventoryIndex, warnings: string[]): void {
-  if (!idx.subprograms.some(s => s.directCalls.length === 0)) return
-
-  // 已知子程序索引：PKG(大写)→Set<METHOD(大写)>，供 extractCallsByRegex 收窄（与
-  // finalizeInventoryIndex 后过滤一致）。包名/子程序名本就 cleanName（大写），toUpperCase 幂等。
-  const subprogramIndex = new Map<string, Set<string>>()
-  for (const s of idx.subprograms) {
-    const pk = s.belongToPackage.toUpperCase()
-    let set = subprogramIndex.get(pk)
-    if (!set) { set = new Set(); subprogramIndex.set(pk, set) }
-    set.add(s.name.toUpperCase())
-  }
-
-  const pkgByName = new Map<string, PackageInfo>()
-  for (const p of idx.packages) pkgByName.set(p.packageName, p)
-
-  // 按文件缓存 normalizeFullwidthSyntax 后的 body 文本（与 repairMissingLocations 同构）
-  const codeCache = new Map<string, string | null>()
-  const readCode = (file: string | null | undefined): string | null => {
-    if (!file) return null
-    if (codeCache.has(file)) return codeCache.get(file) ?? null
-    let code: string | null = null
-    try { code = normalizeFullwidthSyntax(readFileSync(file, "utf-8").replace(/\r\n?/g, "\n")) } catch { code = null }
-    codeCache.set(file, code)
-    return code
-  }
-
-  for (const s of idx.subprograms) {
-    if (s.directCalls.length > 0) continue              // 已有 AST 抽出的调用，不重抽
-    if (!s.bodyLocation) continue                       // 无 body 区间，跳过
-    const pkg = pkgByName.get(s.belongToPackage)
-    const code = readCode(pkg?.bodyPath)
-    if (!code) continue
-    const calls = extractCallsByRegex(code, s.belongToPackage, s.bodyLocation.lineRange, subprogramIndex)
-    if (calls.length > 0) {
-      s.directCalls = calls
-      const w = `directCalls 正则兜底命中：${s.belongToPackage}.${refNameOf(s)} 抽得 ${calls.length} 条调用（AST 漏抽，regex 兜底）`
-      warnings.push(w)
-      getLogger().info("[inventory-builder]", w)
-    }
-  }
-}

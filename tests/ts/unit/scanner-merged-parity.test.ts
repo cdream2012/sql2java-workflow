@@ -1,30 +1,42 @@
 import { describe, it, expect, beforeAll } from "vitest"
-import { scanSource, type InventoryIndex } from "@workflow/plsql-scanner"
-import { readFileSync } from "node:fs"
-import { resolve } from "node:path"
+import { scanFileSet, finalizeFileSetResults, type InventoryIndex } from "@workflow/plsql-scanner"
+import { readFileSync, readdirSync, statSync } from "node:fs"
+import { resolve, join } from "node:path"
 
 const ROOT = resolve(import.meta.dirname, "../../..")
 const RES = resolve(ROOT, "resources")
 
+function collectSql(root: string): string[] {
+  const out: string[] = []
+  const walk = (d: string) => {
+    for (const e of readdirSync(d)) {
+      if (e.startsWith(".") || e === "node_modules" || e === "generated") continue
+      const p = join(d, e)
+      if (statSync(p).isDirectory()) walk(p)
+      else if (/\.(sql|pks|pkb)$/i.test(e)) out.push(p)
+    }
+  }
+  walk(root)
+  return out
+}
+
 /**
- * 回归守卫：header+body 合并文件格式（pkg/<name>.sql 同时含包头与包体）下，
- * scanWithAST 必须仍走 AST 抽取结构，不能因 grammar 缺口整文件降级。
+ * 回归守卫：header+body 合并文件格式（pkg/<name>.sql 同时含包头与包体）下，AST 路径（保留启用作对照）
+ * 必须仍能抽取完整结构，不能因 grammar 缺口整文件降级。生产 scanSource 已切 regex 主路径
+ * （参数/包级声明留空交 LLM 兜底），故本守卫直接调 scanFileSet（AST）验证 AST 全字段。
  *
  * 修复前症状：合并文件 → 降级 → 子程序 parameters 全 undefined、types/vars/consts 全 0、
  * 重载过程被去重少算。本测试用真实资源项目 mfg_erp_sql / mfg_erp_sql_tiny（均为合并格式）锁定这些字段。
- *
- * 新形状：packages.procedures/functions 仅为名字数组，详情在 inv.subprograms（parameters/bodyLocation/returnType）。
- *
- * 性能：tiny / big 各在 beforeAll 解析一次（antlr parse 重，原每测试重复解析 tiny×3 / big×2）。
  */
 describe("scanner 合并包文件格式支持(header+body 同文件)", () => {
   let tiny: InventoryIndex
   let big: InventoryIndex
-  beforeAll(async () => {
-    [tiny, big] = await Promise.all([
-      scanSource(resolve(RES, "mfg_erp_sql_tiny")),
-      scanSource(resolve(RES, "mfg_erp_sql")),
-    ])
+  beforeAll(() => {
+    // AST 路径（保留启用作对照）：scanFileSet + finalizeFileSetResults 产全字段 index
+    const tinyRoot = resolve(RES, "mfg_erp_sql_tiny")
+    const bigRoot = resolve(RES, "mfg_erp_sql")
+    tiny = finalizeFileSetResults([scanFileSet(collectSql(tinyRoot), tinyRoot)], tinyRoot, "ast")
+    big = finalizeFileSetResults([scanFileSet(collectSql(bigRoot), bigRoot)], bigRoot, "ast")
   }, 180000)
 
   it("合并格式下每个子程序 parameters 被 AST 抽取(非 undefined)", () => {

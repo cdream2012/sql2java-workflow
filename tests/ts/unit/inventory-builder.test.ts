@@ -8,10 +8,10 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
-import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync } from "node:fs"
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { scanSource } from "@workflow/plsql-scanner"
+import { scanSource, scanFileSet, finalizeFileSetResults } from "@workflow/plsql-scanner"
 import { buildInventoryFromIndex } from "@workflow/inventory-builder"
 import type { InventoryIndex } from "@workflow/plsql-scanner"
 import {
@@ -23,10 +23,28 @@ const FIXTURE_TINY = resolve(import.meta.dirname, "../fixtures/sql/tiny")
 let dir: string
 let index: InventoryIndex
 
+// 收集 root 下所有 .sql/.pks/.pkb 文件
+function collectSql(root: string): string[] {
+  const out: string[] = []
+  const walk = (d: string) => {
+    for (const e of readdirSync(d)) {
+      if (e.startsWith(".") || e === "node_modules") continue
+      const p = join(d, e)
+      if (statSync(p).isDirectory()) walk(p)
+      else if (/\.(sql|pks|pkb)$/i.test(e)) out.push(p)
+    }
+  }
+  walk(root)
+  return out
+}
+
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "inv-builder-"))
-  // 复刻 scan action：prescan → 内存 InventoryIndex（不落盘）
-  index = await scanSource(FIXTURE_TINY)
+  // 用 AST 路径（scanFileSet，保留启用作对照）产全字段 index，验证 buildInventoryFromIndex 转换正确性。
+  // 生产 scanSource 已切 regex 主路径（参数/包级声明留空交 LLM 兜底），regex 行为由 scan-regex.test.ts 覆盖。
+  const files = collectSql(FIXTURE_TINY)
+  const result = scanFileSet(files, FIXTURE_TINY)
+  index = finalizeFileSetResults([result], FIXTURE_TINY, "ast")
   mkdirSync(dir, { recursive: true })
 }, 60000)
 
@@ -160,9 +178,7 @@ describe("buildInventoryFromIndex 失效依赖图缓存", () => {
     expect(g1.callGraph["CORE_PKG.GET_ITEM_OBJ"] ?? []).toContain("CORE_PKG.GET_ITEM")
 
     // 2) 改内存 index：把 GET_ITEM_OBJ 的 directCalls 指向另一子程序（CREATE_ITEM），重写 subprograms。
-    //    directCalls 非空 → repairMissingDirectCalls 不触发 regex 兜底，图反映手工改的值。
-    //    （原测试用「清空 directCalls」制造新值，但 directCalls 为空会触发 regex 兜底从 body 重抽
-    //     GET_ITEM，无法验证空——故改用非空修改验证缓存失效，语义等价。）
+    //    验证缓存失效：重写后 buildDependencyGraph 应反映新 directCalls（非旧缓存）。
     for (const s of idx.subprograms ?? []) {
       if (s.name === "GET_ITEM_OBJ") s.directCalls = [{ package: "CORE_PKG", name: "CREATE_ITEM", line: 1, kind: "procedure" }]
     }

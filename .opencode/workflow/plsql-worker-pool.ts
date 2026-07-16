@@ -14,7 +14,7 @@
 
 import { fileURLToPath } from "node:url"
 import { dirname, resolve } from "node:path"
-import { scanFileSet, type FileSetResult } from "./plsql-file-scanner"
+import { scanFileSetRegex, type FileSetResult } from "./plsql-file-scanner"
 import type { PackageInfo, SubprogramInfo, TableIndex, TriggerIndex, ViewIndex, SequenceIndex, StandaloneProcIndex } from "./plsql-file-scanner"
 
 const WORKER_FILE = resolve(dirname(fileURLToPath(import.meta.url)), "plsql-pool-worker.ts")
@@ -42,12 +42,12 @@ function emptyResultWithError(errMsg: string, fileSet: string[]): FileSetResult 
   }
 }
 
-/** 串行 fallback：主线程逐个 scanFileSet，按提交序返回。 */
+/** 串行 fallback：主线程逐个 scanFileSetRegex，按提交序返回。 */
 async function serialFallback(fileSets: string[][], primaryBase: string): Promise<FileSetResult[]> {
   const results: FileSetResult[] = []
   for (const fs of fileSets) {
     try {
-      results.push(scanFileSet(fs, primaryBase))
+      results.push(scanFileSetRegex(fs, primaryBase))
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       results.push(emptyResultWithError(msg, fs))

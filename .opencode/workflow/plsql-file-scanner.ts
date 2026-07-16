@@ -1048,17 +1048,18 @@ export function locateSubprogramRange(
  * @param code  整个包 body 文件文本（须先经 normalizeFullwidthSyntax）
  * @param callerPkg  caller 声明键（belongToPackage，含 schema 前缀），供 resolveQualifiedName 锚定
  * @param lineRange  caller 的 bodyLocation.lineRange，限定只抽该区间内的调用（区间隔离）
- * @param subprogramIndex  PKG(大写)→Set<METHOD(大写)>，已知子程序收窄
+ * @param subprogramIndex  PKG(大写)→Set<METHOD(大写)>，已知子程序收窄；传 null 不收窄（scan 阶段
+ *                   闭包扩展要跟到尚未扫描的包，收窄会丢边；噪声留待 finalizeInventoryIndex 后过滤）
  */
 export function extractCallsByRegex(
   code: string,
   callerPkg: string,
   lineRange: [number, number],
-  subprogramIndex: Map<string, Set<string>>,
+  subprogramIndex: Map<string, Set<string>> | null,
 ): DirectCall[] {
   // 调用点：标识符（可含 $ #）+ 可选 .ident 重复 + 紧跟左括号 = 调用。单捕获组取完整限定名
   //（覆盖 proc(...) / pkg.proc(...) / schema.pkg.proc(...)）。g+i 不敏感，归一化走 resolveQualifiedName。
-  const callRe = /([A-Za-z_][\w$#]*(?:\.[A-Za-z_][\w$#]*)*)\s*\(/gi
+  const callRe = /((?:"[^"]*"|[A-Za-z_][\w$#]*)(?:\.(?:"[^"]*"|[A-Za-z_][\w$#]*))*)\s*\(/gi
   // 预计算行起始偏移，二分把 match 偏移映回 1-based 行号，避免每次 O(n) slice（大 body 文件）。
   // 剥注释（行注释 -- / 块注释 /* */），用等量空格+换行替换保持 offset 与行号对齐，
   // 避免抽到注释里写的调用（AST 不解析注释，regex 兜底须对齐）。字符串字面量内的 -- 罕见，
@@ -1084,27 +1085,309 @@ export function extractCallsByRegex(
 
   const out: DirectCall[] = []
   const seen = new Set<string>()
-  let m: RegExpExecArray | null
-  while ((m = callRe.exec(src)) !== null) {
-    const idx = m.index
+  // 处理一个调用点（带括号 / 行首无括号共用）。idx = qualified 起始偏移（算行号 + 声明头检查用）。
+  const addCall = (idx: number, qualified: string): void => {
     const line = lineOf(idx)
-    if (line < lineRange[0] || line > lineRange[1]) continue  // 区间外，跳过（区间隔离）
-
+    if (line < lineRange[0] || line > lineRange[1]) return  // 区间外，跳过（区间隔离）
     // 排除声明头：match 所在行行首（去前导空白）为 procedure/function 关键字 → 声明而非调用，跳过。
     // 覆盖 PROCEDURE pkg.proc(...) / FUNCTION func(...) 声明头（含 idx=0 无前驱的文件首行情形）。
-    // CALL pkg.proc(...) 行首是 CALL，不跳过（真实调用）。
     const lineStart = lineStarts[line - 1]
-    if (/^\s*(procedure|function)\b/i.test(src.slice(lineStart, idx))) continue
+    if (/^\s*(procedure|function)\b/i.test(src.slice(lineStart, idx))) return
 
+    const { pkg, member } = resolveQualifiedName(qualified, callerPkg)
+    if (member.length < 2 || SQL_PSEUDO.has(member)) return   // 噪声过滤（同 recordCall）
+    if (pkg === "NEW" || pkg === "OLD") return                // :NEW/:OLD 绑定变量
+    if (subprogramIndex !== null) {                           // 已知子程序收窄（同 finalizeInventoryIndex）
+      const methods = subprogramIndex.get(pkg)                // scan 阶段传 null 不收窄：闭包扩展要跟到未扫包，
+      if (!methods || !methods.has(member)) return            // 噪声（类型构造/集合访问）留待后过滤在闭包扫完后收窄
+    }
+    const key = `${pkg}.${member}.${line}`
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({ package: pkg, name: member, line, kind: "procedure" })
+  }
+
+  // 1) 带括号调用：ident(.ident)* 紧跟 '(' —— proc(...) / pkg.proc(...) / schema.pkg.proc(...)
+  //    段支持引号标识符（"F_BASE"."DO_WORK"(...)，DBMS_METADATA 导出常见）。
+  let m: RegExpExecArray | null
+  while ((m = callRe.exec(src)) !== null) addCall(m.index, m[1])
+
+  // 2) 行首无括号过程调用：PL/SQL 过程调用语句可无括号（local_a; / pkg.proc; / schema.pkg.proc;）。
+  //    仅匹配行首（去前导空白），避免表达式内的变量/类型误匹配。声明头（PROCEDURE name IS）不匹配
+  //    （后跟 IS 不是 ;）。关键字语句（NULL;/RETURN;/END;）由后过滤收窄丢弃。
+  const callNoParenRe = /^[ \t]*((?:"[^"]*"|[A-Za-z_][\w$#]*)(?:\.(?:"[^"]*"|[A-Za-z_][\w$#]*))*)\s*;/gim
+  let m2: RegExpExecArray | null
+  while ((m2 = callNoParenRe.exec(src)) !== null) {
+    const qualifiedStart = m2.index + m2[0].indexOf(m2[1])  // 跳过 ^[ \t]* 前导空白到 qualified 起始
+    addCall(qualifiedStart, m2[1])
+  }
+  return out
+}
+
+// ── regex 主路径：子程序结构识别（无 AST）──────────────────────────────────────
+
+export interface SubprogramRange {
+  name: string
+  type: "PROCEDURE" | "FUNCTION"
+  startLine: number
+  endLine: number
+  /** 'header' = spec 声明（分号结尾无 body）；'body' = 实现（IS/AS ... END [name];） */
+  kind: "header" | "body"
+  /** 所属包（含 schema，状态机跟踪 CREATE PACKAGE [BODY] schema.name） */
+  pkgName: string
+}
+
+/**
+ * regex 状态机识别**包级**子程序（过滤嵌套局部过程），返回 {name, type, startLine, endLine, kind}[]。
+ * 纯 regex 主路径用（AST 不启用）。字符串/注释/括号深度感知：
+ *   - 字符串字面量、双引号标识符、行注释、块注释内的关键字不计；
+ *   - 参数列表括号内的 `;`/`IS`/`END` 不计（parenDepth>0）。
+ *
+ * 子程序 + 匿名块统一栈（kind:'sub'|'block'）：
+ *   - `PROCEDURE|FUNCTION name`（parenDepth==0）→ 压 sub{isTopLevel: 栈中无 sub}；
+ *   - `IS|AS`（栈顶 sub && !hasBody）→ hasBody=true（body 实现）；
+ *   - `;`（栈顶 sub && !hasBody）→ spec 声明，弹栈记录 header；
+ *   - `BEGIN` → 压 block（匿名块/子程序 body 开始）；
+ *   - `END`：后跟 `IF|LOOP|CASE` 不计（控制流）；后跟 name`;` → 弹到匹配 name 的 sub（中间嵌套丢弃），
+ *     isTopLevel 则记录 body；`END;`（无 name）→ 弹栈顶，sub && isTopLevel 则记录 body。
+ * 包级 = isTopLevel（压栈时栈中无 sub）。嵌套局部过程 isTopLevel=false，不记录。
+ *
+ * 局限：token 识别按字符扫描，不跨行读 word（标识符不含换行，子程序声明 `PROCEDURE name` 同行）；
+ * 包级 `END pkg;`（包结束）栈已空，容错弹空栈无操作。
+ */
+export function findAllSubprograms(code: string): SubprogramRange[] {
+  const out: SubprogramRange[] = []
+  const n = code.length
+  let i = 0
+  let line = 1
+  let parenDepth = 0
+  let state: "CODE" | "STR" | "DID" | "LINE" | "BLK" = "CODE"
+  // 栈项：sub {kind:'sub', name, type, startLine, isTopLevel, hasBody, bodyStarted} | block {kind:'block'}
+  const stack: Array<{ kind: "sub" | "block"; name?: string; type?: "PROCEDURE" | "FUNCTION"; startLine?: number; isTopLevel?: boolean; hasBody?: boolean; bodyStarted?: boolean }> = []
+  let pendingSub: { type: "PROCEDURE" | "FUNCTION"; startLine: number } | null = null
+  // endState: null=无；"END"=读到 END 待 name/`;`；"END_NAME"=读到 END name 待 `;`（已弹栈）；
+  //           "END_CONTROL"=END IF/LOOP/CASE（控制流，`;` 忽略）；"CASE_END"=CASE...END 待确认下一 word
+  let endState: null | "END" | "END_NAME" | "END_CONTROL" | "CASE_END" = null
+  // SQL CASE...END 的深度：遇 CASE（非 END CASE）++，遇 END 时若 >0 则 -- 并不当块 END（避免 SQL CASE
+  // 的 END 误弹子程序栈）。PL/SQL END CASE 在 endState=END 分支按控制流处理（不进 caseDepth）。
+  let caseDepth = 0
+  // CREATE TYPE BODY 跟踪：其内 MEMBER FUNCTION/PROCEDURE 是类型方法，不抽为包级子程序/standalone。
+  // CREATE TYPE（无 BODY）的成员在括号内（parenDepth>0），本就不处理。
+  let pendingType = false
+  let pendingTypeBody = false
+  let typeName = ""
+  let inTypeBody = false
+  // 包上下文跟踪：CREATE [OR REPLACE] [EDITIONABLE] PACKAGE [BODY] schema.name IS|AS → currentPackage
+  let currentPackage = ""
+  let pendingCreate = false
+  let pendingPkg = false
+  let pkgNameAccum = ""
+  const isWord = (c: string): boolean => /[A-Za-z0-9_$#]/.test(c)
+
+  const recordSub = (s: typeof stack[number], endLine: number, kind: "header" | "body"): void => {
+    if (s.kind === "sub" && s.isTopLevel && s.name && s.type && s.startLine != null) {
+      // pkgName="" = standalone（无 CREATE PACKAGE），scanFileSetRegex 据此填 standaloneProcedures/Slots
+      out.push({ name: cleanName(s.name), type: s.type, startLine: s.startLine, endLine, kind, pkgName: currentPackage })
+    }
+  }
+  // END name; 弹到匹配 name 的 sub；中间嵌套丢弃。无匹配则弹栈顶（容错）。
+  const popUntilName = (name: string): void => {
+    let top: typeof stack[number] | undefined
+    while (stack.length > 0) {
+      const s = stack.pop()!
+      if (s.kind === "sub" && s.name && cleanName(s.name) === cleanName(name)) { top = s; break }
+      // 中间嵌套（block / 不匹配 sub）丢弃
+    }
+    if (top) recordSub(top, line, "body")
+  }
+
+  while (i < n) {
+    const c = code[i]
+    if (state === "STR") {
+      if (c === "'") { if (code[i + 1] === "'") { i += 2; continue }; state = "CODE"; i++; continue }
+      if (c === "\n") line++
+      i++; continue
+    }
+    if (state === "DID") {
+      if (c === '"') { if (code[i + 1] === '"') { i += 2; continue }; state = "CODE"; i++; continue }
+      if (pendingPkg) pkgNameAccum += c   // 引号标识符包名段（SCHEMA."PKG" 的 PKG）
+      i++; continue
+    }
+    if (state === "LINE") {
+      if (c === "\n") { line++; state = "CODE" }
+      i++; continue
+    }
+    if (state === "BLK") {
+      if (c === "*" && code[i + 1] === "/") { i += 2; state = "CODE"; continue }
+      if (c === "\n") line++
+      i++; continue
+    }
+    // CODE
+    if (c === "-" && code[i + 1] === "-") { state = "LINE"; i += 2; continue }
+    if (c === "/" && code[i + 1] === "*") { state = "BLK"; i += 2; continue }
+    if (c === "'") { state = "STR"; i++; continue }
+    if (c === '"') { state = "DID"; i++; continue }
+    if (c === "\n") { line++; i++; continue }
+    if (c === "(") { parenDepth++; i++; continue }
+    if (c === ")") { if (parenDepth > 0) parenDepth--; i++; continue }
+    if (c === ".") {
+      if (parenDepth === 0 && pendingPkg && pkgNameAccum) pkgNameAccum += "."  // SCHEMA."PKG" 的点
+      i++; continue
+    }
+    if (c === ";") {
+      if (parenDepth === 0) {
+        if (endState === "END") {
+          // END; （无 name）→ 弹栈顶（匿名块或无 name 子程序）
+          const top = stack.pop()
+          if (top) recordSub(top, line, "body")
+          endState = null
+        } else if (endState === "CASE_END") {
+          // CASE...END;（罕见，SQL CASE 后直接分号）→ caseDepth--
+          caseDepth--
+          endState = null
+        } else if (endState === "END_NAME" || endState === "END_CONTROL") {
+          // END name;（已弹栈）/ END IF;（控制流）→ 仅清状态，不再弹
+          endState = null
+        } else if (stack.length > 0) {
+          // spec 声明：PROCEDURE name(params); （栈顶 sub 未遇 IS/AS）
+          const top = stack[stack.length - 1]
+          if (top.kind === "sub" && !top.hasBody) {
+            stack.pop()
+            recordSub(top, line, "header")
+          }
+        }
+        pendingSub = null
+      }
+      i++; continue
+    }
+    if (isWord(c)) {
+      const start = i
+      while (i < n && isWord(code[i])) i++
+      const word = code.slice(start, i).toUpperCase()
+      if (parenDepth === 0) {
+        if (pendingPkg) {
+          // 收集 CREATE PACKAGE [BODY] schema.name 的包名（到 IS/AS 结束）
+          if (word === "BODY") { /* 等 name */ }
+          else if (word === "IS" || word === "AS") { currentPackage = cleanName(pkgNameAccum); pendingPkg = false; pkgNameAccum = "" }
+          else { pkgNameAccum = pkgNameAccum + word }  // 不加点（点由 `.` 处理加，兼容引号段）
+        } else if (pendingCreate) {
+          if (word === "PACKAGE") { pendingPkg = true; pendingCreate = false }
+          else if (word === "TYPE") { pendingType = true; pendingCreate = false }
+          else if (word === "PROCEDURE" || word === "FUNCTION") {
+            // CREATE [OR REPLACE] PROCEDURE/FUNCTION（standalone，无包）
+            pendingSub = { type: word as "PROCEDURE" | "FUNCTION", startLine: line }; pendingCreate = false
+          }
+          else if (word === "OR" || word === "REPLACE" || word === "EDITIONABLE" || word === "NONEDITIONABLE") { /* 等 PACKAGE/TYPE/PROC */ }
+          else { pendingCreate = false }
+        } else if (pendingTypeBody) {
+          typeName = word; inTypeBody = true; pendingTypeBody = false
+        } else if (pendingType) {
+          if (word === "BODY") { pendingTypeBody = true; pendingType = false }
+          else { pendingType = false }  // CREATE TYPE spec：成员在括号内（parenDepth>0），本就不处理
+        } else if (endState === "CASE_END") {
+          // CASE...END 后确认下一 word：CASE → END CASE（PL/SQL，caseDepth-- 对应开始 CASE，本 CASE 不 ++）；
+          // 非 CASE → SQL CASE END（caseDepth--，word 是 AS/FROM/列名，不处理）。两者都 caseDepth--。
+          caseDepth--
+          endState = null
+          if (word !== "CASE") continue   // SQL END，后续 word（AS/FROM/列名）不处理
+          continue                         // END CASE：本 CASE 不 caseDepth++，语句结束
+        } else if (endState === "END") {
+          if (inTypeBody && word === typeName) { inTypeBody = false; endState = null }  // CREATE TYPE BODY name 结束
+          else if (inTypeBody) { endState = null }  // type body 内 member END name，忽略
+          else if (word === "IF" || word === "LOOP" || word === "CASE") {
+            endState = "END_CONTROL"           // 控制流 END IF/LOOP/CASE
+          } else {
+            popUntilName(word)                 // END name; —— 读到 name 即弹到匹配 sub
+            endState = "END_NAME"
+          }
+        } else if (pendingSub) {
+          stack.push({ kind: "sub", name: word, type: pendingSub.type, startLine: pendingSub.startLine, isTopLevel: !stack.some(s => s.kind === "sub"), hasBody: false })
+          pendingSub = null
+        } else if (word === "PROCEDURE" || word === "FUNCTION") {
+          if (!inTypeBody) pendingSub = { type: word as "PROCEDURE" | "FUNCTION", startLine: line }
+        } else if (word === "IS" || word === "AS") {
+          if (stack.length > 0) {
+            const top = stack[stack.length - 1]
+            if (top.kind === "sub" && !top.hasBody) top.hasBody = true
+          }
+        } else if (word === "BEGIN") {
+          // 子程序 IS 后首个 BEGIN = body 开始（不压 block，标 bodyStarted）；其余 BEGIN = 匿名块
+          const top = stack.length > 0 ? stack[stack.length - 1] : null
+          if (top && top.kind === "sub" && top.hasBody && !top.bodyStarted) {
+            top.bodyStarted = true
+          } else {
+            stack.push({ kind: "block" })
+          }
+        } else if (word === "END") {
+          if (caseDepth > 0) endState = "CASE_END"   // CASE...END，待下一 word 确认 SQL/PL
+          else endState = "END"
+        } else if (word === "CREATE") {
+          pendingCreate = true
+        } else if (word === "CASE") {
+          caseDepth++   // SQL CASE 开始；PL/SQL END CASE 在 endState=END 分支按控制流处理
+        }
+      }
+      continue
+    }
+    i++
+  }
+  return out
+}
+
+/**
+ * regex 抽跨包非调用引用（pkg.const / pkg.type / schema.pkg.const）→ PackageRef[]。
+ * 纯 regex 主路径用。复用 extractCallsByRegex 的剥注释 / 行号对齐 / 区间隔离 / 三段归一化，
+ * 但匹配**无括号紧跟**的限定引用（至少 2 段），带括号的调用走 extractCallsByRegex。
+ * 不收窄：scan 阶段不知全部已知包，噪声（localRecord.field / table.col）由 finalizeInventoryIndex
+ * 后过滤按 knownPackages 收窄（同 AST 路径 packageRefs 后过滤）。
+ *
+ * @param code  整个包 body 文件文本（须先经 normalizeFullwidthSyntax）
+ * @param callerPkg  caller 声明键（含 schema 前缀），供 resolveQualifiedName 锚定
+ * @param lineRange  caller 的 bodyLocation.lineRange，限定只抽该区间内的引用
+ */
+export function extractPackageRefsByRegex(
+  code: string,
+  callerPkg: string,
+  lineRange: [number, number],
+): PackageRef[] {
+  // 至少 2 段的限定引用（ident.ident[.ident]*）。后跟非 '(' 才算非调用引用。
+  const refRe = /([A-Za-z_][\w$#]*(?:\.[A-Za-z_][\w$#]*)+)/g
+  const src = code
+    .replace(/--[^\n]*/g, s => " ".repeat(s.length))
+    .replace(/\/\*[\s\S]*?\*\//g, s => {
+      const nl = (s.match(/\n/g) || []).length
+      return " ".repeat(s.length - nl) + "\n".repeat(nl)
+    })
+  const lineStarts: number[] = [0]
+  for (let i = 0; i < src.length; i++) if (src[i] === "\n") lineStarts.push(i + 1)
+  const lineOf = (offset: number): number => {
+    let lo = 0, hi = lineStarts.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >>> 1
+      if (lineStarts[mid] <= offset) lo = mid
+      else hi = mid - 1
+    }
+    return lo + 1
+  }
+
+  const out: PackageRef[] = []
+  const seen = new Set<string>()
+  let m: RegExpExecArray | null
+  while ((m = refRe.exec(src)) !== null) {
+    const idx = m.index
+    const line = lineOf(idx)
+    if (line < lineRange[0] || line > lineRange[1]) continue  // 区间外
+    // 后跟 '(' → 调用，走 directCalls，不记 packageRef
+    let j = idx + m[0].length
+    while (j < src.length && (src[j] === " " || src[j] === "\t")) j++
+    if (src[j] === "(") continue
     const { pkg, member } = resolveQualifiedName(m[1], callerPkg)
-    if (member.length < 2 || SQL_PSEUDO.has(member)) continue   // 噪声过滤（同 recordCall）
-    if (pkg === "NEW" || pkg === "OLD") continue                // :NEW/:OLD 绑定变量
-    const methods = subprogramIndex.get(pkg)                    // 已知子程序收窄（同 finalizeInventoryIndex）
-    if (!methods || !methods.has(member)) continue
+    if (pkg.length < 2 || member.length < 2) continue   // 噪声过滤（同 recordPackageRef）
+    if (pkg === "NEW" || pkg === "OLD") continue
     const key = `${pkg}.${member}.${line}`
     if (seen.has(key)) continue
     seen.add(key)
-    out.push({ package: pkg, name: member, line, kind: "procedure" })
+    out.push({ package: pkg, name: member, line })
   }
   return out
 }
@@ -1337,6 +1620,123 @@ export function scanFileSet(filePaths: string[], primaryBase: string): FileSetRe
   }
 
   // 扁平化 subprograms：保留同 key 槽位顺序（overloadIndex 顺序由 finalize 按 key 重分桶保持）
+  const subprogramList: SubprogramInfo[] = []
+  for (const slots of subprograms.values()) subprogramList.push(...slots)
+
+  return {
+    packages: Array.from(packages.values()),
+    subprograms: subprogramList,
+    standaloneProcedures,
+    standaloneSlots,
+    tables, triggers, views, sequences,
+    warnings,
+  }
+}
+
+/**
+ * regex 主路径扫描一个 file-set（替代 scanFileSet 的 AST 路径，AST 保留不启用）。
+ *
+ * 每文件：extractPackageNames 建包 + findAllSubprograms 识别包级子程序（状态机，过滤嵌套局部过程）
+ * + spec/body 槽位合并（同 registerSubprogram：spec 填 headerLocation，body 填 bodyLocation
+ *   + directCalls/packageRefs）。parameters/returnType/包级声明留空，交 LLM 兜底（引擎按
+ *   bodyLocation.lineRange 预切 source.sql 喂 translate LLM，见 workflow-engine.ts）。
+ *
+ * directCalls 走 extractCallsByRegex 不收窄（scan 阶段闭包扩展要跟到未扫包），噪声由
+ * finalizeInventoryIndex 后过滤在闭包扫完后收窄。standalone（无包）文件 MVP 记 warning 跳过。
+ */
+export function scanFileSetRegex(filePaths: string[], primaryBase: string): FileSetResult {
+  const packages = new Map<string, PackageInfo>()
+  const subprograms = new Map<string, SubprogramInfo[]>()
+  const tables: TableIndex[] = []
+  const triggers: TriggerIndex[] = []
+  const views: ViewIndex[] = []
+  const sequences: SequenceIndex[] = []
+  const standaloneProcedures: StandaloneProcIndex[] = []
+  const standaloneSlots: SubprogramInfo[] = []
+  const warnings: string[] = []
+  const processed = new Set<string>()
+
+  for (const filePath of filePaths) {
+    if (processed.has(filePath)) continue
+    processed.add(filePath)
+    const rawCode = readFileSync(filePath, "utf-8").replace(/\r\n?/g, "\n")
+    const relPath = storedFilePath(filePath)
+    const code = stripSqlPlusCommands(normalizeFullwidthSyntax(rawCode))
+
+    extractTableFromText(code, tables, relPath)
+    extractTriggerFromText(code, triggers, relPath)
+    extractViewFromText(code, views, relPath)
+    extractSequenceFromText(code, sequences, relPath)
+
+    const pkgNames = extractPackageNames(code)
+    if (pkgNames.length === 0) {
+      // 非包文件：DDL 已上面抽；standalone CREATE PROCEDURE/FUNCTION（无包）→ 填 standaloneProcedures/Slots，
+      // 由 finalizeInventoryIndex 的 injectStandaloneVirtualPackages 注入虚拟包 __STANDALONE_x__（同 AST 路径）。
+      for (const sub of findAllSubprograms(code)) {
+        if (sub.pkgName !== "" || sub.kind !== "body") continue  // 仅 standalone body
+        const range: [number, number] = [sub.startLine, sub.endLine]
+        standaloneProcedures.push({
+          name: sub.name, type: sub.type, sourceFile: relPath,
+          parameters: [], returnType: null, lineRange: range,
+        })
+        standaloneSlots.push({
+          name: sub.name, type: sub.type, belongToPackage: "" /* 占位，inject 回填虚拟包名 */,
+          overloadIndex: null, isPrivate: false,
+          headerLocation: null, bodyLocation: { absolutePath: relPath, lineRange: range },
+          parameters: [], returnType: null, loc: sub.endLine - sub.startLine + 1,
+          directCalls: extractCallsByRegex(code, "", range, null),
+          packageRefs: extractPackageRefsByRegex(code, "", range),
+        })
+      }
+      continue
+    }
+    const hasBody = /\bPACKAGE\s+BODY\b/i.test(code)
+    // 建所有包（extractPackageNames 含 schema）；headerPath/bodyPath 按文件是否含 BODY 设（混合 spec+body 文件近似）
+    for (const pn of pkgNames) {
+      let pkg = packages.get(pn)
+      if (!pkg) {
+        pkg = {
+          packageName: pn, absolutePaths: [], headerPath: null, bodyPath: null,
+          constants: [], variables: [], exceptions: [], types: [], functions: [], procedures: [], estimatedLoc: 0,
+        }
+        packages.set(pn, pkg)
+      }
+      if (!pkg.absolutePaths.includes(relPath)) pkg.absolutePaths.push(relPath)
+      if (hasBody) { if (!pkg.bodyPath) pkg.bodyPath = relPath } else { if (!pkg.headerPath) pkg.headerPath = relPath }
+    }
+    packages.get(pkgNames[0])!.estimatedLoc += code.split("\n").length  // 多包文件 LOC 归首个包（近似）
+
+    for (const sub of findAllSubprograms(code)) {
+      const pn = sub.pkgName
+      if (!pn) continue  // standalone（无包）由上面 pkgNames.length===0 分支处理；包文件内混入的 standalone 跳过
+      const key = `${pn}.${sub.name}`
+      const slots = subprograms.get(key) ?? []
+      // spec 填 headerLocation===null 槽位；body 填 bodyLocation===null 槽位（同 registerSubprogram）
+      let slot: SubprogramInfo | undefined
+      if (sub.kind === "body") slot = slots.find(s => s.bodyLocation === null)
+      else slot = slots.find(s => s.headerLocation === null)
+      if (!slot) {
+        slot = {
+          name: sub.name, type: sub.type, belongToPackage: pn, overloadIndex: null, isPrivate: false,
+          headerLocation: null, bodyLocation: null, parameters: [], returnType: null, loc: 0,
+          directCalls: [], packageRefs: [],
+        }
+        slots.push(slot)
+        subprograms.set(key, slots)
+      }
+      const lineRange: [number, number] = [sub.startLine, sub.endLine]
+      if (sub.kind === "body") {
+        slot.bodyLocation = { absolutePath: relPath, lineRange }
+        slot.loc = sub.endLine - sub.startLine + 1
+        slot.directCalls = extractCallsByRegex(code, pn, lineRange, null)
+        slot.packageRefs = extractPackageRefsByRegex(code, pn, lineRange)
+      } else {
+        slot.headerLocation = { absolutePath: relPath, lineRange }
+      }
+      slot.isPrivate = slot.headerLocation === null
+    }
+  }
+
   const subprogramList: SubprogramInfo[] = []
   for (const slots of subprograms.values()) subprogramList.push(...slots)
 
