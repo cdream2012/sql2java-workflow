@@ -104,4 +104,11 @@ CREATE OR REPLACE PACKAGE BODY MFG_ERP.F_DIALECT AS
     helper_ok;
   END p_dollar;
 
+  -- 8. 无参过程/函数空括号 PROCEDURE p()（openGauss 方言，Oracle 写 PROCEDURE p 无括号）
+  --    spec/body/standalone 的 parameter 列表改为允许空 ()
+  PROCEDURE p_empty_paren() IS
+  BEGIN
+    helper_ok();
+  END p_empty_paren;
+
 END F_DIALECT;

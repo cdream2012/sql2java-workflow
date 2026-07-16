@@ -503,7 +503,7 @@ match_string
 
 create_function_body
     : CREATE (OR REPLACE)? (EDITIONABLE | NONEDITIONABLE)? FUNCTION function_name (
-        '(' parameter (',' parameter)* ')'
+        '(' (parameter (',' parameter)*)? ')'
     )? RETURN type_spec (SHARING '=' (METADATA | NONE))? (
         invoker_rights_clause
         | accessible_by_clause
@@ -679,7 +679,7 @@ package_obj_spec
     ;
 
 procedure_spec
-    : PROCEDURE identifier ('(' parameter ( ',' parameter)* ')')? (
+    : PROCEDURE identifier ('(' (parameter ( ',' parameter)*)? ')')? (
         accessible_by_clause
         | PARALLEL_ENABLE
         | DETERMINISTIC
@@ -687,7 +687,7 @@ procedure_spec
     ;
 
 function_spec
-    : FUNCTION identifier ('(' parameter ( ',' parameter)* ')')? RETURN type_spec (
+    : FUNCTION identifier ('(' (parameter ( ',' parameter)*)? ')')? RETURN type_spec (
         DETERMINISTIC
         | PIPELINED
         | parallel_enable_clause
@@ -736,7 +736,7 @@ alter_procedure
     ;
 
 function_body
-    : FUNCTION identifier ('(' parameter (',' parameter)* ')')? RETURN type_spec (
+    : FUNCTION identifier ('(' (parameter (',' parameter)*)? ')')? RETURN type_spec (
         PIPELINED
         | DETERMINISTIC
         | invoker_rights_clause
@@ -751,7 +751,7 @@ function_body
     ;
 
 procedure_body
-    : PROCEDURE identifier ('(' parameter (',' parameter)* ')')? (
+    : PROCEDURE identifier ('(' (parameter (',' parameter)*)? ')')? (
         accessible_by_clause
         | PARALLEL_ENABLE
         | DETERMINISTIC
@@ -759,7 +759,7 @@ procedure_body
     ;
 
 create_procedure_body
-    : CREATE (OR REPLACE)? PROCEDURE procedure_name ('(' parameter (',' parameter)* ')')? invoker_rights_clause? (PARALLEL_ENABLE | DETERMINISTIC)* (
+    : CREATE (OR REPLACE)? PROCEDURE procedure_name ('(' (parameter (',' parameter)*)? ')')? invoker_rights_clause? (PARALLEL_ENABLE | DETERMINISTIC)* (
         IS
         | AS
     ) (DECLARE? seq_of_declare_specs? body | call_spec | EXTERNAL)

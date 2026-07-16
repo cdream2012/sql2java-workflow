@@ -44,7 +44,7 @@ describe("GaussDB 方言语法 grammar 支持 (F_DIALECT 基线)", () => {
 
   it("6 个过程全部识别（:: 不级联吞后续过程声明）", () => {
     expect(subs.map((s) => s.name).sort()).toEqual(
-      ["HELPER_OK", "P_ARRAY", "P_CAST", "P_DIAG", "P_DOLLAR", "P_LIMIT", "P_LIMIT_OFFSET", "P_LOGICAL_OR", "P_NO_FROM"],
+      ["HELPER_OK", "P_ARRAY", "P_CAST", "P_DIAG", "P_DOLLAR", "P_EMPTY_PAREN", "P_LIMIT", "P_LIMIT_OFFSET", "P_LOGICAL_OR", "P_NO_FROM"],
     )
   })
 
@@ -53,7 +53,7 @@ describe("GaussDB 方言语法 grammar 支持 (F_DIALECT 基线)", () => {
     expect(noBody, `body 缺失: ${noBody.map((s) => s.name).join(", ")}`).toHaveLength(0)
   })
 
-  const DIALECT_PROCS = ["P_CAST", "P_LIMIT", "P_LIMIT_OFFSET", "P_DIAG", "P_NO_FROM", "P_LOGICAL_OR", "P_ARRAY", "P_DOLLAR"]
+  const DIALECT_PROCS = ["P_CAST", "P_LIMIT", "P_LIMIT_OFFSET", "P_DIAG", "P_NO_FROM", "P_LOGICAL_OR", "P_ARRAY", "P_DOLLAR", "P_EMPTY_PAREN"]
   for (const name of DIALECT_PROCS) {
     it(`${name}: 方言构造之后的调用不漏抽（HELPER_OK 在 directCalls）`, () => {
       const s = subs.find((x) => x.name === name)!
