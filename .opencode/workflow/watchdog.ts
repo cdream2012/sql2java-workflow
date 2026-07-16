@@ -32,9 +32,9 @@ export interface WatchdogConfig {
 
 const DEFAULT_WATCHDOG_CONFIG: WatchdogConfig = {
   enabled: true,
-  workerTimeoutMs: 60 * 60_000,            // 1 小时（容纳 AST 分析/编译/测试等长工具调用）
-  orchestratorIdleTimeoutMs: 10 * 60_000,  // 10min
-  idleConfirmMs: 5 * 60_000,               // 5min（多观察几次持续 idle 才确认）
+  workerTimeoutMs: 120 * 60_000,           // 2 小时（容纳 AST 分析/编译/测试，及大模型访问较差环境的慢响应）
+  orchestratorIdleTimeoutMs: 20 * 60_000,  // 20min（慢环境下 worker 登记/状态事件延迟更常见，放宽唤醒阈值）
+  idleConfirmMs: 10 * 60_000,              // 10min（慢环境 LLM 请求间隔拉长，给更多持续 idle 宽限再确认）
   crashDetectionIntervalMs: 60_000,        // 60s
   orchestratorMissingThresholdMs: 3 * 60_000, // 3min（避 session.list 抖动）
   maxNudgesPerIdle: 3,
