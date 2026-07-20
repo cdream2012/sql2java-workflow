@@ -37,10 +37,10 @@ beforeAll(async () => {
   buildDependencyGraphFromIndex(artifactsDir)
 }, 60000)
 
-/** 推进到 translate phase（inventory→analyze→plan→scaffold→translate） */
+/** 推进到 translate phase（inventory→plan→scaffold→translate，analyze 已砍） */
 function advanceToTranslate(rid: string, artifactsDir: string) {
   engine.start("sql2java", rid, { sourcePath: FIXTURE_TINY })
-  for (const _ of ["inventory", "analyze", "plan", "scaffold"]) {
+  for (const _ of ["inventory", "plan", "scaffold"]) {
     let r = engine.advance(rid, { result: "passed" })
     if (r.rejected && (r as any).warningPending) {
       r = engine.advance(rid, { result: "passed", acceptWarnings: true } as any)
