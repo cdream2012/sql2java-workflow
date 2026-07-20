@@ -1785,72 +1785,7 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
     }
   }
 
-  // analyze 阶段：dependency-graph.json 已归 inventory 产出（不在此校验），只验逐包 analysis-packages + FSD。
-  // PROCEDURE 级（unit 模式，procedureOrder 存在）：agent 写 per-procedure analysis-packages/{pkg}/{ref}.json
-  // + fsd/{pkg}/{ref}.md；此处 merge 聚合 analysis-packages/{pkg}.json + 校验本分片 unit 产物存在性 +
-  // FSD 占位符。包级回退（procedureOrder 缺失旧 run）：按 targetPackages 走包级 validateAnalysisPackages+validateFsds。
-  if (phase === "analyze") {
-    const currentEntry = engine.findCurrentEntry(run)
-    const graph = buildDependencyGraph(artifactsDir)
-    const procedureOrder = graph.procedureOrder
-    if (procedureOrder.length > 0) {
-      const targetUnits = currentEntry?.incrementalContext?.targetUnits
-      const scope = readScope(run.metadata as Record<string, unknown>)
-      // 增量分片：本分片 targetUnits；scope 单分片：scopeUnits；否则全量 procedureOrder 全部 unit
-      const units = targetUnits && targetUnits.length > 0 ? targetUnits : (scope?.scopeUnits ?? procedureOrder.flat())
-
-      // merge 本分片 unit 所属包的聚合 analysis-packages/{pkg}.json
-      const touchedPkgs = [...new Set(units.map(pkgOf))]
-      for (const pkg of touchedPkgs) {
-        const err = mergeUnitAnalysis(artifactsDir, pkg)
-        if (err) return err
-      }
-
-      // 规范化 FSD 文件名到大写 refName（worker 偶发小写命名，Linux 大小写敏感 FS 上
-      // 会让下方 existsSync 阻断 advance、translate 读不到 FSD）。须在完整性校验前。
-      normalizeFsdFilenames(artifactsDir, units)
-
-      // 完整性：本分片每个 unit 的 per-procedure analysis-packages + FSD 必须存在
-      for (const u of units) {
-        const pkg = pkgOf(u)
-        const ref = refOf(u)
-        const unitFile = join(artifactsDir, "analysis-packages", pkg, `${ref}.json`)
-        if (!existsSync(unitFile)) {
-          return `Missing per-unit artifact: analysis-packages/${pkg}/${ref}.json. All targetUnits must have per-procedure artifacts before advancing.`
-        }
-        if (!existsSync(join(artifactsDir, "fsd", pkg, `${ref}.md`))) {
-          return `Missing FSD: fsd/${pkg}/${ref}.md`
-        }
-      }
-
-      // FSD 占位符校验（全局 walk，仅见已写 FSD；每分片 advance 时校验本分片及之前写入的 FSD）
-      const stubError = validateFsdStubs(artifactsDir)
-      if (stubError) return stubError
-      return null
-    }
-
-    // 包级回退（procedureOrder 缺失旧 run）
-    const targetPkgs = currentEntry?.incrementalContext?.targetPackages
-    // FSD 文件名规范化（同 unit 模式）：从 targetPkgs 推导期望 unit，无 targetPkgs 则全量包
-    let normPkgs: string[] = targetPkgs && targetPkgs.length > 0 ? targetPkgs : []
-    if (normPkgs.length === 0) {
-      try {
-        const inv = JSON.parse(readFileSync(join(artifactsDir, "inventory.json"), "utf-8")) as { packageNames?: string[] }
-        normPkgs = inv.packageNames ?? []
-      } catch { normPkgs = [] }
-    }
-    const normUnits: string[] = []
-    for (const pkg of normPkgs) {
-      const parsed = parseInventoryPackage(artifactsDir, pkg)
-      if (parsed) for (const ref of parsed.refNames) normUnits.push(`${pkg}.${ref}`)
-    }
-    normalizeFsdFilenames(artifactsDir, normUnits)
-    const pkgError = validateAnalysisPackages(artifactsDir, targetPkgs)
-    if (pkgError) return pkgError
-    const fsdError = validateFsds(artifactsDir, targetPkgs)
-    if (fsdError) return fsdError
-    return null
-  }
+  // analyze 阶段已砍（inventory→plan 直连），analyze artifact 校验分支删除。
 
   // translate PROCEDURE 级（unit 模式）：agent 写 per-unit translations/{pkg}/{unitRef}.json，
   // 此处合并 → 聚合 translation.json + 校验 per-unit 文件，短路掉下方的包级 translation.json 校验。

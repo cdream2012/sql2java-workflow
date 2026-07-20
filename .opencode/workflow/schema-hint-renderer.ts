@@ -284,13 +284,12 @@ export function renderSchemaHint(phase: string | null | undefined): string {
 
   // ── Per-unit / per-package schema ──
   // hint 只渲染 worker 手写的产物：
-  //   - analyze：PROCEDURE 级 per-unit analysis-packages/{pkg}/{unitRef}.json（UnitAnalysisSchema）；
-  //     聚合 analysis-packages/{pkg}.json 由 engine merge（非 agent 手写），不渲染。
   //   - translate：PROCEDURE 级 per-unit translations/{pkg}/{unitRef}.json（UnitTranslationSchema）；
   //     聚合 translation.json 由 engine merge，不渲染。
   //   - inventory 的 packages/{PKG}.json + subprograms/{PKG.METHOD}.json 由 generateInventory 代码生成（非 worker 手写），不渲染。
   //   - review/verify：per-package 产物。
-  const perUnitSchema = (phase === "translate" || phase === "analyze") ? getPerUnitSchema(phase) : null
+  //   analyze 已砍（inventory→plan 直连），不再渲染 analysis-packages schema。
+  const perUnitSchema = (phase === "translate") ? getPerUnitSchema(phase) : null
   const perPackageSchema = perUnitSchema ? null : getPerPackageSchema(phase)
   if (perUnitSchema) {
     const unitDir = phase === "analyze" ? "analysis-packages" : "translations"

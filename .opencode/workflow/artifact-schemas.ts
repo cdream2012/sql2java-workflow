@@ -335,10 +335,12 @@ export const PlanSchema = z.object({
   }),
 
   typeMappings: z.record(z.string(), z.string()),
+  // manualReviewList 已废弃（analyze 砍后不再产 translationNotes，plan 不预标记；review-focus 不读）。
+  // 保留 optional 容忍旧 plan/LLM 偶发写，passthrough 亦允许额外字段。
   manualReviewList: z.array(z.object({
     procedure: z.string(),
     reason: z.string(),
-  })),
+  })).optional(),
 
   conventions: z.string(),
 }).passthrough()
