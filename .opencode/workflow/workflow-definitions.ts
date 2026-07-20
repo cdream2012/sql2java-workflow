@@ -54,13 +54,24 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
     },
     {
       name: "translate",
-      description: "PL/SQL → Java/MyBatis 逐包翻译",
+      description: "PL/SQL → Java/MyBatis 逐包翻译（A-2：单 unit 内 skeleton → translate-core → test-gen → static-check → compile 五 sub-stage 串行）",
       agentFile: "agent/translator.md",
       temperature: 0.1,
       maxRetries: 3,
       needsCrossSchemaValidation: true,
       maxPackagesPerShard: 1,
       tools: ["read", "bash", "write", "edit", "workflow"],
+      // A-2：translate 拆 5 sub-stage，dispatch 按 currentSubStage 路由对应 agent；
+      // advance 在 sub-stage 间空推进（不跑校验），仅 compile 完成跑 G1-unit + crossSchema + shard advance。
+      // 1 unit = 1 shard（dispatch 强制 maxUnitsPerShard=1），sub-stage 天然 per-unit。
+      // fix 阶段复用 translator.md（不带 subStages），仍一次性 prompt 修复。
+      subStages: [
+        { name: "skeleton",       agentFile: "agent/translate-skeleton.md" },
+        { name: "translate-core", agentFile: "agent/translate-core.md" },
+        { name: "test-gen",       agentFile: "agent/translate-test.md" },
+        { name: "static-check",   agentFile: "agent/translate-lint.md" },
+        { name: "compile",        agentFile: "agent/translate-compile.md" },
+      ],
     },
     {
       name: "dedup",

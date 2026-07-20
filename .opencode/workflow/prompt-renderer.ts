@@ -30,14 +30,17 @@ export type WorkerPromptCtx = Record<string, string>
 
 /**
  * 渲染 worker 任务模板。
- * @param phase "analyze" | "translate"（其他阶段无模板，抛错）
- * @param ctx   占位符 → 值（含动态块字符串）
+ * @param phase    "analyze" | "translate"（其他阶段无模板，抛错）
+ * @param ctx      占位符 → 值（含动态块字符串）
+ * @param subStage A-2：phase 内 sub-stage 名。提供时选 `prompts/{phase}-{subStage}-worker.md`，
+ *                 否则回退 `prompts/{phase}-worker.md`。
  * @returns 渲染后的 workOrder 文本
  */
-export function renderWorkerPrompt(phase: string, ctx: WorkerPromptCtx): string {
-  const tplPath = join(TEMPLATES_DIR, `${phase}-worker.md`)
+export function renderWorkerPrompt(phase: string, ctx: WorkerPromptCtx, subStage?: string): string {
+  const tplName = subStage ? `${phase}-${subStage}-worker.md` : `${phase}-worker.md`
+  const tplPath = join(TEMPLATES_DIR, tplName)
   if (!existsSync(tplPath)) {
-    throw new Error(`worker prompt template not found: ${tplPath}（phase=${phase}）`)
+    throw new Error(`worker prompt template not found: ${tplPath}（phase=${phase}${subStage ? ` subStage=${subStage}` : ""}）`)
   }
   let out = readFileSync(tplPath, "utf-8")
   // 占位符替换（未提供 → 空串）
@@ -49,11 +52,12 @@ export function renderWorkerPrompt(phase: string, ctx: WorkerPromptCtx): string 
   return out.trim() + "\n"
 }
 
-/** 持久化 workOrder 文件名（按分片区分，便于追溯每次 dispatch 的精确 prompt）。 */
-export function workOrderFileName(phase: string, shardIndex: number | undefined): string {
+/** 持久化 workOrder 文件名（按分片 + sub-stage 区分，便于追溯每次 dispatch 的精确 prompt）。 */
+export function workOrderFileName(phase: string, shardIndex: number | undefined, subStage?: string): string {
+  const sub = subStage ? `-${subStage}` : ""
   return shardIndex !== undefined
-    ? `${phase}-shard${shardIndex}.workOrder.md`
-    : `${phase}.workOrder.md`
+    ? `${phase}${sub}-shard${shardIndex}.workOrder.md`
+    : `${phase}${sub}.workOrder.md`
 }
 
 /**
@@ -65,10 +69,11 @@ export function persistWorkOrder(
   phase: string,
   shardIndex: number | undefined,
   content: string,
+  subStage?: string,
 ): void {
   const dir = join(artifactsDir, "dispatch-logs")
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, workOrderFileName(phase, shardIndex)), content, "utf-8")
+  writeFileSync(join(dir, workOrderFileName(phase, shardIndex, subStage)), content, "utf-8")
 }
 
 /** 读取已持久化的 workOrder（system.transform 注入用）。缺失返回 null。 */
@@ -76,8 +81,9 @@ export function readPersistedWorkOrder(
   artifactsDir: string,
   phase: string,
   shardIndex: number | undefined,
+  subStage?: string,
 ): string | null {
-  const p = join(artifactsDir, "dispatch-logs", workOrderFileName(phase, shardIndex))
+  const p = join(artifactsDir, "dispatch-logs", workOrderFileName(phase, shardIndex, subStage))
   if (!existsSync(p)) return null
   try {
     return readFileSync(p, "utf-8")

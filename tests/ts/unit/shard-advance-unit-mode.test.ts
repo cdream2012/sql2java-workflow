@@ -94,7 +94,9 @@ describe("engine.advance 分片推进 — unitMode 字段", () => {
     const runAtTranslate = engine.status(txRunId)!
     expect(runAtTranslate.currentPhase).toBe("translate")
 
-    // 注入 unitMode shardPlan + shard 0 的 incrementalContext
+    // 注入 unitMode shardPlan + shard 0 的 incrementalContext。
+    // A-2：translate 配了 subStages，advance 短路优先于 shard 推进——须把 currentSubStage 设为
+    // 最后一个 sub-stage（compile），模拟"compile 完成后 advance 推进 shard"路径，否则短路会推进 sub-stage。
     runAtTranslate.metadata.shardPlan = {
       phase: "translate",
       unitMode: true,
@@ -102,7 +104,7 @@ describe("engine.advance 分片推进 — unitMode 字段", () => {
       completedShards: [],
     }
     const entry = engine.findCurrentEntry(runAtTranslate)!
-    entry.incrementalContext = { targetUnits: ["CORE_PKG.get_item"], shardIndex: 0, totalShards: 2 }
+    entry.incrementalContext = { targetUnits: ["CORE_PKG.get_item"], shardIndex: 0, totalShards: 2, currentSubStage: "compile", currentBatch: 1, totalBatches: 1 }
     engine.persist(runAtTranslate)
 
     // 写 shard 0 的 per-unit translation（G1-unit 要求 status=completed）
@@ -127,5 +129,7 @@ describe("engine.advance 分片推进 — unitMode 字段", () => {
     // ★ 核心断言：translate unitMode 下用 targetUnits，不是 targetPackages
     expect(nextEntry.incrementalContext?.targetUnits).toEqual(["CORE_PKG.get_item_obj"])
     expect(nextEntry.incrementalContext?.targetPackages).toBeUndefined()
+    // A-2：新 unit 首 entry 从首个 sub-stage（skeleton）起步
+    expect(nextEntry.incrementalContext?.currentSubStage).toBe("skeleton")
   })
 })

@@ -181,9 +181,16 @@ function agentFileToName(agentFile: string): string {
   return agentFile.replace(/^agent\//, "").replace(/\.md$/, "")
 }
 
-/** 已知的 subagent 名称（从 SQL2JAVA_WORKFLOW.phases 动态推导，避免硬编码不同步） */
+/** 已知的 subagent 名称（从 SQL2JAVA_WORKFLOW.phases 动态推导，避免硬编码不同步）。
+ *  A-2：phase 内 subStages 的 agentFile 一并展平加入——sub-stage worker 也是合法 subagent，
+ *  否则 worker 调 workflow 工具时 isWorker 判定失败（getSubagentNames().includes(agentName)）。 */
 function getSubagentNames(): string[] {
-  return [...new Set(SQL2JAVA_WORKFLOW.phases.map(p => agentFileToName(p.agentFile)))]
+  const files: string[] = []
+  for (const p of SQL2JAVA_WORKFLOW.phases) {
+    files.push(p.agentFile)
+    if (p.subStages) for (const s of p.subStages) files.push(s.agentFile)
+  }
+  return [...new Set(files.map(agentFileToName))]
 }
 
 /** fix 阶段序号追踪（同一 runId 内递增） */
@@ -259,11 +266,17 @@ function formatPhaseEndBanner(phaseName: string, duration?: string): string {
 
 function setWorkflowContext(run: WorkflowRun): void {
   const phaseConfig = SQL2JAVA_WORKFLOW.phases.find((p) => p.name === run.currentPhase)
+  // A-2：若 phase 有 subStages 且当前 entry 标了 currentSubStage，按 sub-stage 覆盖 agentFile/temperature，
+  // 使 system.transform 注入对应 sub-stage agent 的系统提示。currentSubStage 缺失（首 entry 未初始化）
+  // → 回退 phaseConfig.agentFile，由 dispatch 侧补齐 currentSubStage 后重新 setWorkflowContext。
+  const entry = engine.findCurrentEntry(run)
+  const subName = entry?.incrementalContext?.currentSubStage
+  const subStage = subName ? phaseConfig?.subStages?.find(s => s.name === subName) : undefined
   currentWorkflowContext = {
     runId: run.runId,
     phase: run.currentPhase ?? "unknown",
-    agentFile: phaseConfig?.agentFile ?? "unknown",
-    temperature: phaseConfig?.temperature ?? 0.1,
+    agentFile: subStage?.agentFile ?? phaseConfig?.agentFile ?? "unknown",
+    temperature: subStage?.temperature ?? phaseConfig?.temperature ?? 0.1,
   }
   // ── Metrics: 创建 collector ──
   const isFix = phaseConfig?.isFixPhase
@@ -870,7 +883,7 @@ function buildRuntimeContext(run: WorkflowRun): string {
 export function healShardIncrementalContext(
   currentEntry: { incrementalContext?: any } | null | undefined,
   shardPlan: { unitMode?: boolean; shards: any[][] } | null | undefined,
-): { targetUnits: string[]; shardIndex: number; totalShards: number } | null {
+): { targetUnits: string[]; shardIndex: number; totalShards: number; currentSubStage?: string; currentBatch?: number; totalBatches?: number; previousFindings?: any } | null {
   if (!shardPlan?.unitMode || !currentEntry) return null
   const ic = currentEntry.incrementalContext ?? {}
   const si = typeof ic.shardIndex === "number" ? ic.shardIndex : 0
@@ -880,7 +893,17 @@ export function healShardIncrementalContext(
   const alreadyCorrect = currentUnits.length > 0
     && JSON.stringify(currentUnits) === JSON.stringify(correctUnits)
   if (alreadyCorrect) return null
-  return { targetUnits: correctUnits, shardIndex: si, totalShards: shardPlan.shards.length }
+  // A-2：自愈时保留 sub-stage 上下文（currentSubStage/currentBatch/totalBatches）与 previousFindings，
+  // 仅修正脏 targetUnits/shardIndex/totalShards、丢弃脏 targetPackages。
+  return {
+    targetUnits: correctUnits,
+    shardIndex: si,
+    totalShards: shardPlan.shards.length,
+    ...(ic.currentSubStage ? { currentSubStage: ic.currentSubStage } : {}),
+    ...(ic.currentBatch != null ? { currentBatch: ic.currentBatch } : {}),
+    ...(ic.totalBatches != null ? { totalBatches: ic.totalBatches } : {}),
+    ...(ic.previousFindings ? { previousFindings: ic.previousFindings } : {}),
+  }
 }
 
 /**
@@ -1148,9 +1171,11 @@ export function buildShardedWorkerOrder(
     schemaHint,
     rejectionErrorBlock,
   }
-  const rendered = renderWorkerPrompt(phase, ctx)
+  // A-2：当前 sub-stage（phase 内子阶段），传给 renderWorkerPrompt 选对应模板 + persistWorkOrder 区分文件名
+  const currentSubStage = effectiveIc?.currentSubStage as string | undefined
+  const rendered = renderWorkerPrompt(phase, ctx, currentSubStage)
   try {
-    persistWorkOrder(artifactsDir, phase, si, rendered)
+    persistWorkOrder(artifactsDir, phase, si, rendered, currentSubStage)
   } catch (e: any) {
     getLogger().warn("[dispatch]", `persistWorkOrder 失败（不阻断）: ${e.message}`)
   }
@@ -1636,7 +1661,37 @@ export function mergeUnitTranslations(artifactsDir: string, pkgName: string): st
     subprogramMethods: dedupMethods,
   }
   writeFileSync(join(pkgDir, "translation.json"), JSON.stringify(aggregated, null, 2), "utf-8")
+  // A-2：维护全局 procedure-map.json（存储过程 → Java 文件映射），供人工审核 + 增量翻译查表雏形。
+  updateProcedureMap(artifactsDir, pkgName, dedupMethods)
   return null
+}
+
+/**
+ * 增量合并本包 subprogramMethods → 全局 `translations/procedure-map.json`。
+ * key = `PKG.SUBPROG`（大写）；value = { javaClass, javaMethod, javaFile, pkg }。
+ * 同 key 后写覆盖。每次 mergeUnitTranslations 调用（per-package）增量合并。
+ */
+function updateProcedureMap(artifactsDir: string, pkgName: string, methods: Array<{ oracleName?: string; javaClass?: string; javaMethod?: string; javaFile?: string | null }>): void {
+  const mapPath = join(artifactsDir, "translations", "procedure-map.json")
+  let map: Record<string, { javaClass: string | null; javaMethod: string | null; javaFile: string | null; pkg: string }> = {}
+  try {
+    if (existsSync(mapPath)) map = JSON.parse(readFileSync(mapPath, "utf-8"))
+  } catch {
+    map = {}
+  }
+  for (const m of methods) {
+    const oracle = String(m.oracleName ?? "")
+    if (!oracle) continue
+    const key = oracle.includes(".") ? oracle.toUpperCase() : `${pkgName}.${oracle}`.toUpperCase()
+    map[key] = {
+      javaClass: m.javaClass ?? null,
+      javaMethod: m.javaMethod ?? null,
+      javaFile: m.javaFile ?? null,
+      pkg: pkgName,
+    }
+  }
+  mkdirSync(join(artifactsDir, "translations"), { recursive: true })
+  writeFileSync(mapPath, JSON.stringify(map, null, 2), "utf-8")
 }
 
 /**
@@ -4471,10 +4526,17 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
                   // sizeOf 取 unitLines（body 源码行数）供按行数预算切分。
                   const unitLines = analysis.unitLines
                   const unitLevels = analysis.unitLevels
+                  // A-2：phase 配了 subStages 时强制 1 unit = 1 shard（sub-stage 是 per-unit 内推进，
+                  // 多 unit 同 shard 会与 sub-stage 推进维度冲突）。超长过程按 TODO 批次切分留二期。
+                  const forceOneUnitPerShard = !!(phaseConfig.subStages && phaseConfig.subStages.length > 0)
                   const plan = engine.computeShardPlan(
                     effectiveOrder, run.currentPhase!,
                     useUnits
-                      ? { levelOf: (u: string) => unitLevels[u] ?? 0, sizeOf: (u: string) => unitLines[u] ?? 0 }
+                      ? {
+                          levelOf: (u: string) => unitLevels[u] ?? 0,
+                          sizeOf: (u: string) => unitLines[u] ?? 0,
+                          ...(forceOneUnitPerShard ? { maxUnitsPerShard: 1 } : {}),
+                        }
                       : undefined,
                   )
                   // 多分片 → 设 shardPlan；scope 激活时**即使单分片**也设 targetUnits（硬约束），
@@ -4486,9 +4548,16 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
                     // 多分片：设置 shardPlan 到 run.metadata，更新 currentEntry 的 incrementalContext
                     plan.unitMode = useUnits
                     run.metadata.shardPlan = plan
-                    currentEntry.incrementalContext = useUnits
-                      ? { targetUnits: plan.shards[0], shardIndex: 0, totalShards: plan.shards.length }
-                      : { targetPackages: plan.shards[0], shardIndex: 0, totalShards: plan.shards.length }
+                    // A-2：phase 配了 subStages 时，首分片首 entry 从首个 sub-stage 起步
+                    const ss0 = phaseConfig.subStages
+                    currentEntry.incrementalContext = {
+                      ...(useUnits
+                        ? { targetUnits: plan.shards[0], shardIndex: 0, totalShards: plan.shards.length }
+                        : { targetPackages: plan.shards[0], shardIndex: 0, totalShards: plan.shards.length }),
+                      ...(ss0 && ss0.length > 0
+                        ? { currentSubStage: ss0[0].name, currentBatch: 1, totalBatches: 1 }
+                        : {}),
+                    }
                     engine.persist(run)
                   }
                   // 非 scope 单分片不需要分片机制（单包项目或单元很少）
@@ -4496,8 +4565,11 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
               }
             }
 
-            // 从 agentFile 提取 agent 名
-            const agentName = agentFileToName(phaseConfig.agentFile)
+            // 从 agentFile 提取 agent 名。A-2：phase 有 subStages 时按当前 entry 的 currentSubStage
+            // 路由到对应 sub-stage agentFile；currentSubStage 缺失回退 phaseConfig.agentFile。
+            const _curSubName = currentEntry?.incrementalContext?.currentSubStage
+            const _curSubStage = _curSubName ? phaseConfig.subStages?.find(s => s.name === _curSubName) : undefined
+            const agentName = agentFileToName(_curSubStage?.agentFile ?? phaseConfig.agentFile)
             const artifactsDir = `${ARTIFACT_DIR}/${run.runId}`
 
             // dedup：dispatch 前 run PMD CPD 确定性扫描 → dedup-duplicates.json（零 LLM）。
@@ -4935,6 +5007,9 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
             const shardLine = (si !== undefined && ts !== undefined)
               ? `\n📦 分片 ${si + 1}/${ts}（${isUnit ? "PROCEDURE 单元" : "包"}: ${shardTarget.join(", ")}）—— 只处理以上目标，勿越界（workOrder 含 scope 硬约束 + 切片读取清单）`
               : ""
+            // A-2：当前 sub-stage（phase 内子阶段），让编排者知晓本 turn 派的是哪个 sub-stage worker
+            const currentSubStage = ic?.currentSubStage as string | undefined
+            const subStageLine = currentSubStage ? `\n🔧 sub-stage: ${currentSubStage}` : ""
 
             // dedup 跳过时在 dispatch 输出即时告警（不只进日志/workOrder），让编排者/用户可见
             const dedupSkipNotice = dedupScanSkipped
@@ -4946,7 +5021,7 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
             const minimalPrompt = getSubtaskTriggerPrompt()
             return {
               title: `Dispatch: ${run.currentPhase}`,
-              output: `${banner}📋 调度 ${agentName} 执行 ${run.currentPhase} 阶段${shardLine}\n✅ workOrder 已由引擎注入 worker 系统提示（落盘 dispatch-logs/）。发起 SubtaskPartInput 时 prompt 用**静态触发器**（metadata.minimalSubtaskPrompt，勿含 workOrder 全文）：\n  "${minimalPrompt}"\n⛔ 禁止 cat/Read dispatch-logs/ 下任何 workOrder 文件，禁止把 workOrder 全文塞进 subtask.prompt——worker 已从系统提示拿到完整任务，中转会污染你的主上下文。\n⛔ **串行调度：本 turn 只发这一个 subtask，等 Worker TASK_STATUS + advance（非 rejected）后再 dispatch 下一阶段/分片；禁止并行/批量发 subtask。**\n📌 调用 todowrite 更新进度（${run.currentPhase}=in_progress，priority 保持原值）${dedupSkipNotice}`,
+              output: `${banner}📋 调度 ${agentName} 执行 ${run.currentPhase} 阶段${shardLine}${subStageLine}\n✅ workOrder 已由引擎注入 worker 系统提示（落盘 dispatch-logs/）。发起 SubtaskPartInput 时 prompt 用**静态触发器**（metadata.minimalSubtaskPrompt，勿含 workOrder 全文）：\n  "${minimalPrompt}"\n⛔ 禁止 cat/Read dispatch-logs/ 下任何 workOrder 文件，禁止把 workOrder 全文塞进 subtask.prompt——worker 已从系统提示拿到完整任务，中转会污染你的主上下文。\n⛔ **串行调度：本 turn 只发这一个 subtask，等 Worker TASK_STATUS + advance（非 rejected）后再 dispatch 下一阶段/分片；禁止并行/批量发 subtask。**\n📌 调用 todowrite 更新进度（${run.currentPhase}=in_progress，priority 保持原值）${dedupSkipNotice}`,
               metadata: {
                 runId: run.runId,
                 phase: run.currentPhase,
@@ -4958,6 +5033,7 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
                 totalShards: ts,
                 targetUnits: ic?.targetUnits,
                 targetPackages: ic?.targetPackages,
+                currentSubStage,
                 dispatch: true,
                 nextAction: "dispatch",
               },
@@ -5277,7 +5353,8 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
           try {
             const ce = engine.findCurrentEntry(run)
             const si = ce?.incrementalContext?.shardIndex as number | undefined
-            persistedWorkOrder = readPersistedWorkOrder(join(ARTIFACT_DIR, currentWorkflowContext.runId), currentWorkflowContext.phase, si)
+            const ss = ce?.incrementalContext?.currentSubStage as string | undefined
+            persistedWorkOrder = readPersistedWorkOrder(join(ARTIFACT_DIR, currentWorkflowContext.runId), currentWorkflowContext.phase, si, ss)
           } catch (e: any) {
             getLogger().warn("[workflow-engine]", `读取持久化 workOrder 失败（回退 banner+runtimeContext）: ${e.message}`)
           }

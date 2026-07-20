@@ -84,6 +84,16 @@ export class WorkflowEngineError extends Error {
 
 // ── 核心类型 ──────────────────────────────────────────────────────────────────
 
+/** sub-stage 配置 — phase 内子阶段（A-2：translate 拆多子 agent 串行） */
+export interface SubStageConfig {
+  name: string                                  // sub-stage 名称（如 "skeleton"、"translate-core"）
+  agentFile: string                             // 对应的 agent .md 文件路径
+  temperature?: number                          // 覆盖 phase 默认温度（可选）
+  /** 二期预留：translate-core 超长过程按 TODO 批次切多分片时为 true。
+   *  首期固定 5 sub-stage、totalBatches 恒 1，此字段不触发。 */
+  repeatable?: boolean
+}
+
 /** 单阶段配置 */
 export interface PhaseConfig {
   name: string
@@ -97,6 +107,10 @@ export interface PhaseConfig {
   tools: string[]                               // 允许的工具列表
   description?: string                          // 阶段中文描述，用于输出 banner
   watchdog?: { workerTimeoutMs?: number }       // watchdog worker 超时覆盖（重型阶段如 verify 放宽）
+  /** phase 内子阶段序列。配置后 dispatch 按 currentSubStage 路由对应 agentFile，
+   *  advance 在 sub-stage 间推进（中间 sub-stage 空推进不跑校验，仅最后 sub-stage 跑
+   *  validateQualityGates + crossSchema + shard advance）。未配置则 phase 仍为单 agent 一次性执行。 */
+  subStages?: SubStageConfig[]
 }
 
 /** 条件转移规则 */
@@ -139,6 +153,12 @@ export interface PhaseHistoryEntry {
     targetUnits?: string[]                      // translate/analyze PROCEDURE 级分片：只处理这些 unit id（PKG.refName）
     shardIndex?: number                         // 分片模式：当前分片序号（0-based）
     totalShards?: number                        // 分片模式：总分片数
+    /** A-2：phase 内当前 sub-stage 名（PhaseConfig.subStages[].name）。
+     *  dispatch 按此路由 agentFile；advance 在 sub-stage 间推进。 */
+    currentSubStage?: string
+    /** 二期预留：超长过程 translate-core 按 TODO 批次切多分片。首期恒 1。 */
+    currentBatch?: number
+    totalBatches?: number
     previousFindings?: Array<{                  // 增量 review：上次 review 的 mustFix，供 reviewer 核对是否已修复
       packageName: string
       file: string
@@ -204,6 +224,9 @@ const PhaseHistoryEntrySchema = z.object({
     targetUnits: z.array(z.string()).optional(),
     shardIndex: z.number().optional(),
     totalShards: z.number().optional(),
+    currentSubStage: z.string().optional(),
+    currentBatch: z.number().optional(),
+    totalBatches: z.number().optional(),
     previousFindings: z.array(z.object({
       packageName: z.string(),
       file: z.string(),
@@ -308,6 +331,80 @@ export class WorkflowEngine {
     // ── Step 2: 查找当前阶段配置 ──
     const currentPhaseConfig = def.phases.find(p => p.name === run.currentPhase)
 
+    // ── Step 2.5: sub-stage 推进短路（A-2） ──
+    // phase 配置了 subStages 时，中间 sub-stage 完成后直接推进到下一 sub-stage，
+    // 不跑 validateQualityGates / crossSchema / shard advance / transition。
+    // 仅最后一个 sub-stage 完成才走原有 Step 3a 起的全套校验 + 推进。
+    const subStages = currentPhaseConfig?.subStages
+    if (subStages && subStages.length > 0) {
+      const curSubName = currentEntry.incrementalContext?.currentSubStage
+      // currentSubStage 缺失 → 容错视为首个 sub-stage
+      let curIdx = curSubName ? subStages.findIndex(s => s.name === curSubName) : 0
+      if (curIdx < 0) curIdx = 0
+      const curStage = subStages[curIdx]
+      // 二期：repeatable sub-stage 批次未完 → 重复当前 sub-stage（currentBatch+1）。
+      // 首期 totalBatches 恒 1，此分支不触发。
+      const totalBatches = currentEntry.incrementalContext?.totalBatches ?? 1
+      const curBatch = currentEntry.incrementalContext?.currentBatch ?? 1
+      if (curStage?.repeatable && curBatch < totalBatches) {
+        currentEntry.status = "completed"
+        currentEntry.completedAt = now
+        run.updatedAt = now
+        run.phaseHistory.push({
+          phase: run.currentPhase!,
+          status: "in_progress",
+          startedAt: now,
+          retryCount: 0,
+          incrementalContext: {
+            ...currentEntry.incrementalContext,
+            currentSubStage: curStage.name,
+            currentBatch: curBatch + 1,
+          },
+        })
+        this.persist(run)
+        this.appendEvent(runId, "SUBSTAGE_ADVANCE", run.currentPhase!,
+          `sub-stage ${curStage.name} 批次 ${curBatch}/${totalBatches} 完成 → 批次 ${curBatch + 1}/${totalBatches}`)
+        return {
+          run,
+          nextPhase: currentPhaseConfig ?? null,
+          finished: false,
+          waitingForConfirmation: false,
+          rejected: false,
+        }
+      }
+      // 中间 sub-stage（非最后）→ 推进到下一 sub-stage
+      if (curIdx < subStages.length - 1) {
+        const nextStage = subStages[curIdx + 1]
+        currentEntry.status = "completed"
+        currentEntry.completedAt = now
+        run.updatedAt = now
+        run.phaseHistory.push({
+          phase: run.currentPhase!,
+          status: "in_progress",
+          startedAt: now,
+          retryCount: 0,
+          incrementalContext: {
+            ...currentEntry.incrementalContext,
+            currentSubStage: nextStage.name,
+            // 进入新 sub-stage 重置批次（二期 repeatable 由 skeleton 设 totalBatches）
+            currentBatch: 1,
+            totalBatches: 1,
+          },
+        })
+        this.persist(run)
+        this.appendEvent(runId, "SUBSTAGE_ADVANCE", run.currentPhase!,
+          `sub-stage ${curSubName ?? subStages[0].name} → ${nextStage.name}`)
+        return {
+          run,
+          nextPhase: currentPhaseConfig ?? null,
+          finished: false,
+          waitingForConfirmation: false,
+          rejected: false,
+        }
+      }
+      // 最后一个 sub-stage 完成 → 不短路，继续 Step 3a 起原有逻辑
+    }
+
     // ── Step 3a: 确定性数值质量门控 (L3) — 所有阶段 ──
     const qualityFindings = this.validateQualityGates(run, run.currentPhase!)
     for (const f of qualityFindings) {
@@ -401,14 +498,21 @@ export class WorkflowEngine {
         // unit 模式（analyze/translate PROCEDURE 级）shard 元素是 unit id `PKG.ref`，须写入 targetUnits
         // 而非 targetPackages——否则下游 narrowUpstreamForShard / generateUnitSlices / 写入边界因 targetUnits
         // 为空全部跳过，shard 1+ 退化为整包处理（硬隔离失效）。包级模式才用 targetPackages。
+        // A-2：若 phase 配了 subStages，新 unit 首个 entry 从首个 sub-stage 起步。
+        const ss0 = currentPhaseConfig?.subStages
         const newEntry: PhaseHistoryEntry = {
           phase: run.currentPhase!,
           status: "in_progress",
           startedAt: now,
           retryCount: 0,
-          incrementalContext: shardPlan.unitMode
-            ? { targetUnits: nextShard, shardIndex: nextShardIndex, totalShards }
-            : { targetPackages: nextShard, shardIndex: nextShardIndex, totalShards },
+          incrementalContext: {
+            ...(shardPlan.unitMode
+              ? { targetUnits: nextShard, shardIndex: nextShardIndex, totalShards }
+              : { targetPackages: nextShard, shardIndex: nextShardIndex, totalShards }),
+            ...(ss0 && ss0.length > 0
+              ? { currentSubStage: ss0[0].name, currentBatch: 1, totalBatches: 1 }
+              : {}),
+          },
         }
         run.phaseHistory.push(newEntry)
         run.metadata.shardPlan = shardPlan
