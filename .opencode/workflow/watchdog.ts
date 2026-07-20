@@ -7,6 +7,11 @@
  * - 编排者 idle + 无活跃 worker + run running + 超时 → promptAsync 唤醒调 resume
  *   （无次数上限：只有人工终止 manualStopRunId 或 run 运行完毕才停止唤醒）
  * - 编排者 session 持续消失 > orchestratorMissingThresholdMs → 提示手动 /sql2java resume
+ * - 上下文使用率监控：step-finish 的 input tokens / 模型 max context 逐档升级告警——
+ *   首破 contextWarnPct → WARN 并沉默，继续每 +10% 一档（70/80/90…）再 WARN；
+ *   跌破 contextWarnPct 重置。只观测告警不干预；compact 仍保留作兜底。
+ * - 上下文采样：定时（contextSampleIntervalMs）把各 session 上下文占用写
+ *   .workflow-artifacts/<runId>/logs/context-samples.jsonl，供离线画曲线（含 phase）。
  *
  * 重派/恢复交给现有机制（worker abort 后编排者自动重派 via advance 门控）。
  * watchdog 唯一主动副作用：client.session.abort / client.session.promptAsync。
@@ -14,7 +19,7 @@
  * 详见 plan: watchdog 容错监控正式实现。
  */
 
-import { appendFileSync, mkdirSync } from "node:fs"
+import { appendFile, appendFileSync, mkdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 
 // ── 配置 ─────────────────────────────────────────────────────────────────────
@@ -28,6 +33,9 @@ export interface WatchdogConfig {
   orchestratorMissingThresholdMs: number   // session 持续消失判 crash 阈值
   nudgeCooldownMs: number                  // 两次唤醒最小间隔（仅限频，不设上限）
   phaseOverrides?: Record<string, { workerTimeoutMs?: number }>
+  contextWarnPct: number                   // 上下文使用率告警阈值（占模型 max context 比例），超则 WARN
+  modelContextLimitFallback: number        // 拿不到模型 limit 时的兜底 token 数
+  contextSampleIntervalMs: number          // 上下文采样间隔（ms），0=关；写 context-samples.jsonl 供画曲线
 }
 
 const DEFAULT_WATCHDOG_CONFIG: WatchdogConfig = {
@@ -39,6 +47,9 @@ const DEFAULT_WATCHDOG_CONFIG: WatchdogConfig = {
   orchestratorMissingThresholdMs: 3 * 60_000, // 3min（避 session.list 抖动）
   nudgeCooldownMs: 60_000,
   phaseOverrides: {},
+  contextWarnPct: 0.6,                     // 60%（用户期望：到模型最大上下文 60% 提示；compact 仍保留作兜底）
+  modelContextLimitFallback: 200_000,      // 解析不到模型 limit 时兜底
+  contextSampleIntervalMs: 60_000,         // 60s 采样一次写 jsonl，供离线画上下文曲线；0=关
 }
 
 /** 解析 watchdog 配置。当前用默认 + 可选 phase 覆盖；未来可从 run.metadata 读。 */
@@ -63,6 +74,11 @@ interface WatchdogEntry {
   lastNudgeAt?: number
   missingSince?: number                    // crash 检测：session 持续消失起点
   crashAlerted?: boolean                   // crash 告警去重
+  lastContextTokens?: number               // 最近一次 step-finish 的 input tokens（≈当前上下文长度）
+  contextWarnTier?: number                 // 已告警的最高档位（0=未告警；逐档升级 60→70→80…，每 +10% 一档）
+  modelLimit?: number                      // 该 session 模型的 max context（懒解析，解析前 undefined）
+  modelResolveFailed?: boolean             // 模型 limit 解析失败标记（避反复重试）
+  modelResolving?: boolean                 // 模型 limit 解析中（避 step-finish 高频触发并发重入）
 }
 
 const sessionMap = new Map<string, WatchdogEntry>()
@@ -71,10 +87,16 @@ let apiClient: any = null
 let engineRef: any = null                  // WorkflowEngine 实例（只用 status(runId)）
 let stuckTimer: ReturnType<typeof setInterval> | undefined
 let crashTimer: ReturnType<typeof setInterval> | undefined
+let sampleTimer: ReturnType<typeof setInterval> | undefined
 let started = false
 
 let currentRunId: string | undefined
 let manualStopRunId: string | undefined  // 人工终止（ESC session.interrupt）标记的 run，watchdog 不唤醒编排者
+
+// 模型 providers 缓存（全局，跨 run 复用；providers 不随 run 变化）。
+// 用于把 session 的 modelID → Model.limit.context 解析出 max context。
+let providersCache: { providers: any[]; default: Record<string, string> } | null = null
+let providersFetching: Promise<typeof providersCache> | null = null
 
 function wdLogPath(runId: string): string {
   return join(".workflow-artifacts", runId, "logs", "watchdog.log")
@@ -119,6 +141,9 @@ export function initWatchdog(config: WatchdogConfig, client: any, engine: any): 
   )
   stuckTimer = setInterval(() => safeRun(checkOrchestratorStuck), stuckInterval)
   crashTimer = setInterval(() => safeRun(checkOrchestratorCrash), cfg.crashDetectionIntervalMs)
+  if (cfg.contextSampleIntervalMs > 0) {
+    sampleTimer = setInterval(() => safeRun(sampleContext), cfg.contextSampleIntervalMs)
+  }
   wlog("INFO",
     `启动 workerTimeout=${cfg.workerTimeoutMs}ms idleTimeout=${cfg.orchestratorIdleTimeoutMs}ms idleConfirm=${cfg.idleConfirmMs}ms`)
 }
@@ -242,6 +267,113 @@ export function handleSessionStatus(sid: string, status: any): void {
     if (e.timeoutTimer) clearTimeout(e.timeoutTimer)
     e.timeoutTimer = setTimeout(() => onWorkerTimeout(sid), cfg.idleConfirmMs)
     wlog("INFO", `worker idle sid=${sid} phase=${e.phase}，启动 idle 确认 ${cfg.idleConfirmMs}ms（期间若无新 worker 登记则 abort）`)
+  }
+}
+
+// ── 上下文使用率监控（由 event hook 的 step-finish 调用）──────────────────────
+
+/**
+ * 处理 step-finish 的 input tokens：≈ 当前 session 上下文长度。
+ * 逐档升级告警：首破 contextWarnPct → WARN，沉默；继续每 +10% 一档（70/80/90…）再 WARN。
+ * 跌破 contextWarnPct 才重置（允许新一轮攀升）。compact 机制仍保留作兜底，本监控只观测+告警。
+ */
+export function handleSessionTokens(sid: string, inputTokens: number): void {
+  if (!started || !sid) return
+  const e = sessionMap.get(sid)
+  if (!e) return
+  if (typeof inputTokens !== "number" || inputTokens <= 0) return
+  e.lastContextTokens = inputTokens
+  // 模型 limit 懒解析（异步，不阻塞本调用）；解析前 checkContextThreshold 会跳过
+  if (e.modelLimit === undefined && !e.modelResolveFailed && !e.modelResolving) {
+    safeRun(() => resolveModelLimit(sid))
+  }
+  checkContextThreshold(sid)
+}
+
+/** 拉取 providers 全量缓存（跨 session/run 复用）。 */
+async function ensureProviders(): Promise<any[]> {
+  if (providersCache) return providersCache.providers
+  if (!providersFetching) {
+    providersFetching = (async () => {
+      const resp = await apiClient?.config?.providers?.()
+      const data = resp?.data ?? resp
+      providersCache = { providers: data?.providers ?? [], default: data?.default ?? {} }
+      return providersCache
+    })()
+  }
+  const r = await providersFetching
+  return r?.providers ?? []
+}
+
+/**
+ * 解析 session 模型的 max context：取该 session 最近一条 assistant message 的
+ * modelID/providerID → 在 providers 缓存里查 Model.limit.context。失败用兜底。
+ */
+async function resolveModelLimit(sid: string): Promise<void> {
+  const e = sessionMap.get(sid)
+  if (!e || e.modelLimit !== undefined || e.modelResolving) return
+  e.modelResolving = true
+  try {
+    const providers = await ensureProviders()
+    const resp = await apiClient?.session?.messages?.({ path: { id: sid } })
+    const msgs = resp?.data ?? resp ?? []
+    let modelID: string | undefined
+    let providerID: string | undefined
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const info = msgs[i]?.info
+      if (info?.role === "assistant" && info.modelID) {
+        modelID = info.modelID
+        providerID = info.providerID
+        break
+      }
+    }
+    let limit: number | undefined
+    if (modelID) {
+      for (const p of providers) {
+        if (providerID && p.id !== providerID) continue
+        const m = p?.models?.[modelID]
+        if (typeof m?.limit?.context === "number") { limit = m.limit.context; break }
+      }
+    }
+    if (limit) {
+      e.modelLimit = limit
+    } else {
+      e.modelLimit = cfg.modelContextLimitFallback
+      wlog("INFO",
+        `session ${sid} 模型 limit 未解析到(modelID=${modelID ?? "?"} provider=${providerID ?? "?"})，用兜底 ${e.modelLimit}`)
+    }
+    checkContextThreshold(sid)
+  } catch (err: any) {
+    e.modelResolveFailed = true
+    e.modelLimit = cfg.modelContextLimitFallback
+    wlog("WARN", `解析模型 limit 失败 sid=${sid}: ${err?.message ?? err}，用兜底 ${e.modelLimit}`)
+    checkContextThreshold(sid)
+  } finally {
+    e.modelResolving = false
+  }
+}
+
+function checkContextThreshold(sid: string): void {
+  const e = sessionMap.get(sid)
+  if (!e || e.modelLimit === undefined) return
+  const tokens = e.lastContextTokens
+  if (tokens === undefined) return
+  const pct = tokens / e.modelLimit
+  const floor = cfg.contextWarnPct
+  // 逐档升级：首档 = floor，之后每 +0.10 一档。pct < floor → 0（未告警）。
+  // 1e-9 容差吸收浮点误差（0.7-0.6=0.0999… 否则 Math.floor 会少一档）。
+  const tier = pct < floor ? 0 : floor + Math.floor((pct - floor) / 0.10 + 1e-9) * 0.10
+  const lastTier = e.contextWarnTier ?? 0
+  if (tier > lastTier) {
+    e.contextWarnTier = tier
+    const hint = e.role === "orchestrator"
+      ? "。编排者上下文膨胀可能拖慢/拖垮长 run；如需释放可手动开新 session 跑 /sql2java resume（run 断点已持久化于 .workflow-artifacts/<runId>/run.json）"
+      : ""
+    wlog("WARN",
+      `${e.role} session ${sid} 上下文使用率 ${(pct * 100).toFixed(1)}% (${tokens}/${e.modelLimit} tokens) ≥ ${tier === floor ? "首档" : "新档"} ${(tier * 100).toFixed(0)}%（逐档升级：60→70→80…，每 +10% 一档；跌破 ${(floor * 100).toFixed(0)}% 重置）${hint}`)
+  } else if (pct < floor && lastTier > 0) {
+    // 跌破首档（如 compact 压回）→ 重置，允许新一轮攀升逐档告警
+    e.contextWarnTier = 0
   }
 }
 
@@ -373,6 +505,45 @@ async function checkOrchestratorCrash(): Promise<void> {
         `编排者 session ${sid} 持续消失 ${Math.round(missingFor / 1000)}s，run ${e.runId} 仍 running → 疑似 crash。` +
         `请手动执行 /sql2java resume 恢复（断点已持久化于 .workflow-artifacts/${e.runId}/run.json）`)
     }
+  }
+}
+
+// ── 上下文采样（定时写 context-samples.jsonl，供离线画曲线）────────────────────
+
+/**
+ * 定时扫描所有登记 session，把 {ts,runId,sid,role,phase,tokens,modelLimit,pct} 追加到
+ * .workflow-artifacts/<runId>/logs/context-samples.jsonl。异步追加，失败静默（不影响 run）。
+ * phase：worker 取自身 e.phase；orchestrator 取 run 当前推进阶段 engine.status(runId).currentPhase。
+ */
+async function sampleContext(): Promise<void> {
+  if (!currentRunId) return
+  const ts = new Date().toISOString()
+  const lines: string[] = []
+  for (const [sid, e] of sessionMap) {
+    if (e.runId !== currentRunId) continue  // 仅采当前 run 的 session，避残留 entry 混入
+    if (e.lastContextTokens === undefined || e.modelLimit === undefined) continue
+    const phase = e.role === "worker"
+      ? e.phase
+      : engineRef?.status?.(e.runId)?.currentPhase
+    const pct = e.lastContextTokens / e.modelLimit
+    lines.push(JSON.stringify({
+      ts,
+      runId: e.runId,
+      sid,
+      role: e.role,
+      phase: phase ?? null,
+      tokens: e.lastContextTokens,
+      modelLimit: e.modelLimit,
+      pct: Number(pct.toFixed(4)),
+    }))
+  }
+  if (!lines.length) return
+  const path = join(".workflow-artifacts", currentRunId, "logs", "context-samples.jsonl")
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    await appendFile(path, lines.join("\n") + "\n", "utf-8")
+  } catch {
+    // 采样落盘失败不影响 run，静默（避免每个 tick 刷错误日志）
   }
 }
 

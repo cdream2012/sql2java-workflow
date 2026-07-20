@@ -49,7 +49,7 @@ import {
 } from "../workflow/phase-metrics-collector"
 import type { PhaseMetrics } from "../workflow/phase-metrics-collector"
 import { initLogger, getLogger, destroyLogger } from "../workflow/workflow-logger"
-import { initWatchdog, registerWorker, registerOrchestrator, handleSessionStatus, handleSessionError, resolveWatchdogConfig } from "../workflow/watchdog"
+import { initWatchdog, registerWorker, registerOrchestrator, handleSessionStatus, handleSessionError, handleSessionTokens, resolveWatchdogConfig } from "../workflow/watchdog"
 
 const engine = new WorkflowEngine()
 engine.registerDefinition(SQL2JAVA_WORKFLOW)
@@ -5312,6 +5312,15 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
         handleSessionStatus(event.properties?.sessionID, event.properties?.status)
       } else if (event.type === "session.error") {
         handleSessionError(event.properties?.sessionID, event.properties?.error?.name)
+      }
+      // 上下文使用率监控：把 step-finish 的 input tokens 喂给 watchdog。
+      // 独立于 metrics collector（编排者 session 无 activeCollector 也要监控）；
+      // watchdog 只对已登记 session 计入，超阈值打 WARN。
+      if (event.type === "message.part.updated") {
+        const part = event.properties?.part
+        if (part?.type === "step-finish" && part.sessionID) {
+          handleSessionTokens(part.sessionID, part.tokens?.input ?? 0)
+        }
       }
       if (!currentWorkflowContext || !activeCollector) return
       if (event.type !== "message.part.updated") return
