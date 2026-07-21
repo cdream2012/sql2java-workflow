@@ -235,7 +235,37 @@ public class XxxValidator {
 
 ## 三、存储过程转换映射规则
 
-### 3.1 存储过程 → Java 组件映射
+### 3.1 Oracle → Java 类型映射
+
+scaffold 生成 XxxBean 字段、translate 转译过程参数/返回值时，**统一按下表**将 Oracle 类型映射为 Java 类型（本表是唯一事实来源，不再经 plan.json.typeMappings 中转）：
+
+| Oracle 类型 | Java 类型 | 说明 |
+|-------------|-----------|------|
+| `VARCHAR2` / `VARCHAR` / `CHAR` / `NCHAR` / `NVARCHAR2` / `CLOB` / `LONG` | `String` | 字符串/大文本 |
+| `NUMBER`（整数，scale=0） | `Long` | 大整数用 Long 防溢出；确定小范围可 `Integer` |
+| `NUMBER`（小数，scale>0） | `BigDecimal` | 金额/计量必须 BigDecimal，禁用 double/float |
+| `NUMBER`（未定 precision/scale） | `BigDecimal` | 不确定时统一 BigDecimal |
+| `INTEGER` / `INT` / `SMALLINT` / `BINARY_INTEGER` / `PLS_INTEGER` | `Integer` 或 `Long` | 按取值范围 |
+| `FLOAT` / `BINARY_FLOAT` | `Double` | |
+| `BINARY_DOUBLE` | `Double` | |
+| `DATE` | `LocalDate` | 仅日期 |
+| `TIMESTAMP` / `TIMESTAMP(6)` | `LocalDateTime` | 日期时间 |
+| `TIMESTAMP WITH TIME ZONE` | `OffsetDateTime` | |
+| `BOOLEAN` | `Boolean` | 包装类型 |
+| `BLOB` / `RAW` / `LONG RAW` | `byte[]` | 二进制 |
+| `XMLTYPE` | `String` | XML 文本 |
+| 用户定义对象类型 / `OBJECT` | 对应 DO 实体类 | 见下 `%ROWTYPE`/`%TYPE` |
+| 集合类型 / `TABLE` / `VARRAY` | `List<元素类型>` | |
+
+**`%ROWTYPE` 与 `%TYPE` 处理**（为 Phase 2 ddl-to-entity 铺路）：
+
+- `table%ROWTYPE` 参数 → 使用对应表的 DO 实体类（如 `gmo_clr_settle%ROWTYPE` → `GmoClrSettleDO`）作为属性类型。DO 由访问层按需生成（当前阶段 scaffold 产 XxxBean，DO 概念后续接入）。
+- `table.column%TYPE` 参数 → 取该列对应 DO 字段的实际 Java 类型（按上表由列的 Oracle 类型推导），不得降级为 `String`。
+- 同一表中多个 `%TYPE` 引用复用同一 DO/类型，不重复定义。
+
+> POJO（Bean/Request/Response）属性一律用**包装类型**（Long/Integer/BigDecimal/Boolean…），不设默认值；局部变量可用基本类型（见 6.10）。
+
+### 3.2 存储过程 → Java 组件映射
 
 | 存储过程元素 | Java 对应组件 | 说明 |
 |-------------|---------------|------|
@@ -249,7 +279,7 @@ public class XxxValidator {
 | 公共函数 | `Utils` | 工具类 |
 | `COMMIT/ROLLBACK` | `@Transactional` | 事务管理 |
 
-### 3.2 OUT 参数处理规范
+### 3.3 OUT 参数处理规范
 
 【强制】存储过程的 OUT 参数必须在 Builder 中预定义，调用前初始化为空字符串。
 
@@ -270,7 +300,7 @@ xxxMapper.addDeal(bean, outputParams);
 validator.processResult(outputParams, bean);
 ```
 
-### 3.3 异常处理规范
+### 3.4 异常处理规范
 
 ```java
 // Processor 层：捕获异常，记录日志，更新状态

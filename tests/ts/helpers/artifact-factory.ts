@@ -138,15 +138,8 @@ export function makePlan(overrides: Record<string, unknown> = {}) {
         validator: "ItemValidator",
       },
     ],
-    rules: {
-      namingConvention: "camelCase",
-      nullHandling: "optional",
-      exceptionStrategy: "custom-business",
-      logFramework: "common-log",
-    },
-    typeMappings: {},
+    // rules/typeMappings/conventions 已移除（Stage B）——改由注入的 Java 代码规约提供
     manualReviewList: [],
-    conventions: "Standard conventions",
     ...overrides,
   }
 }

@@ -65,7 +65,7 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
 | 1 | logic-equivalence | 逻辑等价：分支条件、循环边界、赋值顺序是否与源码一致 |
 | 2 | sql-completeness | SQL 完整性：每条 SELECT/INSERT/UPDATE/DELETE 是否都有对应 MyBatis 映射 |
 | 3 | null-handling | 空值处理：Oracle 的 NULL 行为（NVL、COALESCE、IS NULL）是否正确映射 |
-| 4 | type-mapping | 类型映射：Oracle 类型到 Java 类型是否按 plan.json 的 typeMappings |
+| 4 | type-mapping | 类型映射：Oracle 类型到 Java 类型是否按注入的 Java 代码规约 §3.1 类型映射表 |
 | 5 | exception-mapping | 异常映射：EXCEPTION 块是否映射为正确的 try-catch，异常类型是否匹配 |
 | 6 | transaction-boundary | 事务边界：PRAGMA AUTONOMOUS_TRANSACTION 是否映射为正确的事务传播 |
 | 7 | cursor-mapping | 游标映射：显式/隐式游标是否映射为正确的 Mapper 查询 + 迭代 |
@@ -104,7 +104,7 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
 ### 输入
 
 - **上游 artifact**：
-  - `${artifactsDir}/plan.json` — 映射规则和编码约定
+  - `${artifactsDir}/plan.json` — 包映射（oraclePackage→javaPackage/DDD 组件类名）
   - `${artifactsDir}/scaffold.json` — 项目结构
   - `${artifactsDir}/packages/{pkg}.json` — 逐包 inventory + complexity（依赖图由引擎按需推导，不落盘）
   - `${artifactsDir}/translations/*/translation.json` — 翻译记录
@@ -243,7 +243,7 @@ workflow({ action: "generateReviewSummary", runId: "<runId>" })
 ### 输入
 
 - **上游 artifact**：
-  - `${artifactsDir}/plan.json` — 映射规则
+  - `${artifactsDir}/plan.json` — 包映射
   - `${artifactsDir}/scaffold.json` — 项目结构
   - `${artifactsDir}/translations/*/translation.json` — 翻译记录
 - **Java 文件**：Runtime Context 中 `projectRoot` 指定的目录下的 Java 代码（编译/测试验证在该目录下运行 mvn）

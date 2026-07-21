@@ -336,25 +336,20 @@ describe("Schema 无效数据被拒绝", () => {
     expect(result.success).toBe(false)
   })
 
-  it("PlanSchema 无效 namingConvention 现在也能通过（已放开为 string）", () => {
+  it("PlanSchema 不再要求 rules/typeMappings/conventions（Stage B 移至注入的 Java 代码规约）", () => {
     const planData = {
       targetProject: {
         groupId: "com.example", artifactId: "item-service",
         packageBase: "com.example.item", javaVersion: "17", springBootVersion: "3.2.0",
       },
       packageMappings: [],
-      rules: {
-        namingConvention: "snake_case",
-        nullHandling: "optional",
-        exceptionStrategy: "spring-data",
-        logFramework: "slf4j",
-      },
-      typeMappings: {},
       manualReviewList: [],
-      conventions: "",
     }
     const result = PlanSchema.safeParse(planData)
     expect(result.success).toBe(true)
+    // 旧 plan 残留 rules/typeMappings/conventions 时由 passthrough 容忍（不校验、不消费）
+    const legacy = { ...planData, rules: { namingConvention: "snake_case" }, typeMappings: {}, conventions: "" }
+    expect(PlanSchema.safeParse(legacy).success).toBe(true)
   })
 
   it("PlanSchema 拒绝无任何组件类名的 packageMapping（accessImpl/aggregate/serviceImplClass 全空）", () => {

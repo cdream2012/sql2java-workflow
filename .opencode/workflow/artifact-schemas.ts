@@ -270,22 +270,15 @@ export const PlanSchema = z.object({
     { message: "每个 packageMapping 至少需要一个组件类名（DDD: accessImpl/accessIntf/aggregate/processor/builder/validator；遗留: serviceImplClass/serviceClass；纯常量包仅 aggregate 常量持有类）——下游 verify 归因 / translate 跨包索引 / 测试骨架生成均依赖此锚点" },
   ),
 
-  rules: z.object({
-    namingConvention: z.string(),
-    nullHandling: z.string(),
-    exceptionStrategy: z.string(),
-    logFramework: z.string(),
-  }),
-
-  typeMappings: z.record(z.string(), z.string()),
+  // rules / typeMappings / conventions 已移除（Stage B）——改由注入的 Java 代码规约提供：
+  // 命名/异常/日志/事务/MyBatis 等约定见 java-code-spec.md 对应章节，Oracle→Java 类型映射见 §3.1。
+  // 旧 plan 残留这些字段时由 passthrough 容忍（不校验、不消费）。
   // manualReviewList 已废弃（analyze 砍后不再产 translationNotes，plan 不预标记；review-focus 不读）。
   // 保留 optional 容忍旧 plan/LLM 偶发写，passthrough 亦允许额外字段。
   manualReviewList: z.array(z.object({
     procedure: z.string(),
     reason: z.string(),
   })).optional(),
-
-  conventions: z.string(),
 }).passthrough()
 
 // ============================================================================
@@ -350,7 +343,9 @@ export const ScaffoldSchema = z.object({
       directories: z.array(z.string()),
     }).optional(),
   }),
-  conventions: z.string(),
+  // conventions 已移除（Stage B）——编码约定由注入的 Java 代码规约提供，scaffold 不再复制。
+  // 保留 optional 容忍旧 scaffold.json 残留。
+  conventions: z.string().optional(),
 }).passthrough()
 
 // ============================================================================
