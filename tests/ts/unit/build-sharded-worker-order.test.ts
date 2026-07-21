@@ -106,10 +106,7 @@ describe("buildShardedWorkerOrder — translate", () => {
     const index = await scanSource(FIXTURE_TINY)
     buildInventoryFromIndex(art, index)
     buildDependencyGraphFromIndex(art)
-    // translate 在 plan 之后，需 plan.json（给 projectRoot）。analyze 砍后不再需要 analysis-packages。
-    writeFileSync(join(art, "plan.json"), JSON.stringify({
-      targetProject: { artifactId: "testapp" }, projectRoot: "/tmp/gen/testapp",
-    }), "utf-8")
+    // Stage A 起 projectRoot 由 artifactId（metadata/run-context）决定，不再需要 plan.json。
   }, 60000)
 
   it("渲染 translate shard workOrder：含依赖签名块 + projectRoot + source.sql 切片", () => {
@@ -117,14 +114,17 @@ describe("buildShardedWorkerOrder — translate", () => {
     const run = makeRun(runId, "translate", {
       targetUnits: ["CORE_PKG.get_item"], shardIndex: 0, totalShards: 13,
     })
+    // Stage A：artifactId 由 metadata 提供（start 时写入），引擎据此算 projectRoot，不读 plan。
+    ;(run.metadata as Record<string, unknown>).artifactId = "testapp"
     const currentEntry = (run as any).phaseHistory[0]
     const wo = buildShardedWorkerOrder(run, currentEntry, art, null)
 
-    expect(wo).toContain("translate Worker 任务")
+    expect(wo).toContain("translate Master 任务")
     expect(wo).toContain("分片范围硬约束")
     expect(wo).toContain("CORE_PKG.get_item")
-    // translate 有 projectRoot（plan 之后）
+    // translate 有 projectRoot（Stage A：来自 metadata.artifactId）
     expect(wo).toContain("projectRoot")
+    expect(wo).toContain("generated/testapp")
     // source.sql 切片（analyze 砍后不再有 analysis-slice，只 source.sql + meta.json）
     expect(existsSync(join(art, "shard-inputs", "CORE_PKG", "get_item", "source.sql"))).toBe(true)
     expect(existsSync(join(art, "shard-inputs", "CORE_PKG", "get_item", "analysis-slice.json"))).toBe(false)

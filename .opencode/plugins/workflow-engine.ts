@@ -92,6 +92,39 @@ export function formatRunId(sourcePath?: string): string {
 }
 
 /**
+ * 从 sourcePath 推导 Maven artifactId（用作 generated/<artifactId>/ 目录名）。
+ * 取最终路径段，去扩展名，转 kebab-lowercase（Maven artifactId 惯例，匹配如 mfg-erp）。
+ * 与 formatRunId 的 proj 段不同：后者保留大小写+下划线仅作 runId 目录，artifactId 走 kebab。
+ */
+export function projectSlugFromSourcePath(sourcePath?: string): string {
+  if (!sourcePath) return "unknown"
+  const base = sourcePath.replace(/\\/g, "/").replace(/\/+$/, "").split("/").pop() ?? ""
+  const noExt = base.replace(/\.[^.]+$/, "")
+  const slug = noExt.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+  return slug || "unknown"
+}
+
+/**
+ * 取本 run 的 artifactId（决定 generated/<artifactId>/ projectRoot）。
+ * 优先级：run.metadata.artifactId（start 写入）→ run-context.json.params.artifactId
+ * → plan.json.targetProject.artifactId（兼容 Stage A 之前的旧 run）→ sourcePath 推导。
+ *
+ * Stage A 起 artifactId 由 start 写入 run-context/metadata，引擎不再依赖 plan 算 projectRoot。
+ * plan 兜底仅用于兼容旧 run，Stage C 删 plan 阶段时移除。
+ */
+function getArtifactIdFromRun(run: { runId: string; metadata?: Record<string, unknown> }): string | null {
+  const md = (run.metadata ?? {}) as Record<string, unknown>
+  if (typeof md.artifactId === "string" && md.artifactId) return md.artifactId
+  const ctx = loadRunContext(run.runId)
+  if (ctx?.params?.artifactId) return ctx.params.artifactId
+  const planArt = engine.loadArtifactJson(`${ARTIFACT_DIR}/${run.runId}`, "plan")
+  const fromPlan = (planArt?.targetProject as { artifactId?: string } | undefined)?.artifactId
+  if (typeof fromPlan === "string" && fromPlan) return fromPlan
+  if (typeof md.sourcePath === "string" && md.sourcePath) return projectSlugFromSourcePath(md.sourcePath)
+  return null
+}
+
+/**
  * run-context.json — 一次运行的输入参数 + 目录的稳固快照。
  * 与 run.json（引擎状态，会被引擎更新）互补：run-context.json 在 start 时写一次，
  * 记录用户原始输入与解析后参数，resume 时作为输入参数的兜底事实源。
@@ -109,6 +142,7 @@ export interface RunContext {
     dedupRules?: string
     phases?: string
     mode?: string
+    artifactId?: string                  // Java 项目 artifactId（决定 generated/<artifactId>/）；start 时由 --project 或 sourcePath 推导写入
   }
   dirs: { artifacts: string; logs: string }
   createdAt: string
@@ -817,12 +851,10 @@ function buildRuntimeContext(run: WorkflowRun): string {
   // projectRoot: 永远 = generated/<artifactId>/（去 fallback 设计，路径仅由 artifactId 决定）。
   // generatedRootFor 即 resolveGeneratedRoot（base），与 dispatch projectRootLine、claimGeneratedRoot、
   // saveArtifact P3b、validation 全部同源 base，无翻转。
-  const planArtifact = engine.loadArtifactJson(`${ARTIFACT_DIR}/${run.runId}`, "plan")
-  if (planArtifact) {
-    const targetProject = planArtifact.targetProject as { artifactId: string } | undefined
-    if (targetProject?.artifactId) {
-      lines.push(`projectRoot: ${generatedRootFor(run, targetProject.artifactId)}`)
-    }
+  // Stage A：artifactId 由 getArtifactIdFromRun 从 metadata/run-context 取（start 写入），不再读 plan。
+  const artifactId = getArtifactIdFromRun(run)
+  if (artifactId) {
+    lines.push(`projectRoot: ${generatedRootFor(run, artifactId)}`)
   }
 
   // 查找当前 entry（用于 incrementalContext 和 triggerPhase）
@@ -1123,9 +1155,8 @@ export function buildShardedWorkerOrder(
     ? buildDependencySignaturesBlock(artDir, shardTargetUnits, completedUnitIds)
     : ""
 
-  // 4) projectRoot（translate 在 plan 之后，有；analyze 在 plan 之前，无）
-  const planArt = engine.loadArtifactJson(artDir, "plan")
-  const artifactId = (planArt?.targetProject as any)?.artifactId
+  // 4) projectRoot（Stage A：artifactId 由 getArtifactIdFromRun 从 metadata/run-context 取，不再读 plan）
+  const artifactId = getArtifactIdFromRun(run)
   // scaffold 在 else 分支（非分片）派发时 claim；此处 analyze/translate 只读解析 base。
   const projectRoot = artifactId ? resolveGeneratedRoot(run.runId, artifactId) : null
   const projectRootLine = projectRoot ? `- projectRoot: \`${projectRoot}\`  ← Java/项目文件写入此目录` : ""
@@ -1647,26 +1678,23 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
       // 并校验 Java 文件实际写入了 projectRoot 而非 artifactsDir/translations/
       if (phase === "scaffold") {
         const scaffoldData = parsed as { projectRoot: string; generated?: Record<string, unknown> }
-        const planForRoot = engine.loadArtifactJson(artifactsDir, "plan")
-        if (planForRoot) {
-          const artifactId = (planForRoot.targetProject as { artifactId: string })?.artifactId
-          if (artifactId) {
-            // 用 generatedRootFor（读 metadata.generatedRoot 单一真相源），不用 resolveGeneratedRoot 重新派生——
-            // 否则磁盘状态在 claim/save/validation 间变化时 expectedRoot 会 base↔fallback 翻转，
-            // 与 dispatch 注入给 agent 的值不一致，导致 advance 反复拒绝（先要 runId 后缀、再不要、再要）。
-            const expectedRoot = generatedRootFor(run, artifactId)
-            if (scaffoldData.projectRoot !== expectedRoot) {
-              return `scaffold.json projectRoot 必须是 "${expectedRoot}"，实际为 "${scaffoldData.projectRoot}"。请使用 Runtime Context 中注入的 projectRoot 值。`
-            }
-            // D14: 校验 pom.xml 实际存在于 projectRoot 下（而非 artifactsDir/translations/ 下）
-            const pomInProjectRoot = existsSync(join(expectedRoot, "pom.xml"))
-            const pomInArtifactsDir = existsSync(join(artifactsDir, "translations", artifactId, "pom.xml"))
-            if (!pomInProjectRoot && pomInArtifactsDir) {
-              return `scaffold 阶段 pom.xml 写入了错误位置 "${join(artifactsDir, "translations", artifactId)}"。Java 源文件必须写入 projectRoot="${expectedRoot}"，不能写入 artifactsDir/translations/。请将所有 Java 文件从 artifactsDir/translations/${artifactId}/ 移动到 ${expectedRoot}/。`
-            }
-            if (!pomInProjectRoot) {
-              return `scaffold 阶段未在 projectRoot="${expectedRoot}" 下找到 pom.xml。请确保 Java 源文件写入 Runtime Context 中注入的 projectRoot 目录。`
-            }
+        const artifactId = getArtifactIdFromRun(run)
+        if (artifactId) {
+          // 用 generatedRootFor（读 metadata.generatedRoot 单一真相源），不用 resolveGeneratedRoot 重新派生——
+          // 否则磁盘状态在 claim/save/validation 间变化时 expectedRoot 会 base↔fallback 翻转，
+          // 与 dispatch 注入给 agent 的值不一致，导致 advance 反复拒绝（先要 runId 后缀、再不要、再要）。
+          const expectedRoot = generatedRootFor(run, artifactId)
+          if (scaffoldData.projectRoot !== expectedRoot) {
+            return `scaffold.json projectRoot 必须是 "${expectedRoot}"，实际为 "${scaffoldData.projectRoot}"。请使用 Runtime Context 中注入的 projectRoot 值。`
+          }
+          // D14: 校验 pom.xml 实际存在于 projectRoot 下（而非 artifactsDir/translations/ 下）
+          const pomInProjectRoot = existsSync(join(expectedRoot, "pom.xml"))
+          const pomInArtifactsDir = existsSync(join(artifactsDir, "translations", artifactId, "pom.xml"))
+          if (!pomInProjectRoot && pomInArtifactsDir) {
+            return `scaffold 阶段 pom.xml 写入了错误位置 "${join(artifactsDir, "translations", artifactId)}"。Java 源文件必须写入 projectRoot="${expectedRoot}"，不能写入 artifactsDir/translations/。请将所有 Java 文件从 artifactsDir/translations/${artifactId}/ 移动到 ${expectedRoot}/。`
+          }
+          if (!pomInProjectRoot) {
+            return `scaffold 阶段未在 projectRoot="${expectedRoot}" 下找到 pom.xml。请确保 Java 源文件写入 Runtime Context 中注入的 projectRoot 目录。`
           }
         }
       }
@@ -3015,6 +3043,11 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
             if (args.dedupRules) metadata.dedupRulesPath = args.dedupRules
             if (userSpecResult?.projectStructure) metadata.projectStructure = userSpecResult.projectStructure
             if (userSpecResult?.sourcePath) metadata.userSpecPath = userSpecResult.sourcePath
+            // artifactId（Java 项目目录名）：--project 优先，否则从 sourcePath 推导（kebab-lowercase）。
+            // 写入 metadata + run-context，引擎据此算 projectRoot，不再依赖 plan.json。
+            const artifactId = (args.project as string | undefined)
+              ?? projectSlugFromSourcePath(args.sourcePath as string | undefined)
+            metadata.artifactId = artifactId
 
             // 尝试从磁盘恢复已有 run
             try {
@@ -3108,6 +3141,7 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
                 specConf: args.specConf as string | undefined,
                 mainEntry: args.mainEntry as string | undefined,
                 phases: args.phases as string | undefined,
+                artifactId,
               },
               dirs: {
                 artifacts: join(ARTIFACT_DIR, runId),
@@ -4227,8 +4261,7 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
             // 扫描失败（mvn/PMD 不可用）→ 写占位 dedup.json（skipped:true），agent 仅收尾。
             let dedupScanSkipped: { skipReason: string } | null = null
             if (run.currentPhase === "dedup") {
-              const planArt = engine.loadArtifactJson(artifactsDir, "plan")
-              const artifactId = (planArt?.targetProject as any)?.artifactId
+              const artifactId = getArtifactIdFromRun(run)
               if (artifactId) {
                 const projectRoot = generatedRootFor(run, artifactId)
                 const dedupRulesPath = (run.metadata as Record<string, unknown>).dedupRulesPath as string | undefined
@@ -4249,7 +4282,7 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
                   getLogger().warn("[dispatch]", `dedup 跳过（PMD CPD 不可用）: ${dedupScanSkipped.skipReason}`)
                 }
               } else {
-                dedupScanSkipped = { skipReason: "plan.json 缺失 targetProject.artifactId，无法定位 projectRoot" }
+                dedupScanSkipped = { skipReason: "artifactId 缺失（run-context/metadata 无），无法定位 projectRoot" }
               }
             }
 
@@ -4259,8 +4292,7 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
             // （删旧中涉及包 finding 再加新），保证 fix 改动后静态结果新鲜，避免假阴/死循环。
             // mvn 不可用 → scanner 内部 checkstyle/pmd 优雅跳过(toolSkipped 标记)，grep 脚本照跑。
             if (run.currentPhase === "review") {
-              const planArt = engine.loadArtifactJson(artifactsDir, "plan")
-              const artifactId = (planArt?.targetProject as any)?.artifactId
+              const artifactId = getArtifactIdFromRun(run)
               if (artifactId) {
                 const projectRoot = generatedRootFor(run, artifactId)
                 const targetPkgs = currentEntry?.incrementalContext?.targetPackages as string[] | undefined
@@ -4277,7 +4309,7 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
                   getLogger().warn("[dispatch]", `review 静态扫描失败（不阻断 dispatch）: ${e.message}`)
                 }
               } else {
-                getLogger().warn("[dispatch]", "review 静态扫描跳过：plan.json 缺失 targetProject.artifactId")
+                getLogger().warn("[dispatch]", "review 静态扫描跳过：artifactId 缺失（run-context/metadata 无）")
               }
             }
 
@@ -4319,8 +4351,8 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
               // projectRoot（scaffold 及之后阶段）：scaffold 调 claimGeneratedRoot 锁定目录（建 base + 写 marker，
               // 同 run 续跑保留 / 换 run 清空）；其余阶段只读解析 base。必须注入 workOrder——scaffold 不走
               // buildShardedWorkerOrder，否则 agent 只能从系统提示拿 projectRoot，且无 claim 则 base 无 marker。
-              const planForRoot = engine.loadArtifactJson(artifactsDir, "plan")
-              const artifactIdForRoot = (planForRoot?.targetProject as { artifactId?: string })?.artifactId
+              // Stage A：artifactId 由 getArtifactIdFromRun 从 metadata/run-context 取（start 写入），不再读 plan。
+              const artifactIdForRoot = getArtifactIdFromRun(run)
               if (artifactIdForRoot) {
                 const pr = run.currentPhase === "scaffold"
                   ? claimGeneratedRoot(run.runId, artifactIdForRoot)
@@ -4545,33 +4577,27 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
               workOrderParts.unshift(scopeBanner)
             }
 
-            // P3c: projectRoot + 文件写入路径映射（plan 阶段之后才有 projectRoot）
-            const planForDispatch = engine.loadArtifactJson(`${ARTIFACT_DIR}/${run.runId}`, "plan")
-            if (planForDispatch) {
-              const artifactId = (planForDispatch.targetProject as any)?.artifactId
-              if (artifactId) {
-                const projectRoot = generatedRootFor(run, artifactId)
-                workOrderParts.push(
-                  `- projectRoot: ${projectRoot}  ← Java/项目文件写入此目录`,
-                )
-              }
+            // P3c: projectRoot + 文件写入路径映射（Stage A：artifactId 由 getArtifactIdFromRun 取，不再读 plan）
+            const artifactIdForDispatch = getArtifactIdFromRun(run)
+            if (artifactIdForDispatch) {
+              const projectRoot = generatedRootFor(run, artifactIdForDispatch)
+              workOrderParts.push(
+                `- projectRoot: ${projectRoot}  ← Java/项目文件写入此目录`,
+              )
             }
 
             // Step B 聚焦语义审查清单（review 阶段，Stage 2）：信号选点 + 圈片段，注入 workOrder。
             // review 项目级单次审核：fix 回环用 targetPackages(fixedPackages)，主线用 analysis.packageNames 全包。
             // 让 reviewer 只对有信号的过程做 #1-#9 语义审，无信号的纯 CRUD 跳过（省 LLM，靠 Step A 兜底）。
-            if (run.currentPhase === "review" && planForDispatch) {
-              const artifactId = (planForDispatch.targetProject as any)?.artifactId
-              if (artifactId) {
-                const focusPkgs = (currentEntry?.incrementalContext?.targetPackages as string[] | undefined)
-                  ?? buildDependencyGraph(`${ARTIFACT_DIR}/${run.runId}`).packageNames
-                  ?? []
-                if (focusPkgs.length > 0) {
-                  const projectRoot = generatedRootFor(run, artifactId)
-                  const sourcePath = String((run.metadata as Record<string, unknown>).sourcePath ?? "")
-                  const focusBlock = buildReviewFocus(`${ARTIFACT_DIR}/${run.runId}`, focusPkgs, sourcePath, projectRoot)
-                  if (focusBlock) workOrderParts.push("", focusBlock)
-                }
+            if (run.currentPhase === "review" && artifactIdForDispatch) {
+              const focusPkgs = (currentEntry?.incrementalContext?.targetPackages as string[] | undefined)
+                ?? buildDependencyGraph(`${ARTIFACT_DIR}/${run.runId}`).packageNames
+                ?? []
+              if (focusPkgs.length > 0) {
+                const projectRoot = generatedRootFor(run, artifactIdForDispatch)
+                const sourcePath = String((run.metadata as Record<string, unknown>).sourcePath ?? "")
+                const focusBlock = buildReviewFocus(`${ARTIFACT_DIR}/${run.runId}`, focusPkgs, sourcePath, projectRoot)
+                if (focusBlock) workOrderParts.push("", focusBlock)
               }
             }
 
@@ -4591,10 +4617,9 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
               `4. 输出阶段小结（WORKER_SUMMARY + TASK_STATUS 格式，TASK_STATUS 为回复最后一段）`,
             )
 
-            // P3c: 路径规则（plan 之后阶段才有 projectRoot 概念）
-            if (planForDispatch && (planForDispatch.targetProject as any)?.artifactId) {
-              const artifactId = (planForDispatch.targetProject as any).artifactId
-              const projectRoot = generatedRootFor(run, artifactId)
+            // P3c: 路径规则（有 projectRoot 即注入；Stage A 起 artifactId 来自 run-context/metadata）
+            if (artifactIdForDispatch) {
+              const projectRoot = generatedRootFor(run, artifactIdForDispatch)
               workOrderParts.push(
                 ``,
                 `## 📂 文件写入路径（强制）`,
@@ -4767,10 +4792,9 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
         // generatedRootFor 读 metadata.generatedRoot，不用 resolveGeneratedRoot 重新派生，
         // 否则与磁盘状态绑定会在 claim/save/validation 间 base↔fallback 翻转）
         if (args.path === "scaffold.json") {
-          const planArtifact = engine.loadArtifactJson(`${ARTIFACT_DIR}/${runId}`, "plan")
-          const artifactId = (planArtifact?.targetProject as any)?.artifactId
+          const run = engine.status(runId)
+          const artifactId = run ? getArtifactIdFromRun(run) : null
           if (artifactId) {
-            const run = engine.status(runId)
             const expectedRoot = run ? generatedRootFor(run, artifactId) : resolveGeneratedRoot(runId, artifactId)
             try {
               const parsed = JSON.parse(args.content)
@@ -4817,15 +4841,12 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
       const runId = currentWorkflowContext.runId
       const artifactsDir = resolve(join(ARTIFACT_DIR, runId))
 
-      // 计算 projectRoot（plan 阶段之后才存在）
-      const planArtifact = engine.loadArtifactJson(`${ARTIFACT_DIR}/${runId}`, "plan")
+      // 计算 projectRoot（Stage A：artifactId 由 getArtifactIdFromRun 取，不再读 plan）
+      const run = engine.status(runId)
+      const artifactId = run ? getArtifactIdFromRun(run) : null
       let projectRoot = ''
-      if (planArtifact) {
-        const artifactId = (planArtifact.targetProject as any)?.artifactId
-        if (artifactId) {
-          const run = engine.status(runId)
-          projectRoot = run ? generatedRootFor(run, artifactId) : resolveGeneratedRoot(runId, artifactId)
-        }
+      if (artifactId) {
+        projectRoot = run ? generatedRootFor(run, artifactId) : resolveGeneratedRoot(runId, artifactId)
       }
 
       const sourcePath = resolveSourcePath(runId)
@@ -4865,11 +4886,9 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
       if (typeof command !== 'string' || !command) return
 
       const runId = currentWorkflowContext.runId
-      const planArtifact = engine.loadArtifactJson(`${ARTIFACT_DIR}/${runId}`, "plan")
-      if (!planArtifact) return
-      const artifactId = (planArtifact.targetProject as any)?.artifactId
-      if (!artifactId) return
       const run = engine.status(runId)
+      const artifactId = run ? getArtifactIdFromRun(run) : null
+      if (!artifactId) return
       const projectRoot = run ? generatedRootFor(run, artifactId) : resolveGeneratedRoot(runId, artifactId)
 
       // 扫描常见写入模式，检测是否往项目文件路径写入
