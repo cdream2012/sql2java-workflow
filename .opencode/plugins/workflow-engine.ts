@@ -34,7 +34,7 @@ import {
   parseMainEntry, resolveEntry, computeClosure, readScope, constOnlyScopePkgs,
   type RunScope, type InventoryPackageLike,
 } from "../workflow/scope-computer"
-import { renderWorkerPrompt, persistWorkOrder, readPersistedWorkOrder, getSubtaskTriggerPrompt } from "../workflow/prompt-renderer"
+import { renderWorkerPrompt, persistSystemPrompt, readPersistedSystemPrompt, readPersistedWorkOrder, getSubtaskTriggerPrompt } from "../workflow/prompt-renderer"
 import { buildReviewSummary } from "../workflow/review-summary-builder"
 import { buildVerifySummary } from "../workflow/verify-summary-builder"
 import { scanDuplicates, type ScanResult } from "../workflow/dedup-scanner"
@@ -1054,6 +1054,7 @@ export function buildShardedWorkerOrder(
   artifactsDir: string,
   rejectionError: string | null,
   subStageOverride?: string,
+  effectiveAgentFile?: string,
 ): string {
   const phase = run.currentPhase ?? "translate"
   const activeShardPlan = engine.getShardPlan(run)
@@ -1173,12 +1174,111 @@ export function buildShardedWorkerOrder(
   // （subStageOverride 指定 sub-stage → translate-<subStage>-worker.md 模板）。
   const currentSubStage = subStageOverride ?? (effectiveIc?.currentSubStage as string | undefined)
   const rendered = renderWorkerPrompt(phase, ctx, currentSubStage)
+  // 拼完整 system prompt 并落盘（.systemPrompt.md）——落盘=注入=审核三者一致，hook 退化为读盘注入。
+  // effectiveAgentFile 缺省回退 currentWorkflowContext（master 场景）。
+  const agentFile = effectiveAgentFile ?? currentWorkflowContext?.agentFile ?? ""
+  const fullSystemPrompt = buildFullSystemPrompt(run, rendered, agentFile, currentSubStage, phase)
   try {
-    persistWorkOrder(artifactsDir, phase, si, rendered, currentSubStage)
+    persistSystemPrompt(artifactsDir, phase, si, fullSystemPrompt, currentSubStage)
   } catch (e: any) {
-    getLogger().warn("[dispatch]", `persistWorkOrder 失败（不阻断）: ${e.message}`)
+    getLogger().warn("[dispatch]", `persistSystemPrompt 失败（不阻断）: ${e.message}`)
   }
   return rendered
+}
+
+/**
+ * 构建完整 system prompt（6 段拼装）—— dispatch 与 system.transform 共用的单一来源。
+ *
+ * 把原 system.transform hook 内的拼装逻辑提取为纯函数：读 agent .md 切 common/phaseSection，
+ * 叠加 javaCodeSpec（含 --spec 整体替换分支）/ sharedInstructions / runtimeContext，前置 workOrder 段
+ * （非空时替代 shardBanner + runtimeContext，避免重复）。dispatch 时调一次拼完整落盘（.systemPrompt.md），
+ * hook 读盘注入；旧 run 兜底现场拼。语义与原 hook 完全一致，仅位置前移 + 单一函数。
+ *
+ * @param run                当前 run（dispatch 时非 null；hook 兜底可能 null）
+ * @param workOrder          parts[0] 内容：dispatch 传渲染后的 workOrder；hook 兜底传 readPersistedWorkOrder
+ *                           结果（null → 回退 shardBanner + runtimeContext）
+ * @param effectiveAgentFile slave 的 subStageConfig.agentFile / master 的 currentWorkflowContext.agentFile
+ * @param _effectiveSubStage sub-stage 名（master/非分片为 undefined）—— 当前仅用于落盘文件名区分，拼装不依赖
+ * @param phase              当前 phase
+ */
+function buildFullSystemPrompt(
+  run: WorkflowRun | null,
+  workOrder: string | null,
+  effectiveAgentFile: string,
+  _effectiveSubStage: string | undefined,
+  phase: string,
+): string {
+  // effectiveAgentFile 缺失（测试 / currentWorkflowContext 未设）→ 安全降级，仅返回 workOrder 段
+  if (!effectiveAgentFile) {
+    getLogger().warn("[workflow-engine]", `buildFullSystemPrompt: effectiveAgentFile 为空，跳过 agent 段拼接（仅返回 workOrder）`)
+    return workOrder ?? ""
+  }
+  const agentPath = join(findOpencodeDir(), effectiveAgentFile)
+  if (!existsSync(agentPath)) {
+    getLogger().error("[workflow-engine]", `buildFullSystemPrompt: Agent file not found: ${agentPath}`)
+    return workOrder ?? ""
+  }
+  // 1. 读取 agent .md 全文（去 YAML frontmatter）
+  let c: string
+  try {
+    c = readFileSync(agentPath, "utf-8").replace(/^---[\s\S]*?---\n*/, "")
+  } catch (e: any) {
+    getLogger().error("[workflow-engine]", `buildFullSystemPrompt: 读取 agent 文件失败: ${e.message}`)
+    return workOrder ?? ""
+  }
+  // 2. 提取通用部分 + 当前 phase section
+  const common = extractCommonPart(c)
+  const phaseSection = extractPhaseSection(c, phase)
+  // 3. Runtime Context
+  let runtimeContext = ""
+  if (run) {
+    runtimeContext = buildRuntimeContext(run)
+  } else {
+    getLogger().warn(
+      "[workflow-engine]",
+      `buildFullSystemPrompt: run 为 null——Runtime Context 实际值未注入，worker 将依赖 workOrder 自包含字段。`,
+    )
+  }
+  // 4. sharedInstructions
+  const sharedInstructions = run ? buildSharedInstructions(run) : ""
+  // 5. javaCodeSpec（--spec 整体替换语义保留：用户规约文件含 ## 章节即唯一规约，不与内置合并）
+  const needsJavaSpec = JAVA_SPEC_AGENTS.some(a => effectiveAgentFile.includes(a))
+  const rawSpec = needsJavaSpec ? readJavaCodeSpec() : ""
+  let javaCodeSpec: string
+  if (needsJavaSpec && rawSpec) {
+    const userSpecPath = (run?.metadata as Record<string, unknown>)?.userSpecPath as string | undefined
+    if (userSpecPath) {
+      try {
+        const userSpec = loadUserSpec(userSpecPath, undefined)
+        if (userSpec && userSpec.sections.size > 0) {
+          javaCodeSpec = userSpec.rawMarkdown
+        } else {
+          javaCodeSpec = rawSpec
+        }
+      } catch (e: any) {
+        getLogger().warn("[workflow-engine]", `加载用户规约失败，回退到内置规约: ${e.message}`)
+        javaCodeSpec = rawSpec
+      }
+    } else {
+      javaCodeSpec = rawSpec
+    }
+  } else if (needsJavaSpec) {
+    javaCodeSpec = "\n> ⚠️ **[workflow-engine] Java 代码规约文件缺失或不可读，请检查 .opencode/docs/java-code-spec.md**\n"
+  } else {
+    javaCodeSpec = ""
+  }
+  // 6. shardBanner（workOrder 缺失时作 parts[0] 兜底）
+  const shardBanner = run ? buildShardScopeBanner(run) : ""
+  const hasWorkOrder = !!workOrder
+  const parts = [
+    workOrder ?? shardBanner,
+    common,
+    phaseSection,
+    javaCodeSpec,
+    sharedInstructions,
+    hasWorkOrder ? "" : (runtimeContext ? "## Runtime Context\n\n" + runtimeContext : ""),
+  ].filter((p) => p !== "")
+  return parts.join("\n\n")
 }
 
 /**
@@ -4029,7 +4129,7 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
             const artifactsDir = `${ARTIFACT_DIR}/${runId}`
             // 渲染并持久化 slave workOrder（落盘 dispatch-logs/translate-{subStage}-shardN.workOrder.md），
             // system.transform hook 按 slave session 注入其系统提示。master 只拿最小 trigger 派 Task，保持上下文干净。
-            buildShardedWorkerOrder(run, currentEntry, artifactsDir, null, subStage)
+            buildShardedWorkerOrder(run, currentEntry, artifactsDir, null, subStage, subStageConfig.agentFile)
             const slaveAgent = agentFileToName(subStageConfig.agentFile)
             const minimalPrompt = getSubtaskTriggerPrompt()
             const ic = currentEntry?.incrementalContext
@@ -4284,7 +4384,7 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
               && currentEntry?.incrementalContext?.shardIndex !== undefined
             let workOrder: string
             if (isShardedWorkerPhase) {
-              workOrder = buildShardedWorkerOrder(run, currentEntry, artifactsDir, artifactValidationError)
+              workOrder = buildShardedWorkerOrder(run, currentEntry, artifactsDir, artifactValidationError, undefined, currentWorkflowContext?.agentFile)
             } else {
             // 构建 Work Order prompt
             const workOrderParts = [
@@ -4616,11 +4716,12 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
             )
 
             workOrder = workOrderParts.join("\n")
-            // 非分片阶段同样落盘 workOrder，供 system.transform 注入 worker 系统提示（编排者不再中转全文）
+            // 非分片阶段同样拼完整 system prompt 落盘，供 system.transform 读盘注入（编排者不再中转全文）
+            const fullSystemPrompt = buildFullSystemPrompt(run, workOrder, currentWorkflowContext?.agentFile ?? "", undefined, run.currentPhase)
             try {
-              persistWorkOrder(artifactsDir, run.currentPhase, undefined, workOrder)
+              persistSystemPrompt(artifactsDir, run.currentPhase, undefined, fullSystemPrompt)
             } catch (e: any) {
-              getLogger().warn("[dispatch]", `persistWorkOrder 失败（不阻断）: ${e.message}`)
+              getLogger().warn("[dispatch]", `persistSystemPrompt 失败（不阻断）: ${e.message}`)
             }
             } // end else（非 analyze/translate 走 workOrderParts）
 
@@ -4916,103 +5017,56 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
     try {
       // translate 主从架构：按 session 识别当前是 master 还是某 slave。
       // master（translator）走 currentWorkflowContext.agentFile；slave（translate-{stage}）用其自身 .md，
-      // 并按 subStage 读对应 sub-stage workOrder（否则会误注入 master 的 translator.md + master workOrder）。
+      // 并按 subStage 读对应 sub-stage systemPrompt（否则会误注入 master 的 translator.md + master prompt）。
       const sidAgent = sid ? sessionAgentMap.get(sid) : undefined
       const slaveInfo = sidAgent ? getSlaveAgentMap().get(sidAgent) : undefined
       const effectiveAgentFile = slaveInfo?.agentFile ?? currentWorkflowContext.agentFile
       const effectiveSubStage = slaveInfo?.subStage
-      // 使用共享路径工具定位 agent 文件，不依赖 process.cwd()
-      const agentPath = join(findOpencodeDir(), effectiveAgentFile)
-      if (existsSync(agentPath)) {
-        // 1. 读取 agent .md 全文
-        let c = readFileSync(agentPath, "utf-8").replace(/^---[\s\S]*?---\n*/, "")
+      const run = engine.status(currentWorkflowContext.runId)
+      const artDir = join(ARTIFACT_DIR, currentWorkflowContext.runId)
 
-        // 2. 提取通用部分 + 当前 phase section
-        const common = extractCommonPart(c)
-        const phaseSection = extractPhaseSection(c, currentWorkflowContext.phase)
-
-        // 3. 构建 Runtime Context
-        const run = engine.status(currentWorkflowContext.runId)
-        let runtimeContext = ""
-        if (run) {
-          runtimeContext = buildRuntimeContext(run)
-        } else {
-          // currentWorkflowContext 已设（有活跃 workflow）但 run.json 读不到 → 系统提示会缺
-          // runtimeContext 实际值。worker 仍可从 workOrder 关键参数取核心字段（已自包含），
-          // 但此降级须可见，避免静默失能。
-          getLogger().warn(
-            "[workflow-engine]",
-            `system.transform: currentWorkflowContext 已设(runId=${currentWorkflowContext.runId})但 engine.status 读不到 run——Runtime Context 实际值未注入系统提示，worker 将依赖 workOrder 自包含字段。`,
-          )
+      // 解析当前分片 + sub-stage（定位落盘文件名）
+      let si: number | undefined
+      let ss: string | undefined
+      if (run) {
+        try {
+          const ce = engine.findCurrentEntry(run)
+          si = ce?.incrementalContext?.shardIndex as number | undefined
+          // slave session 用其 subStage 读对应 sub-stage prompt；master session 用 entry 的 currentSubStage（恒 undefined → master prompt）
+          ss = effectiveSubStage ?? (ce?.incrementalContext?.currentSubStage as string | undefined)
+        } catch (e: any) {
+          getLogger().warn("[workflow-engine]", `system.transform: 解析 entry 失败: ${e.message}`)
         }
-
-        // 4. 拼接 system prompt
-        const sharedInstructions = run ? buildSharedInstructions(run) : ""
-        // 仅对白名单中的 agent 注入代码规约（按 effective agent 文件判定，slave 也命中 translate-* 写 Java 的）
-        const needsJavaSpec = JAVA_SPEC_AGENTS.some(a => effectiveAgentFile.includes(a))
-        const rawSpec = needsJavaSpec ? readJavaCodeSpec() : ""
-        // --spec 整体替换语义：用户规约文件（含 ## 章节）即唯一规约，不与内置规约合并。
-        // 纯目录结构文件（无 ## 章节，sections.size===0）仅覆盖 projectStructure，规约仍用内置默认。
-        let javaCodeSpec: string
-        if (needsJavaSpec && rawSpec) {
-          const userSpecPath = (run?.metadata as Record<string, unknown>)?.userSpecPath as string | undefined
-          if (userSpecPath) {
-            try {
-              const userSpec = loadUserSpec(userSpecPath, undefined)
-              if (userSpec && userSpec.sections.size > 0) {
-                javaCodeSpec = userSpec.rawMarkdown
-              } else {
-                javaCodeSpec = rawSpec
-              }
-            } catch (e: any) {
-              getLogger().warn("[workflow-engine]", `加载用户规约失败，回退到内置规约: ${e.message}`)
-              javaCodeSpec = rawSpec
-            }
-          } else {
-            javaCodeSpec = rawSpec
-          }
-        } else if (needsJavaSpec) {
-          // 规约缺失时注入显眼警告，避免 agent 在不知情下产出无规约代码
-          javaCodeSpec = "\n> ⚠️ **[workflow-engine] Java 代码规约文件缺失或不可读，请检查 .opencode/docs/java-code-spec.md**\n"
-        } else {
-          javaCodeSpec = ""
-        }
-        // D13 已迁至 dispatch workOrder — schema hint 不再注入 system prompt（单一来源原则）
-        // 分片硬约束 banner 置于系统提示最前（确定性兜底，压过编排者自撰的通用任务提示）
-        const shardBanner = run ? buildShardScopeBanner(run) : ""
-        // 所有阶段：注入 dispatch 持久化的 workOrder 作权威任务（确定性，不依赖编排者透传）。
-        // workOrder 自包含 Runtime Context 实际值 + 任务范围 + schema hint + 路径规则（分片阶段另含 scopeBanner
-        // + 切片读取清单 + 依赖签名），故替代单独的 shardBanner + runtimeContext（避免重复）。缺失
-        //（dispatch 未落盘 / 旧 run）则回退 shardBanner + runtimeContext。
-        let persistedWorkOrder: string | null = null
-        if (run) {
-          try {
-            const ce = engine.findCurrentEntry(run)
-            const si = ce?.incrementalContext?.shardIndex as number | undefined
-            // slave session 用其 subStage 读对应 sub-stage workOrder；master session 用 entry 的 currentSubStage（恒 undefined → master workOrder）
-            const ss = effectiveSubStage ?? (ce?.incrementalContext?.currentSubStage as string | undefined)
-            persistedWorkOrder = readPersistedWorkOrder(join(ARTIFACT_DIR, currentWorkflowContext.runId), currentWorkflowContext.phase, si, ss)
-          } catch (e: any) {
-            getLogger().warn("[workflow-engine]", `读取持久化 workOrder 失败（回退 banner+runtimeContext）: ${e.message}`)
-          }
-        }
-        const parts = [
-          persistedWorkOrder ?? shardBanner,
-          common,
-          phaseSection,
-          javaCodeSpec,
-          sharedInstructions,
-          persistedWorkOrder ? "" : (runtimeContext ? "## Runtime Context\n\n" + runtimeContext : ""),
-        ].filter((p) => p !== "")
-
-        const finalSystem = parts.join("\n\n")
-        // 必须原地 splice 修改 output.system，不能 `output.system = [finalSystem]` 赋值新数组——
-        // opencode 持有原始数组引用，赋值会丢引用导致 worker 收不到注入的 workOrder（只看到默认
-        // agent .md 方法论）。与 truncate hook（splice 保持引用）同模式。
-        if (output && Array.isArray(output.system)) output.system.splice(0, output.system.length, finalSystem)
-      } else {
-        getLogger().error("[workflow-engine]", `Agent file not found: ${agentPath}. System prompt will not be injected.`)
       }
+
+      // 主路径：读 dispatch 落盘的完整 system prompt（落盘=注入=审核三者一致，单一来源）。
+      // dispatch 时已用 buildFullSystemPrompt 拼好 6 段，此处直接注入，不再现场拼。
+      if (run) {
+        try {
+          const full = readPersistedSystemPrompt(artDir, currentWorkflowContext.phase, si, ss)
+          if (full) {
+            // 原地 splice 保持数组引用（opencode 持有原引用，赋值新数组会丢引用导致 worker 收不到注入）
+            if (output && Array.isArray(output.system)) output.system.splice(0, output.system.length, full)
+            return
+          }
+        } catch (e: any) {
+          getLogger().warn("[workflow-engine]", `system.transform: 读取持久化 systemPrompt 失败（回退现场拼）: ${e.message}`)
+        }
+      }
+
+      // 兜底：旧 run（仅有 .workOrder.md，无 .systemPrompt.md）或 dispatch 未落盘 → 现场拼。
+      // 复用 buildFullSystemPrompt，保证 hook 与 dispatch 走同一拼装函数（单一来源，不漂移）。
+      let persistedWorkOrder: string | null = null
+      if (run) {
+        try {
+          persistedWorkOrder = readPersistedWorkOrder(artDir, currentWorkflowContext.phase, si, ss)
+        } catch (e: any) {
+          getLogger().warn("[workflow-engine]", `system.transform: 读取持久化 workOrder 失败（回退 banner+runtimeContext）: ${e.message}`)
+        }
+      }
+      const fullSystemPrompt = buildFullSystemPrompt(run, persistedWorkOrder, effectiveAgentFile, effectiveSubStage, currentWorkflowContext.phase)
+      // 原地 splice 保持数组引用（同主路径）
+      if (output && Array.isArray(output.system)) output.system.splice(0, output.system.length, fullSystemPrompt)
     } catch (e: any) {
       getLogger().error("[workflow-engine]", `Failed to build system prompt: ${e.message}`)
     }

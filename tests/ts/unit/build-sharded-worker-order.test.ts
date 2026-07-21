@@ -130,7 +130,10 @@ describe("buildShardedWorkerOrder — translate", () => {
     expect(existsSync(join(art, "shard-inputs", "CORE_PKG", "get_item", "analysis-slice.json"))).toBe(false)
     // 无残留占位符
     expect(wo).not.toContain("{{")
-    // 落盘
-    expect(existsSync(join(art, "dispatch-logs", "translate-shard0.workOrder.md"))).toBe(true)
+    // 落盘完整 system prompt（.systemPrompt.md）——落盘=注入=审核三者一致
+    const promptPath = join(art, "dispatch-logs", "translate-shard0.systemPrompt.md")
+    expect(existsSync(promptPath)).toBe(true)
+    // 落盘内容含 workOrder 段（effectiveAgentFile 缺失时降级为仅 workOrder）
+    expect(readFileSync(promptPath, "utf-8")).toContain("translate Master 任务")
   })
 })
