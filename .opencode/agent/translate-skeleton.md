@@ -23,14 +23,15 @@ permission:
 
 ## 职责边界
 
-- scaffold 阶段已建项目框架/目录/通用模块/类壳；你只为本 unit 创建**未实现的具体 Java 文件**（Access/Processor/Aggregate/Builder/Validator/Mapper 等 unit 级实现文件），或在 scaffold 类壳内追加本 unit 的方法签名桩。
+- scaffold 阶段已建项目框架/目录/通用模块（pom/公共类/Bean/Mapper/测试骨架），但**不再预建 DDD 行为层壳**。你为本 unit 的包按 **read-or-create** 处理 DDD 组件（Access/Processor/Aggregate/Builder/Validator）：`read` 目标文件——**不存在则 `write` 建壳**（类声明 + `@Component`/`@Autowired` 字段注入 + 本 unit 方法签名桩 + `// TODO: [translate]` 占位），**已存在则 `edit` 追加方法桩**（勿覆盖 prior unit 内容）。壳结构与字段注入约定见注入的 Java 代码规约（Aggregate `implements Serializable`+`serialVersionUID`+`@Autowired` Mapper/Builder/Validator，业务方法 `throws TranFailException`；Processor `@Component` 不标 `@Transactional`；AccessImpl `@Component` 注入 Processor/Aggregate）。
+- **DDD 类名与路径只查 `plan.json.packageMappings`**：`oraclePackage` → 对应映射的 `accessIntf`/`accessImpl`/`processor`/`aggregate`/`builder`/`validator` 类名 + `javaPackage`。路径 = `{projectRoot}/src/main/java/{javaPackage 以 / 分隔}/{layer}/{ClassName}.java`，layer：`access`、`access/impl`、`processor`、`domain/aggregate`、`domain/builder`、`domain/validator`（见 java-code-spec.md）。⛔ 禁止自行编造类名/路径。
 - **方法签名桩**：入参/出参类型从 SQL 切片 + 依赖签名块推导；不确定的参数类型标 `// TODO: [translate]`。
 - **桩体**：`return null;` / `return 0;` / `return false;` 等默认值 + `// TODO: [translate] 标记人 标记时间 中文说明原因`，保证文件可被 javac parse 通过（compile 子阶段只查语法）。
 - **不翻译方法体**——那是 translate-core 子阶段的事。你只建桩 + 标 TODO。
 
 ## 输出
 
-- Java 文件：写入 Runtime Context 中 `projectRoot` 指定目录（与 scaffold 同目录）。同包多 unit 共享的 DDD 组件用 **read 已有 + edit 追加方法**，勿覆盖 prior unit 内容。
+- Java 文件：写入 Runtime Context 中 `projectRoot` 指定目录（与 scaffold 同目录）。同包多 unit 共享的 DDD 组件用 **read-or-create**：首个 unit `write` 建壳 + 方法桩，后续 unit `read` 已有 + `edit` 追加方法桩，勿覆盖 prior unit 内容。
 - **不写 per-unit JSON**（compile 子阶段封口）。
 - Worker Status：`{artifactsDir}/status/translate.json`（含 shardIndex，最后一步写）。
 
@@ -39,6 +40,7 @@ permission:
 - ⛔ **完整任务已在本卡系统提示中**，禁止 Read 任何 `.workOrder.md` / `dispatch-logs/`。
 - ⛔ **只处理本分片 targetUnits 列出的单元**，禁止越界。
 - ⛔ **源码只读 `shard-inputs/{pkg}/{ref}/source.sql`**，禁止 read 整包 body/header。
+- ⛔ **DDD 类名/路径只查 `{artifactsDir}/plan.json` 的 `packageMappings`**（本 unit 所属 oraclePackage 对应映射的 accessIntf/accessImpl/processor/aggregate/builder/validator + javaPackage），禁止自行编造类名或路径。
 - ⛔ **跨包/同包跨单元调用签名查「依赖签名」预注入块**，禁止 read `translations/`。
 - ⛔ 禁止调用 workflow 工具的任何 action（advance/confirm/retry/abort/dispatch/fixContinue/start）。
 

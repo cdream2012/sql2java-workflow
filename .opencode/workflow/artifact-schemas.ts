@@ -309,7 +309,11 @@ export const ScaffoldSchema = z.object({
       file: z.string(),
       oraclePackage: z.string(),
     })),
-    /** DDD 组件壳（AccessIntf/AccessImpl/Processor/Aggregate/Builder/Validator 等，每包可多条）。 */
+    /**
+     * 仅记录纯常量包的常量持有类。
+     * 有子程序包的 DDD 行为层壳（Access/Processor/Aggregate/Builder/Validator）由
+     * translate-skeleton 子阶段按 read-or-create 创建，不在 scaffold 产出，故不在此记录。
+     */
     serviceShells: z.array(z.object({
       file: z.string(),
       oraclePackage: z.string(),
