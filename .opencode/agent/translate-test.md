@@ -24,7 +24,7 @@ permission:
 ## 职责
 
 - 读 translate-core 产出的本 unit Java 文件 + scaffold 生成的测试骨架（testShells / mapperTestShells）。
-- 为本 unit 的行为类（DDD 结构见注入的 Java 代码规约 §2）生成单元测试（填充骨架）。
+- 为本 unit 的业务实现类（规约定义的业务实现角色，见注入的 Java 代码规约分层架构章节）生成单元测试（填充骨架，@Mock Mapper + @InjectMocks 业务实现类）。
 - 为本 unit 的每个 SQL statement 生成 Mapper 集成测试（基于 scaffold 的 mapperTestShells + H2 schema）。
 - 测试用例覆盖正常路径 + 边界；断言用中文注释说明预期。
 - 不改翻译产物（只读 Java 文件，写测试文件）。

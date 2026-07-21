@@ -125,7 +125,7 @@ sub-stage 序列：skeleton → translate-core → test-gen → static-check →
 |-----------|-------------|------|
 | skeleton | translate-skeleton | 未实现 Java 文件 + 方法签名桩 + `// TODO: [translate]` 占位（可编译桩） |
 | translate-core | translate-core | 替换 TODO 桩为真实翻译，文件无 `// TODO: [translate]` 残留 |
-| test-gen | translate-test | Aggregate 单测 + Mapper 集成测试（填 scaffold 测试骨架） |
+| test-gen | translate-test | 业务实现类单测 + Mapper 集成测试（填 scaffold 测试骨架） |
 | static-check | translate-lint | `translations/{pkg}/{ref}.lint.json`（TODO 残留 / checkstyle / pmd / javaFile 完整性，不修复） |
 | compile | translate-compile | javac 语法校验 + 修复循环 + 封口 `translations/{pkg}/{ref}.json`（status=completed） |
 | fsd | translate-fsd | `fsd/{pkg}/{ref}.md`（模板填空 FSD 说明书） |
@@ -174,7 +174,7 @@ sub-stage 序列：skeleton → translate-core → test-gen → static-check →
 
 - **上游 artifact**：
   - `${artifactsDir}/packages/{pkg}.json` — 逐包 inventory + complexity（依赖图由引擎按需推导，不落盘）
-  - `${artifactsDir}/scaffold.json` — 包映射（oraclePackage→javaPackage/DDD 组件类名）+ 项目结构
+  - `${artifactsDir}/scaffold.json` — 包映射（oraclePackage→javaPackage/components[] 组件类名）+ 项目结构
   - `${artifactsDir}/scaffold.json` — 项目结构
   - 触发阶段的 summary（`review-summary.json` 或 `verify-summary.json`）
   - 相关包的 per-package artifact（review.json / verify.json）
@@ -231,7 +231,7 @@ sub-stage 序列：skeleton → translate-core → test-gen → static-check →
 verify 触发的 fix（workOrder 含 `## 未覆盖行清单` 段）需按 jacoco 未覆盖点增量补测试：
 
 1. **读清单**：workOrder「## 未覆盖行清单」段列出 `{ package, class, line, type }`，每项是 jacoco 解析出的未覆盖点；同时可读 `${artifactsDir}/coverage-gaps.md` 看完整报告（含未纳入统计的范围说明）
-2. **按 class:line 定位**：`class` 是全限定 Java 类名（如 `com.example.ordersystem.order.domain.aggregate.OrderAggregate`），`line` 是该类源码行号；`read` 该类文件，找到 line 对应的方法
+2. **按 class:line 定位**：`class` 是全限定 Java 类名（如 `com.example.ordersystem.<业务实现类>`），`line` 是该类源码行号；`read` 该类文件，找到 line 对应的方法
 3. **补测试**（在对应的 `*Test.java` 中 edit 追加测试方法，勿覆盖已有测试）：
    - `type=line`（行未覆盖）：补对应方法的正向用例，arrange 构造输入 + mock 依赖返回值，act 调用，assert 返回值/副作用
    - `type=branch`（分支未覆盖）：补缺失的 if/else 一支——边界值、异常输入、null、错误码路径，用 `assertThrows` 验证异常路径（异常类型按注入的 Java 代码规约 §3.4 约定的统一业务异常）

@@ -1342,7 +1342,7 @@ export class WorkflowEngine {
     const shards: string[][] = []
     for (const lv of [...byLevel.keys()].sort((a, b) => a - b)) {
       const items = byLevel.get(lv)!
-      // 同包优先排序（软聚拢，同包共享 DDD 组件文件编辑更连贯）
+      // 同包优先排序（软聚拢，同包共享业务组件文件编辑更连贯）
       items.sort((a, b) => {
         const pa = pkgKey(a.key), pb = pkgKey(b.key)
         return pa === pb ? a.key.localeCompare(b.key) : pa.localeCompare(pb)

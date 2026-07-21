@@ -79,6 +79,7 @@ export function buildVerifySummary(artifactsDir: string): {
   const projectRoot = readProjectRoot(artifactsDir)
   const packages = readPackageList(artifactsDir)
   const packageMappings = readPackageMappings(artifactsDir)
+  const coverageExcludes = readCoverageExcludes(artifactsDir)
 
   // ── 1. 解析 mvn 日志 ──
   const compileLogPath = join(artifactsDir, COMPILE_LOG)
@@ -95,7 +96,7 @@ export function buildVerifySummary(artifactsDir: string): {
     : { executed: false, skipReason: "Maven/JDK 未安装或未运行 mvn test，测试执行已跳过", testFiles: [] }
 
   // ── 1b. 解析 jacoco.xml（覆盖率） ──
-  const coverage = buildCoverage(artifactsDir, projectRoot, packages, warnings)
+  const coverage = buildCoverage(artifactsDir, projectRoot, packages, warnings, coverageExcludes)
 
   // ── 2. 逐包归因编译/测试失败 + 覆盖率 ──
   const pkgCoverageByName = new Map(coverage.packageCoverage.map(pc => [pc.packageName.toUpperCase(), pc]))
@@ -153,7 +154,7 @@ export function buildVerifySummary(artifactsDir: string): {
   writeFileSync(join(artifactsDir, "verify-summary.json"), JSON.stringify(validated.data, null, 2), "utf-8")
 
   // ── 3b. 写人类可读覆盖率报告 coverage-gaps.md ──
-  writeFileSync(join(artifactsDir, COVERAGE_GAPS_MD), buildCoverageGapsMd(coverage, projectRoot, warnings), "utf-8")
+  writeFileSync(join(artifactsDir, COVERAGE_GAPS_MD), buildCoverageGapsMd(coverage, projectRoot, warnings, coverageExcludes), "utf-8")
 
   getLogger().info(
     "[verify-summary]",
@@ -181,6 +182,14 @@ function readProjectRoot(artifactsDir: string): string {
   const pr = scaffold?.projectRoot
   if (typeof pr !== "string" || !pr) throw new Error("scaffold.json 缺少 projectRoot，无法定位 Java 项目")
   return pr
+}
+
+/** 读 scaffold.json.coverageExcludes（架构无关的覆盖率排除路径子串列表，scaffold 按规约工程结构章节填）。
+ *  旧 run 无此字段 → 返回空数组（不排除，靠 pom jacoco excludes 兜底）。 */
+function readCoverageExcludes(artifactsDir: string): string[] {
+  const scaffold = readJson(join(artifactsDir, "scaffold.json"))
+  const ce = scaffold?.coverageExcludes
+  return Array.isArray(ce) ? ce.filter((s: unknown) => typeof s === "string") : []
 }
 
 /**
@@ -265,7 +274,7 @@ function parseTestLog(log: string, warnings: string[]): {
   }
   const failedTests = failures + errors
   const testErrors: TestError[] = []
-  // Surefire 失败标记：<<< FAILURE! - [com.x.OrderServiceImplTest.createOrder_shouldComplete]
+  // Surefire 失败标记：<<< FAILURE! - [com.x.OrderTest.createOrder_shouldComplete]
   const failRe = /<<< (?:FAILURE|ERROR)!\s*-\s*\[([^\]\s]+)\]/g
   let fm: RegExpExecArray | null
   while ((fm = failRe.exec(log)) !== null) {
@@ -307,7 +316,7 @@ function fileBelongsToPkg(errFile: string, files: PkgFiles): boolean {
 }
 
 /**
- * jacoco class 源文件路径（短，无 src/main/java 前缀，如 com/example/a/AAggregate.java）
+ * jacoco class 源文件路径（短，无 src/main/java 前缀，如 com/example/a/AOrder.java（路径由规约层定义））
  * 是否属于本包——按 translation.json files[] 长路径后缀匹配（file.endsWith(classRelPath)），
  * 与 fileBelongsToPkg 方向相反（后者是 errFile 长路径 endsWith file 短路径）。
  */
@@ -319,20 +328,21 @@ function classBelongsToPkg(classRelPath: string, files: PkgFiles): boolean {
   return false
 }
 
-/** 测试类是否属于本包（按 scaffold.json packageMappings 的组件类名 + Test/IntegrationTest 后缀精确匹配） */
+/** 测试类是否属于本包（按 scaffold.json packageMappings.components 的组件类名 + Test/IntegrationTest 后缀精确匹配）。
+ *  架构无关：遍历该包所有组件 className，匹配 {className}Test / {className}IntegrationTest。 */
 function testBelongsToPkg(
   testClass: string,
   mappings: PkgMappingLite[],
   pkg: string,
 ): boolean {
   const m = mappings.find(mp => mp.oraclePackage?.toUpperCase() === pkg.toUpperCase())
-  if (!m) return false
-  // Surefire 的 <<< FAILURE! - [Class.method] 中 Class 可能是全限定名（com.a.AAccessImplTest），
-  // 取简单类名。测试类命名约定：单元测试 = {组件类}Test，Mapper 集成测试 = {MapperInterface}IntegrationTest。
-  // 用精确后缀匹配（组件类名 + Test/IntegrationTest），避免 startsWith 跨包前缀碰撞
-  // （如 ItemAggregate 误命中 ItemAggregateV2Test）。
+  if (!m || !Array.isArray(m.components)) return false
+  // Surefire 的 <<< FAILURE! - [Class.method] 中 Class 可能是全限定名，取简单类名。
+  // 测试类命名约定：单元测试 = {组件类}Test，集成测试 = {组件类}IntegrationTest。
+  // 用精确后缀匹配，避免 startsWith 跨包前缀碰撞（如 ItemOrder 误命中 ItemOrderV2Test）。
   const simple = testClass.slice(testClass.lastIndexOf(".") + 1).toLowerCase()
-  for (const c of [m.accessImpl, m.accessIntf, m.aggregate, m.processor, m.builder, m.validator, m.serviceImplClass, m.serviceClass]) {
+  for (const comp of m.components) {
+    const c = comp?.className
     if (typeof c !== "string" || c === "N/A") continue
     const base = c.toLowerCase()
     if (simple === base + "test" || simple === base + "integrationtest") return true
@@ -436,7 +446,7 @@ function parseJacocoXml(xml: string, warnings: string[]): JacocoClass[] {
 }
 
 /** 构造覆盖率结果：读 jacoco.xml → 解析 → 归因到包 → 算 rate/passed */
-function buildCoverage(artifactsDir: string, projectRoot: string, packages: string[], warnings: string[]): CoverageResult {
+function buildCoverage(artifactsDir: string, projectRoot: string, packages: string[], warnings: string[], coverageExcludes: string[]): CoverageResult {
   const noop = (skipReason: string): CoverageResult => ({
     executed: false,
     skipReason,
@@ -463,11 +473,11 @@ function buildCoverage(artifactsDir: string, projectRoot: string, packages: stri
   }
   if (classes.length === 0) return noop("jacoco.xml 无 class 数据，覆盖率统计已跳过")
 
-  // 应用覆盖率排除策略：beans/Application/Config/infrastructure 等无业务逻辑类不计入门控，
-  // 避免数据载体类归因到 GLOBAL 后拉低覆盖率误伤 allPassed（与 coverage-gaps.md 报告同源）。
-  const businessClasses = classes.filter(c => excludeReason(c.relPath) === null)
+  // 应用覆盖率排除策略：scaffold.json.coverageExcludes 列出的非业务目录 + *Application 不计入门控，
+  // 避免数据载体/异常/配置类归因到 GLOBAL 后拉低覆盖率误伤 allPassed（与 coverage-gaps.md 报告同源）。
+  const businessClasses = classes.filter(c => excludeReason(c.relPath, coverageExcludes) === null)
   if (businessClasses.length === 0) {
-    return noop("jacoco.xml 全部 class 均被覆盖率排除策略排除（beans/Config/Application/infrastructure），无业务类可统计")
+    return noop("jacoco.xml 全部 class 均被覆盖率排除策略排除（exception/entity/config/util/Application），无业务类可统计")
   }
   classes = businessClasses
 
@@ -510,23 +520,20 @@ function buildCoverage(artifactsDir: string, projectRoot: string, packages: stri
   }
 }
 
-/** 项目覆盖率排除策略：beans/Application/Config/infrastructure 等无业务逻辑类不计入覆盖率。
- *  供覆盖率门控（buildCoverage）与报告（scanExcludedClasses → coverage-gaps.md）共用，
- *  避免数据载体类（Bean/Dto 等）拉低 GLOBAL 覆盖率误伤 allPassed。返回排除原因或 null。 */
-function excludeReason(relPath: string): string | null {
-  if (relPath.includes("/common/infrastructure/")) return "基础设施层（common/infrastructure，统一异常/日志/工具）"
+/** 项目覆盖率排除策略（架构无关）：relPath 命中 coverageExcludes 任一子串（如 "exception/"）
+ *  或 *Application.java 后缀 → 排除。coverageExcludes 由 scaffold 按规约工程结构章节非业务目录填，
+ *  与 pom jacoco excludes 同源。返回排除原因或 null。 */
+function excludeReason(relPath: string, coverageExcludes: string[]): string | null {
+  for (const excl of coverageExcludes) {
+    if (excl && relPath.includes(excl)) return `非业务目录（${excl}，规约 coverageExcludes）`
+  }
   const base = relPath.slice(relPath.lastIndexOf("/") + 1)
-  // 仅排除 beans/ 下的 *Bean.java（数据载体，与 pom jacoco exclude `**/beans/**Bean` 一致）。
-  // 旧实现 `relPath.includes("/beans/")` 误排除 beans/ 下所有 .java——若含 *Mapper/*Validator/*Helper
-  // 等逻辑类，会被静默踢出覆盖率门控，未覆盖逻辑类不再触发 allPassed=false，门控失效。
-  if (relPath.includes("/beans/") && base.endsWith("Bean.java")) return "数据对象（beans/*Bean，纯数据载体）"
-  if (base.endsWith("Config.java")) return "配置类（*Config，无业务逻辑）"
   if (base.endsWith("Application.java")) return "启动类（*Application，框架入口）"
   return null
 }
 
 /** 扫描 src/main/java 下所有 .java，列出被 jacoco excludes 排除的类（供 coverage-gaps.md 第 2 段） */
-function scanExcludedClasses(projectRoot: string): Array<{ relPath: string; reason: string }> {
+function scanExcludedClasses(projectRoot: string, coverageExcludes: string[]): Array<{ relPath: string; reason: string }> {
   const root = join(projectRoot, MAIN_JAVA_REL)
   if (!existsSync(root)) return []
   const out: Array<{ relPath: string; reason: string }> = []
@@ -537,7 +544,7 @@ function scanExcludedClasses(projectRoot: string): Array<{ relPath: string; reas
         walk(full)
       } else if (e.name.endsWith(".java")) {
         const rel = relative(root, full).replace(/\\/g, "/")
-        const r = excludeReason(rel)
+        const r = excludeReason(rel, coverageExcludes)
         if (r) out.push({ relPath: `src/main/java/${rel}`, reason: r })
       }
     }
@@ -547,7 +554,7 @@ function scanExcludedClasses(projectRoot: string): Array<{ relPath: string; reas
 }
 
 /** 生成人类可读覆盖率报告 coverage-gaps.md（未覆盖明细 / 未纳入统计范围 / 汇总） */
-function buildCoverageGapsMd(coverage: CoverageResult, projectRoot: string, _warnings: string[]): string {
+function buildCoverageGapsMd(coverage: CoverageResult, projectRoot: string, _warnings: string[], coverageExcludes: string[]): string {
   const lines: string[] = ["# 覆盖率报告（JaCoCo）", ""]
   if (!coverage.executed) {
     lines.push("> ⚠️ 覆盖率统计已跳过", "", `原因：${coverage.skipReason ?? "未知"}`, "")
@@ -588,7 +595,7 @@ function buildCoverageGapsMd(coverage: CoverageResult, projectRoot: string, _war
 
   // ── 段 2：未纳入统计的范围 ──
   lines.push("## 2. 未纳入统计的范围（pom jacoco &lt;excludes&gt;，需人工另行保证）", "")
-  const excluded = scanExcludedClasses(projectRoot)
+  const excluded = scanExcludedClasses(projectRoot, coverageExcludes)
   if (excluded.length === 0) {
     lines.push("- 未发现被排除的类（或 src/main/java 不存在）", "")
   } else {

@@ -1033,7 +1033,7 @@ export function buildScopeBanner(run: WorkflowRun): string {
     `- scopeUnits（translate 只处理这些 unit）: ${scope.scopeUnits.join(", ") || "（无）"}`,
     `- scopePackages（plan/scaffold/review/dedup/verify 只处理这些包）: ${scope.scopePackages.join(", ") || "（无）"}`,
     `- **仅处理以上闭包范围内的 unit/包；闭包外的不译/不规划/不审/不验证。**`,
-    `- 仅常量/类型被引用的包（在 scopePackages 但其 unit 不在 scopeUnits）：纯常量包（无子程序）只出常量持有类、不出 DDD 行为层壳/Mapper；有子程序但本闭包未调用其 PROC 的包只出 scaffold 空壳，均不译方法体。`,
+    `- 仅常量/类型被引用的包（在 scopePackages 但其 unit 不在 scopeUnits）：纯常量包（无子程序）只出常量持有类、不出业务组件/Mapper；有子程序但本闭包未调用其 PROC 的包只出 scaffold 空壳，均不译方法体。`,
     ``,
   ].join("\n")
 }
@@ -4385,7 +4385,7 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
                           ``,
                           `## 未覆盖行清单（jacoco，行<90% 或 分支<75%，按 class:line 补测试覆盖）`,
                           `- 这些是 verify 阶段 jacoco.xml 解析出的未覆盖点（确定性信号），按 class:line 定位补测试`,
-                          `- 行未覆盖（type=line）：补对应 Aggregate 方法的正向用例（arrange→act→assert）`,
+                          `- 行未覆盖（type=line）：补对应业务实现类方法的正向用例（arrange→act→assert）`,
                           `- 分支未覆盖（type=branch）：补缺失的 if/else 一支（边界/异常路径用例）`,
                           `- @Disabled 的 Mapper 集成测试路径不计入；详见 ${artifactsDir}/coverage-gaps.md`,
                         )
@@ -4397,7 +4397,7 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
                         workOrderParts.push(
                           ``,
                           `## 覆盖率补测提示（jacoco）`,
-                          `- 以下包覆盖率低于阈值但无行级 gap，可能整方法未被测试调用，检查测试是否覆盖该包 Aggregate 入口：`,
+                          `- 以下包覆盖率低于阈值但无行级 gap，可能整方法未被测试调用，检查测试是否覆盖该包业务实现类入口：`,
                         )
                         for (const pc of failedPkgs) {
                           workOrderParts.push(`  - { package: ${pc.packageName} }`)

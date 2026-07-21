@@ -72,9 +72,9 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
 | 8 | parameter-direction | 参数方向：IN/OUT/IN OUT 参数是否通过正确方式传递 |
 | 9 | naming-consistency | 命名一致性：Java 方法名是否与 Oracle 子程序名有可追溯的映射关系 |
 | 10 | todo-remaining | 【Step A 工具扫】TODO 残留：统计未解决的 `// TODO: [translate]` 数量 |
-| 11 | naming-convention | 【Step A 工具扫，toolSkipped.checkstyle 时回退】命名规约：以注入的 Java 代码规约 §4.1 命名规范为审查依据（类名/方法名/常量/包名/布尔属性/DDD 组件后缀/数据对象后缀等） |
+| 11 | naming-convention | 【Step A 工具扫，toolSkipped.checkstyle 时回退】命名规约：以注入的 Java 代码规约 §4.1 命名规范为审查依据（类名/方法名/常量/包名/布尔属性/组件后缀/数据对象后缀等） |
 | 12 | code-format | 【Step A 工具扫，toolSkipped.checkstyle 时回退】代码格式：以注入的 Java 代码规约 §五 代码格式为审查依据 |
-| 13 | oop-convention | OOP/DDD 规约：以注入的 Java 代码规约 §六 OOP 规约 / §2 分层架构为审查依据（注解使用、字段注入、序列化、事务标注位置等） |
+| 13 | oop-convention | OOP/实现模式规约：以注入的 Java 代码规约 §六 OOP 规约 / §二 实现模式为审查依据（注解使用、依赖注入、事务标注位置等） |
 | 14 | comment-convention | 注释规约：以注入的 Java 代码规约 §4.2 注释规范为审查依据 |
 | 15 | collection-exception | 【Step A 工具扫，toolSkipped.pmd 时回退】集合与异常：集合初始化大小、entrySet 遍历、try-with-resources、禁止空 catch、自定义异常 |
 | 16 | version-compliance | 【Step A 工具扫 grep】**版本合规性**：代码、pom.xml、依赖必须完全符合注入的 Java 代码规约中"Java 版本与框架配置"段落。对照"禁止的 Java 9+ 语法和 API"逐项检查代码，对照"pom.xml 构建配置"检查构建配置，对照"依赖命名空间"检查命名空间和依赖版本。**违反此项标记为 critical** |
@@ -82,7 +82,7 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
 | 18 | test-correctness | 测试正确性：Mock 设置与生产代码逻辑匹配、@InjectMocks 目标正确、测试覆盖 happy path 和异常路径 |
 | 19 | mapper-test-completeness | 【Step A 工具扫】Mapper 集成测试完整性：每个 Mapper XML 的 `<select>/<insert>/<update>/<delete>` 是否都有对应集成测试方法、无空方法体（除 `@Disabled` 外）、无 `// TODO: [mapper-test]` 残留、arrange→act→assert 结构完整 |
 | 20 | mapper-test-correctness | Mapper 集成测试正确性：测试数据 INSERT 与 `schema-h2.sql` 表结构一致、`@MybatisTest` + `@AutoConfigureTestDatabase` 配置正确、H2 不兼容 SQL 已标 `@Disabled`、测试数据使用硬编码 ID 值（不使用 NEXTVAL） |
-| 21 | ddd-architecture | 【Step B 语义】DDD 分层职责合规：以注入的 Java 代码规约 §2 分层架构为审查依据（分层职责、字段编排、跨包调用方式、OUT 参数预定义、异常/日志统一性等） |
+| 21 | service-architecture | 【Step B 语义】分层架构合规：以注入的 Java 代码规约 §一 分层架构 / §二 实现模式为审查依据（分层职责、依赖编排、跨包调用方式、事务/异常处理等） |
 
 ### 严重级别定义
 
@@ -104,7 +104,7 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
 ### 输入
 
 - **上游 artifact**：
-  - `${artifactsDir}/scaffold.json` — 项目结构 + 包映射（packageMappings：oraclePackage→javaPackage/DDD 组件类名）
+  - `${artifactsDir}/scaffold.json` — 项目结构 + 包映射（packageMappings：oraclePackage→javaPackage/components[] 组件类名）
   - `${artifactsDir}/packages/{pkg}.json` — 逐包 inventory + complexity（依赖图由引擎按需推导，不落盘）
   - `${artifactsDir}/translations/*/translation.json` — 翻译记录
 - **Java 文件**：Runtime Context 中 `projectRoot` 指定的目录下的 Java 代码（使用 `read` 工具读取，路径为 `{projectRoot}/src/...`）
@@ -122,7 +122,7 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
 读取 `${artifactsDir}/review-static.json`（引擎 dispatch 前已用 checkstyle + pmd + grep 脚本确定性扫好，零 LLM）。
 - 其中 `findings[]` 是机械类规约问题（#10/#11/#12/#15/#16/#17/#19/#20-completeness），**已归因到包**——这些静态问题你**不要**再用 LLM 重复查。
 - 记下 `toolSkipped.checkstyle` / `toolSkipped.pmd`：为 `true` 表示该工具不可用，对应清单项（#11/#12 或 #15）**回退你按清单审**。
-- 静态 finding 不进你写的 `review.json`（走独立通道进 fix）；你只在 `review.json` 记录 **语义** 审查结果（#1-#9 + #13/#14/#18/#20-correctness + #21 ddd-architecture）。
+- 静态 finding 不进你写的 `review.json`（走独立通道进 fix）；你只在 `review.json` 记录 **语义** 审查结果（#1-#9 + #13/#14/#18/#20-correctness + #21 service-architecture）。
 - 若 `review-static.json` 不存在（老 run / 扫描失败）：按完整 21 类清单审，不跳过。
 
 #### Step 1: 确定审查范围
@@ -137,12 +137,12 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
 对每个待审查的包：
 
 1. **读取数据**：读取该包的 translation.json、原始 PL/SQL 源码（对照子程序结构直接读源码理解）
-2. **聚焦语义审查（按 Step B 聚焦清单）**：workOrder 里若注入了 `## Step B 聚焦语义审查清单`，**只审清单列出的过程/点**——这些是有信号（高风险/游标/异常/出参/NVL/AUTONOMOUS）的过程。按清单给每个聚焦点的 PL/SQL 源码段（引擎已按行范围切好注入 workOrder）+ Java 方法锚点，对照审其触发的语义类别（#1-#9）+ 工具未覆盖的 #13 OOP / #14 注释 / #21 DDD 分层职责。
+2. **聚焦语义审查（按 Step B 聚焦清单）**：workOrder 里若注入了 `## Step B 聚焦语义审查清单`，**只审清单列出的过程/点**——这些是有信号（高风险/游标/异常/出参/NVL/AUTONOMOUS）的过程。按清单给每个聚焦点的 PL/SQL 源码段（引擎已按行范围切好注入 workOrder）+ Java 方法锚点，对照审其触发的语义类别（#1-#9）+ 工具未覆盖的 #13 OOP / #14 注释 / #21 Service 分层职责。
    - **无信号的过程跳过语义审**（清单末尾会注明跳过数）——它们靠 Step A 静态扫描兜底，不要逐个全审，省 LLM。
    - 若 workOrder **未注入**聚焦清单（老 run / 无信号 / 无聚焦点）：回退全量逐子程序语义审 #1-#9 + #13/#14。
    - **机械类（#10/#11/#12/#15/#16/#17/#19）已由 Step A 工具扫过（见 review-static.json），勿重复查**（toolSkipped 对应项除外，回退手审）。Java 文件路径基于 `projectRoot`（如 `{projectRoot}/src/main/java/...`）
-3. **审查 Aggregate 测试代码**（聚焦清单「测试审查」段列出的测试类）：读取测试类 Java 文件
-   - 按 test-correctness（#18）检查：Mock 设置与 Aggregate 依赖（Mapper/Builder/Validator）一致、断言覆盖关键逻辑
+3. **审查业务实现类测试代码**（聚焦清单「测试审查」段列出的测试类）：读取测试类 Java 文件
+   - 按 test-correctness（#18）检查：Mock 设置与业务实现类依赖（Mapper）一致、断言覆盖关键逻辑
    - test-completeness（#17）已由 Step A 工具扫（空方法体/TODO残留），勿重复
    - 空 TODO 测试方法标记为 mustFix（severity: major）
 4. **审查 Mapper 集成测试代码**（聚焦清单「测试审查」段列出的 Mapper 测试类）：读取 Mapper 集成测试文件
@@ -177,7 +177,7 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
        }
      ],
      "mustFix": [
-       { "file": "src/main/java/.../order/domain/aggregate/OrderAggregate.java", "line": 45, "issue": "NVL 未映射：p_status 可能为 null，需用 Optional.ofNullable 或默认值" }
+       { "file": "src/main/java/.../Order<业务实现类>.java", "line": 45, "issue": "NVL 未映射：p_status 可能为 null，需用 Optional.ofNullable 或默认值" }
      ],
      "suggestions": [
        "考虑在 OrderMapper.xml 中使用 <if> 标签处理动态条件"

@@ -24,6 +24,14 @@ const FORBIDDEN_TOKENS = [
   "serialVersionUID", // 序列化约定（spec §2.1/§4.1）
   "implements Serializable", // 聚合根序列化约定（spec §2.1）
   "mergeSpecSections", // 已删的合并函数——不应在引擎残留
+  // 架构模型写死 token（解耦门禁）：agent 不得写死具体架构模型，结构模型由注入规约驱动
+  "service/impl", // 4 文件业务实现层路径
+  "domain/aggregate", // DDD 聚合根层路径
+  "ServiceImpl", // 4 文件业务实现类名（agent 不得写死，应"业务实现类"）
+  "Aggregate", // DDD 聚合根类名
+  "accessIntf", // DDD 接入层接口
+  "TranFailException", // DDD/ICBC 异常类（已归 spec）
+  "CommonLog", // DDD/ICBC 日志门面（已归 spec）
 ]
 
 describe("规约单一来源：agent 提示词不得内联具体规约内容", () => {

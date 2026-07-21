@@ -110,7 +110,7 @@ describe("validateCrossSchema — scaffold packageMappings 覆盖（Stage C：�
       },
       packageMappings: [
         { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
-          mapperInterface: "CoreMapper", accessIntf: "CoreAccessIntf", accessImpl: "CoreAccessImpl", aggregate: "CoreAggregate" },
+          components: [{role:"service",className:"CoreService"},{role:"service-impl",className:"CoreServiceImpl"},{role:"mapper",className:"CoreMapper"}] },
         // 缺少 EXTRA_PKG 映射
       ],
     })
@@ -135,9 +135,9 @@ describe("validateCrossSchema — scaffold packageMappings 覆盖（Stage C：�
       // scope 只覆盖 CORE_PKG，但 packageMappings 把 out-of-scope 的 EXTRA_PKG 也映射了
       packageMappings: [
         { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
-          mapperInterface: "CoreMapper", accessIntf: "CoreAccessIntf", accessImpl: "CoreAccessImpl", aggregate: "CoreAggregate" },
+          components: [{role:"service",className:"CoreService"},{role:"service-impl",className:"CoreServiceImpl"},{role:"mapper",className:"CoreMapper"}] },
         { oraclePackage: "EXTRA_PKG", javaPackage: "com.example.extra",
-          mapperInterface: "ExtraMapper", accessIntf: "ExtraAccessIntf", accessImpl: "ExtraAccessImpl", aggregate: "ExtraAggregate" },
+          components: [{role:"service",className:"ExtraService"},{role:"service-impl",className:"ExtraServiceImpl"},{role:"mapper",className:"ExtraMapper"}] },
       ],
     })
 
@@ -162,7 +162,7 @@ describe("validateCrossSchema — scaffold packageMappings 覆盖（Stage C：�
       },
       packageMappings: [
         { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
-          mapperInterface: "CoreMapper", accessIntf: "CoreAccessIntf", accessImpl: "CoreAccessImpl", aggregate: "CoreAggregate" },
+          components: [{role:"service",className:"CoreService"},{role:"service-impl",className:"CoreServiceImpl"},{role:"mapper",className:"CoreMapper"}] },
       ],
     })
 

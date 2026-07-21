@@ -59,7 +59,7 @@ describe("Schema 有效数据通过校验", () => {
         springBootVersion: "2.7.x",
       },
       packageMappings: [
-        { oraclePackage: "PKG_A", javaPackage: "com.example.a", aggregate: "AAggregate" },
+        { oraclePackage: "PKG_A", javaPackage: "com.example.a", components: [{ role: "service-impl", className: "AServiceImpl" }] },
       ],
       projectRoot: "/abs/path/generated/item-service",
       structure: {
@@ -83,7 +83,7 @@ describe("Schema 有效数据通过校验", () => {
       status: "completed",
       completedSubprograms: ["GET_ITEM"],
       totalSubprograms: 1,
-      files: [{ path: "core/domain/aggregate/ItemAggregate.java", role: "aggregate" }],
+      files: [{ path: "service/impl/ItemServiceImpl.java", role: "service" }],
       decisions: [],
       todos: [],
     }
@@ -96,11 +96,11 @@ describe("Schema 有效数据通过校验", () => {
       status: "completed",
       completedSubprograms: ["GET_ITEM"],
       totalSubprograms: 1,
-      files: [{ path: "core/domain/aggregate/ItemAggregate.java", role: "aggregate" }],
+      files: [{ path: "service/impl/ItemServiceImpl.java", role: "service" }],
       decisions: [],
       todos: [],
       subprogramMethods: [
-        { oracleName: "get_item", javaClass: "com.example.item.core.access.ItemAccessIntf", javaMethod: "getItem", javaFile: "core/access/ItemAccessIntf.java" },
+        { oracleName: "get_item", javaClass: "com.example.item.service.ItemService", javaMethod: "getItem", javaFile: "service/ItemService.java" },
       ],
     }
     expect(TranslationSchema.safeParse(data).success).toBe(true)
@@ -116,8 +116,8 @@ describe("Schema 有效数据通过校验", () => {
       decisions: [],
       todos: [],
       subprogramMethods: [
-        { oracleName: "get_param__1", javaClass: "com.example.item.core.access.ItemAccessIntf", javaMethod: "getParamById" },
-        { oracleName: "get_param__2", javaClass: "com.example.item.core.access.ItemAccessIntf", javaMethod: "getParamByName" },
+        { oracleName: "get_param__1", javaClass: "com.example.item.service.ItemService", javaMethod: "getParamById" },
+        { oracleName: "get_param__2", javaClass: "com.example.item.service.ItemService", javaMethod: "getParamByName" },
       ],
     }
     // 合法：两个不同 refName → 通过
@@ -350,27 +350,27 @@ describe("Schema 无效数据被拒绝", () => {
     expect(base.targetProject).not.toHaveProperty("artifactId")
   })
 
-  it("ScaffoldSchema 拒绝无任何组件类名的 packageMapping（accessImpl/aggregate/serviceImplClass 全空）", () => {
+  it("ScaffoldSchema 拒绝无 components 的 packageMapping（components 空数组）", () => {
     const data = makeScaffold({
       packageMappings: [
-        // 仅 oraclePackage/javaPackage/mapperInterface，无任何对外暴露组件类名
-        { oraclePackage: "PKG_A", javaPackage: "com.example.item.a", mapperInterface: "AMapper" },
+        // 仅 oraclePackage/javaPackage，无任何组件
+        { oraclePackage: "PKG_A", javaPackage: "com.example.item.a", components: [] },
       ],
     })
     const result = ScaffoldSchema.safeParse(data)
     expect(result.success).toBe(false)
   })
 
-  it("ScaffoldSchema 接受纯常量包映射（仅 aggregate 常量持有类，无 mapperInterface/行为层）", () => {
+  it("ScaffoldSchema 接受纯常量包映射（仅常量持有角色组件，无业务角色/mapper）", () => {
     const data = makeScaffold({
       packageMappings: [
-        // 纯常量包：无子程序，只映射常量持有类，省略 mapperInterface/access/processor/builder/validator
-        { oraclePackage: "PKG_CONST", javaPackage: "com.example.item.consts", aggregate: "MfgConst" },
+        // 纯常量包：无子程序，只映射常量持有角色
+        { oraclePackage: "PKG_CONST", javaPackage: "com.example.item.consts", components: [{ role: "constant", className: "MfgConst" }] },
       ],
     })
     const result = ScaffoldSchema.safeParse(data)
     expect(result.success).toBe(true)
-    expect(result.success && result.data.packageMappings[0].mapperInterface).toBeUndefined()
+    expect(result.success && result.data.packageMappings[0].components[0].className).toBe("MfgConst")
   })
 })
 

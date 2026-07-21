@@ -130,7 +130,7 @@ export const UPSTREAM_ARTIFACTS: Record<string, string[]> = {
   // packages/+subprograms/+tables/+inventory.json。inventory-index.json 不再落盘。
   inventory: [],
   // Stage C：plan 阶段已合并入 scaffold。scaffold 自行从 inventory + 注入规约推导 targetProject +
-  // packageMappings（含 DDD 类名），写入 scaffold.json。原 plan.json 不复存在。
+  // packageMappings（含组件类名），写入 scaffold.json。原 plan.json 不复存在。
   scaffold: [..._INV_BASE],
   // translate：FSD 是末尾 fsd sub-stage 产出的人工审核总结文档，纯末端产物——任何阶段都不读 FSD 作输入，
   // 故 translate UPSTREAM 不含 fsd。translate 读 source.sql 翻译（不读 analysis-slice，analyze 已砍）。

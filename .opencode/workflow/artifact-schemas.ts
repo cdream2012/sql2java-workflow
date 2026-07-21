@@ -244,33 +244,18 @@ export const TargetProjectSchema = z.object({
   springBootVersion: z.string(),
 })
 
-/** Oracle Package → Java 包 + DDD 组件类名映射。 */
+/** Oracle Package → Java 包 + 组件类名映射（架构无关：components[] 由注入的 Java 代码规约
+ *  分层架构/工程结构章节定义的角色决定，4 文件/DDD/自定义模型通用）。 */
 export const PackageMappingSchema = z.object({
   oraclePackage: z.string(),
   javaPackage: z.string(),
-  /** DDD Mapper 接口；纯常量包（无 PROCEDURE/FUNCTION）不生成 Mapper，此字段可缺省。 */
-  mapperInterface: z.string().optional(),
-  /** @deprecated 三层架构遗留字段；DDD 改用 accessImpl。保留以兼容历史 run resume。 */
-  serviceClass: z.string().optional(),
-  /** @deprecated 三层架构遗留字段；DDD 改用 accessImpl。保留以兼容历史 run resume。 */
-  serviceImplClass: z.string().optional(),
-  /** DDD 接入层接口——对外暴露入口，跨包调用索引（subprogramMethods.javaClass）指向此类。 */
-  accessIntf: z.string().optional(),
-  /** DDD 接入层实现（@Component）。 */
-  accessImpl: z.string().optional(),
-  /** DDD 处理器（流程编排，不标 @Transactional）。 */
-  processor: z.string().optional(),
-  /** DDD 聚合根（业务逻辑编排，标 @Transactional）。 */
-  aggregate: z.string().optional(),
-  /** DDD 构建器（参数/数据构建、OUT 参数预定义）。 */
-  builder: z.string().optional(),
-  /** DDD 验证器（业务规则校验）。 */
-  validator: z.string().optional(),
-}).refine(
-  (m) => [m.accessIntf, m.accessImpl, m.processor, m.aggregate, m.builder, m.validator, m.serviceClass, m.serviceImplClass]
-    .some(v => typeof v === "string" && v.trim().length > 0),
-  { message: "每个 packageMapping 至少需要一个组件类名（DDD: accessImpl/accessIntf/aggregate/processor/builder/validator；遗留: serviceImplClass/serviceClass；纯常量包仅 aggregate 常量持有类）——下游 verify 归因 / translate 跨包索引 / 测试骨架生成均依赖此锚点" },
-)
+  /** 该包映射到的组件类（role 由规约定义，如 service/service-impl/mapper/aggregate/access-intf/constant 等；
+   *  className 为 Java 类名。至少 1 个——下游 verify 归因 / translate 跨包索引 / 测试骨架生成均依赖此锚点。 */
+  components: z.array(z.object({
+    role: z.string(),
+    className: z.string(),
+  })).min(1),
+})
 
 // ============================================================================
 // Scaffold Schema（Stage C：吸收原 plan.json 的 targetProject + packageMappings）
@@ -279,16 +264,19 @@ export const PackageMappingSchema = z.object({
 export const ScaffoldSchema = z.object({
   /** Java 项目配置（原 plan.targetProject；artifactId 不在此，来自 run-context.json） */
   targetProject: TargetProjectSchema,
-  /** Oracle Package → Java 包 + DDD 组件类名映射（原 plan.packageMappings） */
+  /** Oracle Package → Java 包 + 组件类名映射（架构无关，原 plan.packageMappings） */
   packageMappings: z.array(PackageMappingSchema),
   /** Java 项目输出根目录（绝对路径，由引擎注入，指向 cwd/generated/{artifactId}） */
   projectRoot: z.string(),
+  /** 覆盖率排除路径子串列表（scaffold 按规约工程结构章节的非业务目录填，如 "exception/"/"entity/"；
+   *  verify 阶段 excludeReason 读此列表过滤 jacoco class，避免非业务类拉低 allPassed。与 pom jacoco excludes 同源。 */
+  coverageExcludes: z.array(z.string()).optional(),
   structure: z.object({
     directories: z.array(z.string()),
     pomXml: z.string(),
   }),
   generated: z.object({
-    /** 数据对象 Bean（XxxBean，tableName → Bean；DDD 下数据对象统一用 XxxBean 后缀）。 */
+    /** 数据对象 Entity（tableName → DO；后缀按规约命名章节，如 XxxDO）。 */
     entities: z.array(z.object({
       file: z.string(),
       tableName: z.string(),
@@ -299,8 +287,8 @@ export const ScaffoldSchema = z.object({
     })),
     /**
      * 仅记录纯常量包的常量持有类。
-     * 有子程序包的 DDD 行为层壳（Access/Processor/Aggregate/Builder/Validator）由
-     * translate-skeleton 子阶段按 read-or-create 创建，不在 scaffold 产出，故不在此记录。
+     * 有子程序包的业务组件壳由 translate-skeleton 子阶段按 read-or-create 创建，
+     * 不在 scaffold 产出，故不在此记录。
      */
     serviceShells: z.array(z.object({
       file: z.string(),
@@ -392,11 +380,10 @@ export const TranslationSchema = z.object({
    * - oracleName：唯一引用名（refName）。非重载=Oracle 原始名；重载=`{name}__{序号}`（1-based，全部带序号），
    *   与 callGraph key 的 refName、FSD 文件名一致。**唯一性由 refine 强制**（大小写不敏感去重），
    *   避免重载裸名重复导致跨包查找歧义。
-   * - javaClass：调用入口的**全限定名**，即对外暴露的 AccessIntf（DDD 接入层接口；调用方经 Spring DI
-   *   注入它），如 "com.example.app.deal.access.BAccessIntf"。全限定以便调用方直接 import，无需再查 plan。
-   *   （三层架构遗留 run 中此字段为 Service 接口全限定名，向后兼容。）
-   * - javaMethod：Java 方法名（AccessIntf 上的方法名）。
-   * - javaFile：AccessIntf 文件相对路径（可选，便于定位）。
+   * - javaClass：调用入口的**全限定名**，即规约分层架构章节定义的对外入口角色类（调用方经
+   *   Spring DI 注入它）。全限定以便调用方直接 import。
+   * - javaMethod：Java 方法名（入口角色类上的方法名）。
+   * - javaFile：入口角色类文件相对路径（可选，便于定位）。
    */
   subprogramMethods: z.array(z.object({
     oracleName: z.string(),
@@ -644,7 +631,7 @@ export const VerifySummarySchema = z.object({
       testClass: z.string(),
       testMethod: z.string(),
       message: z.string(),
-      /** 测试类型：unit = ServiceImpl 单元测试，integration = Mapper 集成测试 */
+      /** 测试类型：unit = 单元测试（业务实现类），integration = Mapper 集成测试 */
       testType: z.enum(["unit", "integration"]).optional(),
     })).optional(),
     testFiles: z.array(z.string()),

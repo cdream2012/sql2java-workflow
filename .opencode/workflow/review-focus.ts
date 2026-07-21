@@ -38,7 +38,7 @@ interface FocusPoint {
   plsqlStart: number | null
   plsqlEnd: number | null
 }
-interface TestFocus { kind: "service" | "mapper"; absFile: string; testClass: string; pkg: string }
+interface TestFocus { kind: "unit" | "integration"; absFile: string; testClass: string; pkg: string }
 
 function readJson(p: string): any | null {
   if (!existsSync(p)) return null
@@ -173,11 +173,11 @@ export function buildReviewFocus(
     const mapperShells = (scaffold?.generated?.mapperTestShells ?? []) as any[]
     for (const sh of testShells) {
       if (String(sh?.oraclePackage ?? "").toUpperCase() !== pkg.toUpperCase()) continue
-      testFocus.push({ kind: "service", absFile: absProj(sh.file) ?? String(sh.file), testClass: String(sh.testClass ?? ""), pkg })
+      testFocus.push({ kind: "unit", absFile: absProj(sh.file) ?? String(sh.file), testClass: String(sh.testClass ?? ""), pkg })
     }
     for (const sh of mapperShells) {
       if (String(sh?.oraclePackage ?? "").toUpperCase() !== pkg.toUpperCase()) continue
-      testFocus.push({ kind: "mapper", absFile: absProj(sh.file) ?? String(sh.file), testClass: String(sh.testClass ?? ""), pkg })
+      testFocus.push({ kind: "integration", absFile: absProj(sh.file) ?? String(sh.file), testClass: String(sh.testClass ?? ""), pkg })
     }
   }
 
@@ -217,12 +217,10 @@ export function buildReviewFocus(
   if (testFocus.length > 0) {
     lines.push(``, `### 测试审查（test-correctness #18 / mapper-test-correctness #20）`)
     for (const tf of testFocus) {
-      const cat = tf.kind === "service" ? "test-correctness(#18)" : "mapper-test-correctness(#20)"
-      // 标签按 testClass 实际命名派生，避免对遗留 ServiceImplTest 误标「Aggregate」
-      const unitLabel = /AggregateTest$/.test(tf.testClass) ? "单元测试（Aggregate）"
-        : /ServiceImplTest$/.test(tf.testClass) ? "单元测试（ServiceImpl）"
-        : "单元测试"
-      lines.push(`- ${tf.kind === "service" ? unitLabel : "Mapper 集成测试"}: \`${tf.absFile}\` 类 \`${tf.testClass}\` → 审 ${cat}`)
+      const cat = tf.kind === "unit" ? "test-correctness(#18)" : "mapper-test-correctness(#20)"
+      // 标签按测试种类通用化（架构无关）：unit = 单元测试，integration = 集成测试
+      const label = tf.kind === "unit" ? "单元测试" : "集成测试"
+      lines.push(`- ${label}: \`${tf.absFile}\` 类 \`${tf.testClass}\` → 审 ${cat}`)
     }
   }
 

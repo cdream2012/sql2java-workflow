@@ -76,10 +76,10 @@ describe("buildVerifySummary", () => {
     expect(summary.compilation.errors.length).toBe(1)
   })
 
-  it("测试失败按 serviceImplClass 前缀归因到包 → 该包 passed=false", () => {
+  it("测试失败按组件类名前缀归因到包 → 该包 passed=false", () => {
     setup(
       ["PKG_A"],
-      { mappings: [{ oraclePackage: "PKG_A", serviceImplClass: "AServiceImpl" }] },
+      { mappings: [{ oraclePackage: "PKG_A", components: [{ role: "service-impl", className: "AServiceImpl" }] }] },
     )
     writeCompileLog("[INFO] BUILD SUCCESS")
     writeTestLog([
@@ -93,15 +93,15 @@ describe("buildVerifySummary", () => {
     expect(summary.testExecution.testErrors[0].testType).toBe("unit")
   })
 
-  it("DDD: 测试失败按 accessImpl 前缀归因到包 → 该包 passed=false", () => {
+  it("测试失败按 components 类名前缀归因到包 → 该包 passed=false", () => {
     setup(
       ["PKG_A"],
-      { mappings: [{ oraclePackage: "PKG_A", accessImpl: "AAccessImpl", aggregate: "AAggregate" }] },
+      { mappings: [{ oraclePackage: "PKG_A", components: [{ role: "service-impl", className: "AServiceImpl" }] }] },
     )
     writeCompileLog("[INFO] BUILD SUCCESS")
     writeTestLog([
       "Tests run: 2, Failures: 1, Errors: 0, Skipped: 0",
-      "<<< FAILURE! - [com.a.AAggregateTest.createOrder_shouldComplete]",
+      "<<< FAILURE! - [com.a.AServiceImplTest.createOrder_shouldComplete]",
     ].join("\n"))
     const r = buildVerifySummary(dir)
     expect(r.testsPassed).toBe(1)
@@ -110,30 +110,30 @@ describe("buildVerifySummary", () => {
     expect(summary.testExecution.testErrors[0].testType).toBe("unit")
   })
 
-  it("DDD: 跨包前缀碰撞不误归因（ItemAggregate 不命中 ItemAggregateV2Test）", () => {
+  it("ServiceImpl: 跨包前缀碰撞不误归因（ItemServiceImpl 不命中 ItemServiceImplV2Test）", () => {
     setup(
       ["PKG_A", "PKG_B"],
       { mappings: [
-        { oraclePackage: "PKG_A", aggregate: "ItemAggregate" },
-        { oraclePackage: "PKG_B", aggregate: "ItemAggregateV2" },
+        { oraclePackage: "PKG_A", components: [{ role: "service-impl", className: "ItemServiceImpl" }] },
+        { oraclePackage: "PKG_B", components: [{ role: "service-impl", className: "ItemServiceImplV2" }] },
       ] },
     )
     writeCompileLog("[INFO] BUILD SUCCESS")
     writeTestLog([
       "Tests run: 1, Failures: 1, Errors: 0, Skipped: 0",
-      "<<< FAILURE! - [com.b.ItemAggregateV2Test.process_shouldComplete]",
+      "<<< FAILURE! - [com.b.ItemServiceImplV2Test.process_shouldComplete]",
     ].join("\n"))
     const r = buildVerifySummary(dir)
     expect(r.testsPassed).toBe(0)
     const summary = JSON.parse(readFileSync(join(dir, "verify-summary.json"), "utf-8"))
     const a = summary.packageResults.find((p: any) => p.packageName === "PKG_A")
     const b = summary.packageResults.find((p: any) => p.packageName === "PKG_B")
-    expect(a.passed).toBe(true)   // 不应被 ItemAggregateV2Test 误命中
+    expect(a.passed).toBe(true)   // 不应被 ItemServiceImplV2Test 误命中
     expect(b.passed).toBe(false)  // 真正失败的包
   })
 
   it("IntegrationTest 失败 → testType=integration", () => {
-    setup(["PKG_A"], { mappings: [{ oraclePackage: "PKG_A", serviceImplClass: "AMapper" }] })
+    setup(["PKG_A"], { mappings: [{ oraclePackage: "PKG_A", components: [{ role: "mapper", className: "AMapper" }] }] })
     writeCompileLog("BUILD SUCCESS")
     writeTestLog([
       "Tests run: 1, Failures: 0, Errors: 1, Skipped: 0",

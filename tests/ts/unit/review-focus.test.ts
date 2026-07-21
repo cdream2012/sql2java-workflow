@@ -82,7 +82,7 @@ beforeAll(() => {
     projectRoot: projectRoot,
     structure: { directories: [], pomXml: "" },
     generated: {
-      testShells: [{ file: "src/test/java/com/x/domain/aggregate/FooAggregateTest.java", oraclePackage: "PKG_A", testClass: "FooAggregateTest" }],
+      testShells: [{ file: "src/test/java/com/x/service/impl/FooServiceImplTest.java", oraclePackage: "PKG_A", testClass: "FooServiceImplTest" }],
       mapperTestShells: [{ file: "src/test/java/com/x/FooMapperIntegrationTest.java", oraclePackage: "PKG_A", testClass: "FooMapperIntegrationTest", mapperInterface: "FooMapper" }],
     },
   }))
@@ -124,11 +124,13 @@ describe("buildReviewFocus 信号选点", () => {
     expect(s).toContain("方法 `getItem`") // Java 方法锚点（软约束）
   })
 
-  it("测试审查段列出 Aggregate 单元测试 + Mapper 集成测试", () => {
+  it("测试审查段列出单元测试 + Mapper 集成测试", () => {
     const s = block()
     expect(s).toContain("test-correctness(#18)")
     expect(s).toContain("mapper-test-correctness(#20)")
-    expect(s).toContain("FooAggregateTest")
+    expect(s).toContain("FooServiceImplTest")
+    expect(s).toContain("单元测试")
+    expect(s).toContain("集成测试")
     expect(s).toContain("FooMapperIntegrationTest")
   })
 })
