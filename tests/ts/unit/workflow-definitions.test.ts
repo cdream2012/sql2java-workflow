@@ -172,6 +172,12 @@ describe("UPSTREAM_ARTIFACTS", () => {
     expect(UPSTREAM_ARTIFACTS.plan).not.toContain("fsd/*/*.md")
   })
 
+  it("任意阶段都不注入 FSD（FSD 是 translate 末尾 sub-stage 产出的人工审核总结文档，纯末端产物，不作输入）", () => {
+    for (const [phase, artifacts] of Object.entries(UPSTREAM_ARTIFACTS)) {
+      expect(artifacts, `${phase} 不应在 UPSTREAM_ARTIFACTS 注入 fsd`).not.toContain("fsd/*/*.md")
+    }
+  })
+
   it("inventory-index.json 不在任意阶段的 UPSTREAM_ARTIFACTS（inventory 自产，下游走 INJECTION_ARTIFACTS）", () => {
     // inventory-index 由 inventory worker 第 0 步调 workflow({action:"scan"}) 自产，不再是
     // start 预生成的 upstream。下游 analyze/plan/scaffold/translate 通过 INJECTION_ARTIFACTS

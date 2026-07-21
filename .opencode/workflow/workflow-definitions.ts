@@ -54,7 +54,8 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
       // translate 主从架构：subStages 仅供 getSubagentNames（slave 识别为 worker）+ subdispatch 渲染 slave workOrder。
       // master（translator.md）每 shard 派 6 slave 串行跑；引擎 advance 直走 G1-unit + crossSchema + shard advance（不再逐 sub-stage 推进）。
       // 1 unit = 1 shard（dispatch 强制 maxUnitsPerShard=1），sub-stage 天然 per-unit。
-      // fsd（compile 后）模板填空生成 FSD 说明书，孤立产出（translate UPSTREAM 不含 _FSD，translate-core 不读 FSD）。
+      // fsd（compile 后）模板填空生成 FSD 说明书，孤立产出（FSD 是末尾 sub-stage 产出的人工审核总结文档，
+      // 纯末端产物——任何阶段都不读 FSD 作输入，故 translate UPSTREAM 不含 fsd，translate-core 不读 FSD）。
       // fix 阶段复用 translator.md（master 不派 slave，一次性 prompt 修复）。
       subStages: [
         { name: "skeleton",       agentFile: "agent/translate-skeleton.md" },
@@ -132,7 +133,6 @@ const _PLAN = ["plan.json"] as const
 const _SCAFFOLD = ["scaffold.json"] as const
 const _DEDUP = ["dedup.json"] as const
 const _TRANSLATIONS = ["translations/*/translation.json"] as const
-const _FSD = ["fsd/*/*.md"] as const
 
 /** 每个 phase 需要读取的上游 artifact 路径模板 */
 export const UPSTREAM_ARTIFACTS: Record<string, string[]> = {
@@ -143,8 +143,8 @@ export const UPSTREAM_ARTIFACTS: Record<string, string[]> = {
   // 子程序结构/数量从 inventory 的 packages/{pkg}.json 取（complexity 在 packages.complexity）。
   plan: [..._INV_BASE],
   scaffold: [..._PLAN, ..._INV_BASE],
-  // translate：FSD 由 translate 内 fsd sub-stage 产（compile 后），孤立产出——translate UPSTREAM 不含 _FSD，
-  // translate-core 不读 FSD。translate 读 source.sql 翻译（不读 analysis-slice，analyze 已砍）。
+  // translate：FSD 是末尾 fsd sub-stage 产出的人工审核总结文档，纯末端产物——任何阶段都不读 FSD 作输入，
+  // 故 translate UPSTREAM 不含 fsd。translate 读 source.sql 翻译（不读 analysis-slice，analyze 已砍）。
   translate: [..._INV_BASE, ..._PLAN, ..._SCAFFOLD],
   dedup: [..._PLAN, ..._SCAFFOLD, ..._INV_BASE, ..._TRANSLATIONS, "dedup-duplicates.json"],
   // TODO (F9): translations/*/translation.json 在 dedup/review/verify 三阶段重复读取，

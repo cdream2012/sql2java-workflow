@@ -2477,7 +2477,6 @@ function classifyWritePath(
  * 规则：
  *  - translations 通配（translations 下所有 translation.json）→ 展开为已完成分片各包
  *  - packages 通配  → 收窄为本分片 targetPackages 各包
- *  - fsd 通配（fsd 下所有 .md）→ 收窄为本分片 targetPackages 各包的 fsd/{pkg}/*.md
  *  - translate 阶段额外追加已完成分片的 translation.json（跨包调用依赖，translator.md 承诺）
  *  - 全局只读 artifact（dependency-graph.json、plan.json 等）原样保留
  *
@@ -2508,8 +2507,8 @@ export function narrowUpstreamForShard(
     // 整包 packages/subprograms → per-unit 切片（source.sql + meta.json）。
     // translations/*/translation.json 清空——跨包/同包跨单元调用签名由 buildDependencySignaturesBlock
     // 预注入到 workOrder，worker 不再读 translation.json（消除"读聚合 translation 顺手全做"）。
-    // FSD 已是 per-unit，收窄到本分片 unit 根 FSD。
-    const fsdFiles = targetUnits.map(u => `fsd/${pkgOf(u)}/${refOf(u)}.md`)
+    // FSD 是 translate 末尾 sub-stage 产出的人工审核总结文档，纯末端产物——任何阶段都不读 FSD 作输入，
+    // 故不在此收窄注入（即便 upstream 含 fsd glob 也原样 fallthrough，生产中无阶段注入）。
     const sliceFiles = targetUnits.flatMap(u => unitSliceRelPaths(u, "translate"))
     const translated = upstream.flatMap(a => {
       // 整包结构 glob 由 per-unit 切片取代（切片含 source.sql + meta.json）
@@ -2517,7 +2516,6 @@ export function narrowUpstreamForShard(
       // subprograms 仅含元数据（directCalls/bodyLocation），切片已含所需结构，整体丢弃。
       if (a === "packages/*.json") return [...sliceFiles, ...constOnlyInvFiles]
       if (a === "subprograms/*.json") return []
-      if (a === "fsd/*/*.md") return fsdFiles
       if (a === "translations/*/translation.json") return []   // 依赖签名预注入，不再注入
       return [a]
     })
@@ -2547,11 +2545,8 @@ export function narrowUpstreamForShard(
       }
       // subprograms/*.json：每包多文件（per-method），无法纯字符串按包收窄——保留 glob
       //（仅含元数据 directCalls/bodyLocation，无源码体，泄漏风险低；review/verify 不依赖它）。
-      // fsd/*/*.md → 本包 FSD 目录 fsd/{pkg}/*.md。FSD 是聚合文档、translate 按它实施，
-      // 应只读本包对应的 FSD；需要其他包 FSD 时由 worker 显式指明具体文件（见 translator.md）。
-      if (a === "fsd/*/*.md") {
-        return targetPkgs.map(pkg => `fsd/${pkg}/*.md`)
-      }
+      // FSD 是 translate 末尾 sub-stage 产出的人工审核总结文档，纯末端产物，任何阶段都不读 FSD 作输入
+      // ——不收窄注入。fsd/*/*.md 即便出现在 upstream 也原样 fallthrough（生产中无阶段注入）。
       return [a]
     })
   }
@@ -2835,7 +2830,7 @@ export function buildDependencySignaturesBlock(
 
 /**
  * 构建分片 work order 的「单元读取清单」（中间文件，软约束）：对本分片每个 targetUnit 精准列出
- * 要读的源码文件 + 行范围（sed -n）+ FSD/依赖聚合路径。数据确定性取自
+ * 要读的源码文件 + 行范围（sed -n）+ 依赖聚合路径。数据确定性取自
  * packages/subprograms（bodyLocation.lineRange）+ 依赖图（callGraph，按需推导）。
  *
  * 目的：把「读取单元」收紧到「工作单元」——agent 按清单 sed -n 抽片段，不再读整包 body 顺手全做
@@ -2871,7 +2866,6 @@ export function buildUnitScopeBlock(
 
     // translate
     lines.push(`- 切片目录：${sliceDir}/（source.sql + meta.json，引擎已预切，本 unit 根）`)
-    lines.push(`- FSD 输入：${artifactsDir}/fsd/${pkg}/${rootRef}.md`)
     lines.push(`- 输出：${artifactsDir}/translations/${pkg}/${rootRef}.json（per-unit 翻译产物）`)
     lines.push(`- 依赖签名：见 workOrder「依赖签名」预注入块（已内联跨包/同包跨单元调用签名，⛔ 勿 read translations/*/translation.json）`)
   }

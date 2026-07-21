@@ -30,17 +30,14 @@ describe("narrowUpstreamForShard", () => {
     expect(result).not.toContain("packages/PKG_C.json")
   })
 
-  it("translate: packages + fsd 都收窄到本分片包", () => {
+  it("translate: packages 收窄到本分片包", () => {
     const upstream = [
       "inventory.json", "packages/*.json", "subprograms/*.json", "tables/*.json",
       "plan.json", "scaffold.json",
-      "fsd/*/*.md",
     ]
     const result = narrowUpstreamForShard(upstream, "translate", ["PKG_A"], [])
     expect(result).toContain("packages/PKG_A.json")
-    expect(result).toContain("fsd/PKG_A/*.md")
     expect(result).not.toContain("packages/*.json")
-    expect(result).not.toContain("fsd/*/*.md")
     // 全局只读 artifact 保留
     expect(result).toContain("plan.json")
     expect(result).toContain("scaffold.json")
@@ -92,10 +89,10 @@ describe("narrowUpstreamForShard — translate PROCEDURE 级（unit 模式）", 
   const baseUpstream = [
     "inventory.json", "packages/*.json", "subprograms/*.json", "tables/*.json",
     "plan.json", "analysis-packages/*.json", "scaffold.json",
-    "fsd/*/*.md", "translations/*/translation.json",
+    "translations/*/translation.json",
   ]
 
-  it("targetUnits → per-unit 切片 + 根 FSD；整包 packages/analysis-packages 不再注入", () => {
+  it("targetUnits → per-unit 切片；整包 packages/analysis-packages 不再注入", () => {
     const result = narrowUpstreamForShard(baseUpstream, "translate", [], [], {
       targetUnits: ["PKG_A.create_order", "PKG_A.cancel_order"],
     })
@@ -103,15 +100,11 @@ describe("narrowUpstreamForShard — translate PROCEDURE 级（unit 模式）", 
     expect(result).toContain("shard-inputs/PKG_A/create_order/source.sql")
     expect(result).toContain("shard-inputs/PKG_A/create_order/meta.json")
     expect(result).toContain("shard-inputs/PKG_A/cancel_order/source.sql")
-    // 根 FSD
-    expect(result).toContain("fsd/PKG_A/create_order.md")
-    expect(result).toContain("fsd/PKG_A/cancel_order.md")
     // 整包不再注入（硬隔离）
     expect(result).not.toContain("packages/PKG_A.json")
     expect(result).not.toContain("analysis-packages/PKG_A.json")
     expect(result).not.toContain("packages/*.json")
     expect(result).not.toContain("subprograms/*.json")
-    expect(result).not.toContain("fsd/*/*.md")
   })
 
   it("跨包 unit：切片覆盖多个包", () => {
@@ -120,8 +113,6 @@ describe("narrowUpstreamForShard — translate PROCEDURE 级（unit 模式）", 
     })
     expect(result).toContain("shard-inputs/PKG_A/p1/source.sql")
     expect(result).toContain("shard-inputs/PKG_B/p2/source.sql")
-    expect(result).toContain("fsd/PKG_A/p1.md")
-    expect(result).toContain("fsd/PKG_B/p2.md")
   })
 
   it("translations/*/translation.json 在 translate unit 模式下清空（依赖签名预注入）", () => {
@@ -138,7 +129,6 @@ describe("narrowUpstreamForShard — translate PROCEDURE 级（unit 模式）", 
   it("无 targetUnits：回退包级模式（原逻辑）", () => {
     const result = narrowUpstreamForShard(baseUpstream, "translate", ["PKG_A"], ["PKG_B"])
     expect(result).toContain("packages/PKG_A.json")
-    expect(result).toContain("fsd/PKG_A/*.md")
     expect(result).toContain("translations/PKG_B/translation.json")
   })
 })
