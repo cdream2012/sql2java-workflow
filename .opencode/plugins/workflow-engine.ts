@@ -37,7 +37,7 @@ import {
 import { renderWorkerPrompt, persistWorkOrder, readPersistedWorkOrder, getSubtaskTriggerPrompt } from "../workflow/prompt-renderer"
 import { buildReviewSummary } from "../workflow/review-summary-builder"
 import { buildVerifySummary } from "../workflow/verify-summary-builder"
-import { scanDuplicates } from "../workflow/dedup-scanner"
+import { scanDuplicates, type ScanResult } from "../workflow/dedup-scanner"
 import { scanReviewStatic } from "../workflow/review-scanner"
 import { buildReviewFocus } from "../workflow/review-focus"
 import { ensureDeps, findOpencodeDir } from "../workflow/ensure-deps"
@@ -4215,7 +4215,13 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
                 const projectRoot = generatedRootFor(run, artifactId)
                 const dedupRulesPath = (run.metadata as Record<string, unknown>).dedupRulesPath as string | undefined
                 const targetPkgs = currentEntry?.incrementalContext?.targetPackages as string[] | undefined
-                const res = scanDuplicates(artifactsDir, projectRoot, targetPkgs, dedupRulesPath)
+                // 短路开关：SQL2JAVA_DEDUP_SHORT_CIRCUIT=1 时跳过 PMD CPD 扫描与抽取，
+                // 直接走 skipped 占位通路（引擎写占位 dedup.json，agent 跳过模式零工作，1676 校验放行）。
+                // 用于公共模块抽取能力暂未成熟时临时旁路 dedup，不阻断 pipeline。
+                const dedupShortCircuit = process.env.SQL2JAVA_DEDUP_SHORT_CIRCUIT === "1"
+                const res: ScanResult = dedupShortCircuit
+                  ? { skipped: true, skipReason: "短路：公共模块抽取暂未启用（SQL2JAVA_DEDUP_SHORT_CIRCUIT=1）", scanStats: { totalPackages: 0, totalFilesScanned: 0, duplicateGroupsFound: 0 } }
+                  : scanDuplicates(artifactsDir, projectRoot, targetPkgs, dedupRulesPath)
                 if (res.skipped) {
                   dedupScanSkipped = { skipReason: res.skipReason ?? "PMD CPD 不可用" }
                   // 引擎写占位 dedup.json，agent 无需抽取
