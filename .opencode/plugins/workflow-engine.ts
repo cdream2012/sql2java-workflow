@@ -455,44 +455,6 @@ function parseMarkdownSections(text: string): Map<string, string> {
   return sections
 }
 
-/** 合并内置规范与用户规范：用户章节覆盖同名内置章节，独有章节追加到末尾。
- *  - 精确标题匹配（区分大小写）：用户需复制内置标题才能覆盖
- *  - 不匹配的用户章节追加到末尾（保留用户文件中的顺序）
- *  - 用户未覆盖的内置章节保留原样
- */
-function mergeSpecSections(
-  builtIn: Map<string, string>,
-  user: Map<string, string>,
-): string {
-  const parts: string[] = []
-
-  // Preamble: 用户覆盖内置
-  const userPreamble = user.get("__preamble__")
-  const builtInPreamble = builtIn.get("__preamble__")
-  if (userPreamble) {
-    parts.push(userPreamble)
-  } else if (builtInPreamble) {
-    parts.push(builtInPreamble)
-  }
-
-  // 内置章节（保留原始顺序），用户同名章节覆盖
-  for (const [title, body] of builtIn) {
-    if (title === "__preamble__") continue
-    const sectionBody = user.has(title) ? user.get(title)! : body
-    parts.push(`## ${title}\n\n${sectionBody}`)
-  }
-
-  // 用户独有章节（内置中不存在的），追加到末尾
-  for (const [title, body] of user) {
-    if (title === "__preamble__") continue
-    if (!builtIn.has(title)) {
-      parts.push(`## ${title}\n\n${body}`)
-    }
-  }
-
-  return parts.join("\n\n")
-}
-
 /** 目录结构章节标题匹配模式 */
 const STRUCTURE_SECTION_PATTERN = /^(工程结构|目录结构|Project Structure|Directory Structure)$/
 
@@ -605,20 +567,7 @@ function loadUserSpec(specConf?: string, sourcePath?: string): UserSpecResult | 
     const sections = parseMarkdownSections(rawMarkdown)
     const projectStructure = extractStructureFromSpec(sections)
 
-    // 检测近似标题重叠：用户可能想覆盖内置章节但标题不完全匹配
-    const builtInSections = parseMarkdownSections(readJavaCodeSpec())
-    for (const [userTitle] of sections) {
-      if (userTitle === "__preamble__") continue
-      for (const [builtInTitle] of builtInSections) {
-        if (builtInTitle === "__preamble__") continue
-        if (userTitle !== builtInTitle && (
-          builtInTitle.includes(userTitle) || userTitle.includes(builtInTitle)
-        )) {
-          getLogger().warn("[workflow-engine]",
-            `用户规约章节 "${userTitle}" 与内置章节 "${builtInTitle}" 标题不完全匹配，将作为新章节追加而非覆盖。如需覆盖，请使用精确标题。`)
-        }
-      }
-    }
+    // --spec 为整体替换语义：用户文件即唯一规约，不再与内置规约做章节合并/标题匹配。
 
     const result: UserSpecResult = {
       rawMarkdown,
@@ -4996,7 +4945,8 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
         // 仅对白名单中的 agent 注入代码规约（按 effective agent 文件判定，slave 也命中 translate-* 写 Java 的）
         const needsJavaSpec = JAVA_SPEC_AGENTS.some(a => effectiveAgentFile.includes(a))
         const rawSpec = needsJavaSpec ? readJavaCodeSpec() : ""
-        // 合并用户自定义规约（--spec）：用户章节覆盖同名内置章节，独有章节追加
+        // --spec 整体替换语义：用户规约文件（含 ## 章节）即唯一规约，不与内置规约合并。
+        // 纯目录结构文件（无 ## 章节，sections.size===0）仅覆盖 projectStructure，规约仍用内置默认。
         let javaCodeSpec: string
         if (needsJavaSpec && rawSpec) {
           const userSpecPath = (run?.metadata as Record<string, unknown>)?.userSpecPath as string | undefined
@@ -5004,12 +4954,12 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
             try {
               const userSpec = loadUserSpec(userSpecPath, undefined)
               if (userSpec && userSpec.sections.size > 0) {
-                javaCodeSpec = mergeSpecSections(parseMarkdownSections(rawSpec), userSpec.sections)
+                javaCodeSpec = userSpec.rawMarkdown
               } else {
                 javaCodeSpec = rawSpec
               }
             } catch (e: any) {
-              getLogger().warn("[workflow-engine]", `合并用户规约失败，回退到内置规约: ${e.message}`)
+              getLogger().warn("[workflow-engine]", `加载用户规约失败，回退到内置规约: ${e.message}`)
               javaCodeSpec = rawSpec
             }
           } else {

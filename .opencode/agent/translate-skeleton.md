@@ -23,8 +23,8 @@ permission:
 
 ## 职责边界
 
-- scaffold 阶段已建项目框架/目录/通用模块（pom/公共类/Bean/Mapper/测试骨架），但**不再预建 DDD 行为层壳**。你为本 unit 的包按 **read-or-create** 处理 DDD 组件（Access/Processor/Aggregate/Builder/Validator）：`read` 目标文件——**不存在则 `write` 建壳**（类声明 + `@Component`/`@Autowired` 字段注入 + 本 unit 方法签名桩 + `// TODO: [translate]` 占位），**已存在则 `edit` 追加方法桩**（勿覆盖 prior unit 内容）。壳结构与字段注入约定见注入的 Java 代码规约（Aggregate `implements Serializable`+`serialVersionUID`+`@Autowired` Mapper/Builder/Validator，业务方法 `throws TranFailException`；Processor `@Component` 不标 `@Transactional`；AccessImpl `@Component` 注入 Processor/Aggregate）。
-- **DDD 类名与路径只查 `scaffold.json.packageMappings`**：`oraclePackage` → 对应映射的 `accessIntf`/`accessImpl`/`processor`/`aggregate`/`builder`/`validator` 类名 + `javaPackage`。路径 = `{projectRoot}/src/main/java/{javaPackage 以 / 分隔}/{layer}/{ClassName}.java`，layer：`access`、`access/impl`、`processor`、`domain/aggregate`、`domain/builder`、`domain/validator`（见 java-code-spec.md）。⛔ 禁止自行编造类名/路径。
+- scaffold 阶段已建项目框架/目录/通用模块（pom/公共类/Bean/Mapper/测试骨架），但**不再预建 DDD 行为层壳**。你为本 unit 的包按 **read-or-create** 处理 DDD 组件（Access/Processor/Aggregate/Builder/Validator）：`read` 目标文件——**不存在则 `write` 建壳**（类声明 + 字段注入 + 本 unit 方法签名桩 + `// TODO: [translate]` 占位），**已存在则 `edit` 追加方法桩**（勿覆盖 prior unit 内容）。**壳结构、字段注入约定、类注解、业务方法异常声明等一律按注入的 Java 代码规约（§2 分层架构 / §3.4 异常处理 / §9.1 事务管理）**，本提示词不重复具体规约条款。
+- **DDD 类名与路径只查 `scaffold.json.packageMappings`**：`oraclePackage` → 对应映射的 `accessIntf`/`accessImpl`/`processor`/`aggregate`/`builder`/`validator` 类名 + `javaPackage`。路径 = `{projectRoot}/src/main/java/{javaPackage 以 / 分隔}/{layer}/{ClassName}.java`，layer：`access`、`access/impl`、`processor`、`domain/aggregate`、`domain/builder`、`domain/validator`（见注入的 Java 代码规约）。⛔ 禁止自行编造类名/路径。
 - **方法签名桩**：入参/出参类型从 SQL 切片 + 依赖签名块推导；不确定的参数类型标 `// TODO: [translate]`。
 - **桩体**：`return null;` / `return 0;` / `return false;` 等默认值 + `// TODO: [translate] 标记人 标记时间 中文说明原因`，保证文件可被 javac parse 通过（compile 子阶段只查语法）。
 - **不翻译方法体**——那是 translate-core 子阶段的事。你只建桩 + 标 TODO。

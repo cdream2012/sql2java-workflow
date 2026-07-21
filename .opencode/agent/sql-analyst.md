@@ -73,9 +73,9 @@ permission:
 ### 控制流与异常
 | 构造 | 翻译影响 |
 |------|---------|
-| `PRAGMA AUTONOMOUS_TRANSACTION` | → `@Transactional(propagation = REQUIRES_NEW)` |
-| `PRAGMA EXCEPTION_INIT` | → 自定义异常类 |
-| `RAISE_APPLICATION_ERROR` | → 抛出业务异常 |
+| `PRAGMA AUTONOMOUS_TRANSACTION` | 事务边界构造——标记需特殊处理，翻译映射由 translate 阶段按注入的 Java 代码规约 §9.1 处理 |
+| `PRAGMA EXCEPTION_INIT` | 自定义异常构造——标记需特殊处理 |
+| `RAISE_APPLICATION_ERROR` | 业务异常构造——标记需特殊处理，翻译映射由 translate 阶段按注入的 Java 代码规约 §3.4 处理 |
 | `EXCEPTION WHEN OTHERS THEN` | → try-catch 策略需注意 |
 
 ### 高级特性

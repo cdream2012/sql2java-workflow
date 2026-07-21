@@ -1,8 +1,8 @@
 # Java 代码规约
 
-> 此规约由工作流引擎自动注入到 java-architect、translator、reviewer 三个 agent 的 system prompt 中。
+> 此规约由工作流引擎自动注入到写 Java 的 agent（java-architect / translator / reviewer / translate-skeleton / translate-core / translate-test）的 system prompt 中。
 > 修改此文件即可全局生效，无需同步修改多个 agent 文件。
-> 用户也可通过 `--spec` 参数提供自定义规约文件（按 `##` 章节覆盖同名内置章节，独有章节追加）。
+> 用户可通过 `--spec` 参数提供自定义规约文件——指定后**整体替换**本默认规约（用户文件即唯一规约，不再与默认合并）；纯目录结构文件仅覆盖工程结构，规约仍用本默认。
 
 ## 适用范围
 
@@ -601,6 +601,77 @@ public interface IntCfcIrsDealMapper {
 6. 【强制】日期格式：统一在 Builder 中转换日期格式。
 7. 【强制】空值处理：所有可能为空的字段必须设置默认值。
 8. 【强制】日志记录：每个关键步骤必须记录日志，便于问题排查。
+
+---
+
+## 十四、基础设施类模板
+
+> scaffold 阶段在 `src/main/java/{packageBase}/common/infrastructure/` 下生成下列基础设施类（最小可编译 stub，包名 `{packageBase}.common.infrastructure`）。所有类遵循本规约：中文 Javadoc、`@author`/`@version`/`@since`。真实实现由项目方后续补充。
+
+### 14.1 TranFailException（统一业务异常）
+
+**checked** 异常，继承 `Exception`；Aggregate/Validator/Access 业务方法 `throws TranFailException`。
+
+```java
+public class TranFailException extends Exception {
+    private static final long serialVersionUID = 1L;
+    public TranFailException(String message) { super(message); }
+    public TranFailException(String message, Throwable cause) { super(message, cause); }
+}
+```
+
+### 14.2 CommonLog（统一日志门面）
+
+静态日志门面，封装 slf4j；方法入口/出口 `info`，异常 `error` 带堆栈。
+
+```java
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+public final class CommonLog {
+    private static final Logger LOGGER = LoggerFactory.getLogger(CommonLog.class);
+    private CommonLog() { }
+    public static void info(String msg) { LOGGER.info(msg); }
+    public static void info(String format, Object... args) { LOGGER.info(format, args); }
+    public static void warn(String msg) { LOGGER.warn(msg); }
+    public static void error(String msg) { LOGGER.error(msg); }
+    public static void error(String msg, Throwable t) { LOGGER.error(msg, t); }
+    public static void debug(String msg) { if (LOGGER.isDebugEnabled()) LOGGER.debug(msg); }
+}
+```
+
+### 14.3 StringUtil（字符串工具，Java 8 兼容）
+
+**禁止** `String.isBlank()`/`strip()`（Java 9+ API）。
+
+```java
+public final class StringUtil {
+    private StringUtil() { }
+    public static boolean isBlank(String s) { return s == null || s.trim().isEmpty(); }
+    public static boolean isNotBlank(String s) { return !isBlank(s); }
+    public static boolean isEmpty(String s) { return s == null || s.isEmpty(); }
+}
+```
+
+### 14.4 SplitListUtil（分批工具）
+
+批量处理超 1000 条时使用。
+
+```java
+import java.util.ArrayList;
+import java.util.List;
+public final class SplitListUtil {
+    private SplitListUtil() { }
+    public static <T> List<List<T>> splitList(List<T> list, int batchSize) {
+        List<List<T>> result = new ArrayList<>();
+        if (list == null || list.isEmpty() || batchSize <= 0) return result;
+        int total = list.size();
+        for (int i = 0; i < total; i += batchSize) {
+            result.add(list.subList(i, Math.min(i + batchSize, total)));
+        }
+        return result;
+    }
+}
+```
 
 ---
 

@@ -80,8 +80,7 @@ permission:
 | `EXCEPTION WHEN NO_DATA_FOUND` | `catch (EmptyResultDataAccessException e)` |
 | `EXCEPTION WHEN TOO_MANY_ROWS` | `catch (IncorrectResultSizeDataAccessException e)` |
 | `EXCEPTION WHEN OTHERS` | `catch (Exception e)` |
-| `RAISE_APPLICATION_ERROR(-20001, msg)` | `throw new TranFailException(msg)` |
-| `PRAGMA AUTONOMOUS_TRANSACTION` | `@Transactional(propagation = REQUIRES_NEW)` |
+| `RAISE_APPLICATION_ERROR` / `PRAGMA AUTONOMOUS_TRANSACTION` | 异常/事务映射见注入的 Java 代码规约 §3.4 异常处理 / §9.1 事务管理 |
 | `DBMS_OUTPUT.PUT_LINE` | `log.info(...) / log.debug(...)` |
 | `v_count := SQL%ROWCOUNT` | `int count = mapper.updateXxx();` |
 | `RETURN expr` | `return expr;` |
@@ -89,18 +88,7 @@ permission:
 
 ### 类型映射
 
-| Oracle 类型 | Java 类型 |
-|------------|----------|
-| VARCHAR2 | String |
-| NUMBER | BigDecimal |
-| INTEGER / PLS_INTEGER | Integer |
-| DATE | LocalDate |
-| TIMESTAMP | LocalDateTime |
-| BOOLEAN | Boolean |
-| %ROWTYPE | Entity / DTO 类 |
-| RECORD | DTO 类 |
-| TABLE ... INDEX BY | Map / List |
-| SYS_REFCURSOR | List<Map<String,Object>> |
+Oracle → Java 类型映射见注入的 Java 代码规约 §3.1 Oracle → Java 类型映射表。
 
 ---
 
@@ -246,7 +234,7 @@ verify 触发的 fix（workOrder 含 `## 未覆盖行清单` 段）需按 jacoco
 2. **按 class:line 定位**：`class` 是全限定 Java 类名（如 `com.example.ordersystem.order.domain.aggregate.OrderAggregate`），`line` 是该类源码行号；`read` 该类文件，找到 line 对应的方法
 3. **补测试**（在对应的 `*Test.java` 中 edit 追加测试方法，勿覆盖已有测试）：
    - `type=line`（行未覆盖）：补对应方法的正向用例，arrange 构造输入 + mock 依赖返回值，act 调用，assert 返回值/副作用
-   - `type=branch`（分支未覆盖）：补缺失的 if/else 一支——边界值、异常输入、null、错误码路径，用 `assertThrows(TranFailException.class, ...)` 验证异常路径
+   - `type=branch`（分支未覆盖）：补缺失的 if/else 一支——边界值、异常输入、null、错误码路径，用 `assertThrows` 验证异常路径（异常类型按注入的 Java 代码规约 §3.4 约定的统一业务异常）
 4. **不计入项**：`@Disabled` 的 Mapper 集成测试路径（H2 不兼容）不计入覆盖率，无需补；被 pom excludes 排除的类（common/infrastructure、beans/*Bean、*Config、*Application）也不计入
 5. 补完更新受影响 unit 的 per-unit 文件 `files[]`（新增测试方法无需改文件列表，除非新建测试文件）
 
