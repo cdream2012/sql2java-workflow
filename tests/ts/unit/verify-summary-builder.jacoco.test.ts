@@ -28,11 +28,10 @@ afterEach(() => {
   rmSync(projectRoot, { recursive: true, force: true })
 })
 
-/** 造 scaffold/inventory/plan/translation + projectRoot 指向真实临时目录 */
+/** 造 scaffold/inventory/translation + projectRoot 指向真实临时目录（Stage C：packageMappings 在 scaffold.json） */
 function setup(packages: string[], files: Record<string, string[]>) {
-  writeFileSync(join(dir, "scaffold.json"), JSON.stringify({ projectRoot }), "utf-8")
+  writeFileSync(join(dir, "scaffold.json"), JSON.stringify({ projectRoot, packageMappings: [] }), "utf-8")
   writeFileSync(join(dir, "inventory.json"), JSON.stringify({ packageNames: packages }), "utf-8")
-  writeFileSync(join(dir, "plan.json"), JSON.stringify({ packageMappings: [] }), "utf-8")
   for (const pkg of packages) {
     mkdirSync(join(dir, "translations", pkg), { recursive: true })
     writeFileSync(

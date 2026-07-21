@@ -16,14 +16,14 @@ import {
 describe("SQL2JAVA_WORKFLOW phases", () => {
   const phases = SQL2JAVA_WORKFLOW.phases
 
-  it("有且仅有 8 个阶段（7 main + fix）", () => {
-    expect(phases).toHaveLength(8)
+  it("有且仅有 7 个阶段（6 main + fix；Stage C 合并 plan 入 scaffold）", () => {
+    expect(phases).toHaveLength(7)
   })
 
   it("阶段名称列表正确", () => {
     const names = phases.map(p => p.name)
     expect(names).toEqual([
-      "inventory", "plan", "scaffold",
+      "inventory", "scaffold",
       "translate", "dedup", "review", "verify", "fix",
     ])
   })
@@ -64,7 +64,7 @@ describe("SQL2JAVA_WORKFLOW phases", () => {
     const crossSchemaPhases = phases.filter(p => p.needsCrossSchemaValidation).map(p => p.name)
     // inventory：dependency-graph.json（含 callGraph）由 inventory 阶段代码产出，需校验 refName 合法性 + 包名一致
     // translate 完成时所有包 translation.json 已齐，即时校验 subprogramMethods 给 translator 反馈
-    expect(crossSchemaPhases.sort()).toEqual(["dedup", "inventory", "plan", "translate"])
+    expect(crossSchemaPhases.sort()).toEqual(["dedup", "inventory", "scaffold", "translate"])
   })
 })
 
@@ -83,10 +83,9 @@ describe("SQL2JAVA_WORKFLOW transitions", () => {
     }
   })
 
-  it("主线无条件前进：inventory → plan → scaffold → translate → dedup → review", () => {
+  it("主线无条件前进：inventory → scaffold → translate → dedup → review（Stage C：plan 合并入 scaffold）", () => {
     const mainChain = [
-      { from: "inventory", to: "plan" },
-      { from: "plan", to: "scaffold" },
+      { from: "inventory", to: "scaffold" },
       { from: "scaffold", to: "translate" },
       { from: "translate", to: "dedup" },
       { from: "dedup", to: "review" },
@@ -168,8 +167,8 @@ describe("UPSTREAM_ARTIFACTS", () => {
     expect(UPSTREAM_ARTIFACTS.translate).toContain("subprograms/*.json")
   })
 
-  it("plan 不注入 FSD（框架设计不做逐过程翻译）", () => {
-    expect(UPSTREAM_ARTIFACTS.plan).not.toContain("fsd/*/*.md")
+  it("plan 阶段已移除（Stage C 合并入 scaffold）——UPSTREAM_ARTIFACTS 无 plan 条目", () => {
+    expect(UPSTREAM_ARTIFACTS.plan).toBeUndefined()
   })
 
   it("任意阶段都不注入 FSD（FSD 是 translate 末尾 sub-stage 产出的人工审核总结文档，纯末端产物，不作输入）", () => {

@@ -162,9 +162,9 @@ describe("NON_ZOD_VALIDATION_RULES 覆盖性", () => {
 // ═══════════════════════════════════════════════════════════════
 
 describe("COMMON_PITFALLS 一致性", () => {
-  /** 所有有 Zod schema 的 phase（应有 pitfall 提示） */
+  /** 所有有 Zod schema 的 phase（应有 pitfall 提示；Stage C：plan 已合并入 scaffold） */
   const ALL_SCHEMA_PHASES = [
-    "inventory", "plan", "scaffold",
+    "inventory", "scaffold",
     "translate", "review", "verify", "dedup", "fix",
   ]
 
@@ -225,10 +225,10 @@ describe("COMMON_PITFALLS 一致性", () => {
     expect(hasOracleName, "translate pitfall 应包含 oracleName 重载序号提示").toBe(true)
   })
 
-  it("plan 阶段包含枚举推荐值提示", () => {
-    const pitfalls = COMMON_PITFALLS["plan"]
+  it("scaffold 阶段包含 packageMappings 提示（Stage C 合并 plan）", () => {
+    const pitfalls = COMMON_PITFALLS["scaffold"]
     expect(pitfalls).toBeDefined()
-    const hasRecommendation = pitfalls!.some(p => p.includes("推荐值"))
-    expect(hasRecommendation, "plan pitfall 应包含枚举推荐值提示").toBe(true)
+    const hasMapping = pitfalls!.some(p => p.includes("packageMappings") || p.includes("Mapping"))
+    expect(hasMapping, "scaffold pitfall 应包含 packageMappings 相关提示").toBe(true)
   })
 })

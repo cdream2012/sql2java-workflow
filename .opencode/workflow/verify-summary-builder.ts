@@ -7,7 +7,7 @@
  *
  * agent 只跑 mvn（输出 tee 到 verify-compile.log / verify-test.log）+ 调本 action。代码：
  *   1. 解析 mvn 日志 → compilation{success,errors} / testExecution{totals,testErrors}；
- *   2. 编译错误按文件、测试失败按测试类归因到包（plan.json packageMappings + translation.json files[]）；
+ *   2. 编译错误按文件、测试失败按测试类归因到包（scaffold.json packageMappings + translation.json files[]）；
  *   3. 聚合 verify-summary.json（allPassed = 全包无归因失败 且编译通过；全局编译失败由 G5 兜底阻断）。
  *
  * 不再写 per-package verify.json（静态字段已归 review，动态归因结果落在 summary.packageResults）。
@@ -20,7 +20,7 @@
 import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs"
 import { join, relative } from "node:path"
 import { z } from "zod"
-import { PlanSchema, VerifySummarySchema } from "./artifact-schemas"
+import { PackageMappingSchema, VerifySummarySchema } from "./artifact-schemas"
 import { formatZodIssues, readScopePackagesFromArtifacts } from "./engine-core"
 import { getLogger } from "./workflow-logger"
 import { COVERAGE_LINE_THRESHOLD, COVERAGE_BRANCH_THRESHOLD } from "./constants"
@@ -195,11 +195,12 @@ function readPackageList(artifactsDir: string): string[] {
   return names.filter((n): n is string => typeof n === "string" && n.length > 0)
 }
 
-type PkgMappingLite = z.infer<typeof PlanSchema>["packageMappings"][number]
+type PkgMappingLite = z.infer<typeof PackageMappingSchema>
 
 function readPackageMappings(artifactsDir: string): PkgMappingLite[] {
-  const plan = readJson(join(artifactsDir, "plan.json"))
-  return (plan?.packageMappings as PkgMappingLite[]) ?? []
+  // Stage C：packageMappings 从 plan.json 移到 scaffold.json
+  const scaffold = readJson(join(artifactsDir, "scaffold.json"))
+  return (scaffold?.packageMappings as PkgMappingLite[]) ?? []
 }
 
 function readJson(path: string): any {
@@ -318,7 +319,7 @@ function classBelongsToPkg(classRelPath: string, files: PkgFiles): boolean {
   return false
 }
 
-/** 测试类是否属于本包（按 plan.json packageMappings 的组件类名 + Test/IntegrationTest 后缀精确匹配） */
+/** 测试类是否属于本包（按 scaffold.json packageMappings 的组件类名 + Test/IntegrationTest 后缀精确匹配） */
 function testBelongsToPkg(
   testClass: string,
   mappings: PkgMappingLite[],

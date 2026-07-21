@@ -20,7 +20,7 @@ import { writeFileSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
 import type { CaseConfig } from "../../harness"
 import { assertGeneratedFileExists, assertJavaMatches, assertDecision } from "../../harness"
-import { makePlan, makePackageArtifact, writeArtifactJson } from "../../../ts/helpers/artifact-factory"
+import { makePackageArtifact, writeArtifactJson } from "../../../ts/helpers/artifact-factory"
 
 const PACKAGE = "EXC_PKG"
 const SOURCE_DIR_REL = "src-sql"
@@ -50,13 +50,14 @@ const config: CaseConfig = {
       complexity: { score: 3, patterns: ["exception-block"], riskLevel: "low" },
     }))
 
-    writeArtifactJson(dir, "plan.json", makePlan({
+    writeArtifactJson(dir, "scaffold.json", {
+      targetProject: {
+        groupId: "com.example", packageBase: "com.example.exc",
+        javaVersion: "1.8", springBootVersion: "2.7.x",
+      },
       packageMappings: [
         { oraclePackage: PACKAGE, javaPackage: "com.example.exc", mapperInterface: "ExcMapper", serviceClass: "ExcService", serviceImplClass: "ExcServiceImpl" },
       ],
-    }))
-
-    writeArtifactJson(dir, "scaffold.json", {
       projectRoot: PROJECT_ROOT_REL,
       structure: { directories: ["src/main/java/com/example/exc/service/impl"], pomXml: "pom.xml" },
       generated: {

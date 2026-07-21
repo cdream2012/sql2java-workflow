@@ -96,92 +96,83 @@ describe("validateCrossSchema — 包名一致性", () => {
   })
 })
 
-describe("validateCrossSchema — plan 映射覆盖", () => {
+describe("validateCrossSchema — scaffold packageMappings 覆盖（Stage C：原 plan 校验合并到 scaffold）", () => {
   let ctx: ReturnType<typeof createEngineWithTempDir>
   afterEach(() => ctx?.cleanup())
 
-  it("plan 未映射包 → warning", () => {
+  it("scaffold.packageMappings 未映射包 → warning", () => {
     ctx = createEngineWithTempDir()
     setupBaseline(ctx.dir)
-    writeArtifact(ctx.dir, RUN_ID, "plan.json", {
+    writeArtifact(ctx.dir, RUN_ID, "scaffold.json", {
       targetProject: {
-        groupId: "com.example", artifactId: "myapp",
-        packageBase: "com.example", javaVersion: "1.8", springBootVersion: "2.7.x",
+        groupId: "com.example", packageBase: "com.example",
+        javaVersion: "1.8", springBootVersion: "2.7.x",
       },
       packageMappings: [
         { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
           mapperInterface: "CoreMapper", accessIntf: "CoreAccessIntf", accessImpl: "CoreAccessImpl", aggregate: "CoreAggregate" },
         // 缺少 EXTRA_PKG 映射
       ],
-      rules: {
-        namingConvention: "camelCase", nullHandling: "optional",
-        exceptionStrategy: "custom-business", logFramework: "common-log",
-      },
-      typeMappings: {}, manualReviewList: [], conventions: "",
     })
 
     const findings: CrossSchemaFinding[] = ctx.engine.validateCrossSchema(
-      { runId: RUN_ID, currentPhase: "plan", status: "running", phaseHistory: [], metadata: {}, createdAt: "", updatedAt: "" },
-      "plan",
+      { runId: RUN_ID, currentPhase: "scaffold", status: "running", phaseHistory: [], metadata: {}, createdAt: "", updatedAt: "" },
+      "scaffold",
     )
-    const missing = findings.find(f => f.message.includes("plan 未映射包: EXTRA_PKG"))
+    const missing = findings.find(f => f.message.includes("scaffold.packageMappings 未映射包: EXTRA_PKG"))
     expect(missing).toBeTruthy()
     expect(missing!.severity).toBe("warning")
   })
 
-  it("scope 激活时越界映射包（out-of-scope 包写进 plan）→ warning", () => {
+  it("scope 激活时越界映射包（out-of-scope 包写进 packageMappings）→ warning", () => {
     ctx = createEngineWithTempDir()
     setupBaseline(ctx.dir)
-    writeArtifact(ctx.dir, RUN_ID, "plan.json", {
+    writeArtifact(ctx.dir, RUN_ID, "scaffold.json", {
       targetProject: {
-        groupId: "com.example", artifactId: "myapp",
-        packageBase: "com.example", javaVersion: "1.8", springBootVersion: "2.7.x",
+        groupId: "com.example", packageBase: "com.example",
+        javaVersion: "1.8", springBootVersion: "2.7.x",
       },
-      // scope 只覆盖 CORE_PKG，但 plan 把 out-of-scope 的 EXTRA_PKG 也映射了
+      // scope 只覆盖 CORE_PKG，但 packageMappings 把 out-of-scope 的 EXTRA_PKG 也映射了
       packageMappings: [
         { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
           mapperInterface: "CoreMapper", accessIntf: "CoreAccessIntf", accessImpl: "CoreAccessImpl", aggregate: "CoreAggregate" },
         { oraclePackage: "EXTRA_PKG", javaPackage: "com.example.extra",
           mapperInterface: "ExtraMapper", accessIntf: "ExtraAccessIntf", accessImpl: "ExtraAccessImpl", aggregate: "ExtraAggregate" },
       ],
-      rules: { namingConvention: "camelCase", nullHandling: "optional", exceptionStrategy: "spring-data", logFramework: "slf4j" },
-      typeMappings: {}, manualReviewList: [], conventions: "",
     })
 
     const findings: CrossSchemaFinding[] = ctx.engine.validateCrossSchema(
-      { runId: RUN_ID, currentPhase: "plan", status: "running", phaseHistory: [], metadata: { scopePackages: ["CORE_PKG"] }, createdAt: "", updatedAt: "" },
-      "plan",
+      { runId: RUN_ID, currentPhase: "scaffold", status: "running", phaseHistory: [], metadata: { scopePackages: ["CORE_PKG"] }, createdAt: "", updatedAt: "" },
+      "scaffold",
     )
-    const overflow = findings.find(f => f.message.includes("plan 越界映射包: EXTRA_PKG"))
+    const overflow = findings.find(f => f.message.includes("scaffold.packageMappings 越界映射包: EXTRA_PKG"))
     expect(overflow).toBeTruthy()
     expect(overflow!.severity).toBe("warning")
-    const falseMissing = findings.find(f => f.message.includes("plan 未映射包: EXTRA_PKG"))
+    const falseMissing = findings.find(f => f.message.includes("scaffold.packageMappings 未映射包: EXTRA_PKG"))
     expect(falseMissing).toBeFalsy()
   })
 
   it("scope 激活时 out-of-scope 包未映射不误报", () => {
     ctx = createEngineWithTempDir()
     setupBaseline(ctx.dir)
-    writeArtifact(ctx.dir, RUN_ID, "plan.json", {
+    writeArtifact(ctx.dir, RUN_ID, "scaffold.json", {
       targetProject: {
-        groupId: "com.example", artifactId: "myapp",
-        packageBase: "com.example", javaVersion: "1.8", springBootVersion: "2.7.x",
+        groupId: "com.example", packageBase: "com.example",
+        javaVersion: "1.8", springBootVersion: "2.7.x",
       },
       packageMappings: [
         { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
           mapperInterface: "CoreMapper", accessIntf: "CoreAccessIntf", accessImpl: "CoreAccessImpl", aggregate: "CoreAggregate" },
       ],
-      rules: { namingConvention: "camelCase", nullHandling: "optional", exceptionStrategy: "spring-data", logFramework: "slf4j" },
-      typeMappings: {}, manualReviewList: [], conventions: "",
     })
 
     const findings: CrossSchemaFinding[] = ctx.engine.validateCrossSchema(
-      { runId: RUN_ID, currentPhase: "plan", status: "running", phaseHistory: [], metadata: { scopePackages: ["CORE_PKG"] }, createdAt: "", updatedAt: "" },
-      "plan",
+      { runId: RUN_ID, currentPhase: "scaffold", status: "running", phaseHistory: [], metadata: { scopePackages: ["CORE_PKG"] }, createdAt: "", updatedAt: "" },
+      "scaffold",
     )
-    const falseMissing = findings.find(f => f.message.includes("plan 未映射包: EXTRA_PKG"))
+    const falseMissing = findings.find(f => f.message.includes("scaffold.packageMappings 未映射包: EXTRA_PKG"))
     expect(falseMissing).toBeFalsy()
-    const overflow = findings.find(f => f.message.includes("plan 越界映射包"))
+    const overflow = findings.find(f => f.message.includes("scaffold.packageMappings 越界映射包"))
     expect(overflow).toBeFalsy()
   })
 })

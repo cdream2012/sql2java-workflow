@@ -21,7 +21,7 @@ import type { CaseConfig } from "../../harness"
 import { assertGeneratedFileExists, assertJavaMatches } from "../../harness"
 import {
   makeInventory,
-  makePlan, makeScaffold, makePackageArtifact, makeSubprogramArtifact, makeAnalysisPackage,
+  makeScaffold, makePackageArtifact, makeSubprogramArtifact, makeAnalysisPackage,
   makeTranslation, writeArtifactJson,
 } from "../../../ts/helpers/artifact-factory"
 
@@ -81,16 +81,12 @@ const config: CaseConfig = {
       returnType: "VARCHAR2", loc: 10, directCalls: [],
     }))
 
-    // plan（两包映射）
-    writeArtifactJson(dir, "plan.json", makePlan({
+    // scaffold（A 的骨架；Stage C：含 targetProject + 两包 packageMappings，原 plan.json 合并）
+    writeArtifactJson(dir, "scaffold.json", makeScaffold({
       packageMappings: [
         { oraclePackage: PKG_B, javaPackage: "com.example.util", mapperInterface: "UtilMapper", serviceClass: "UtilService", serviceImplClass: "UtilServiceImpl" },
         { oraclePackage: PKG_A, javaPackage: "com.example.order", mapperInterface: "OrderMapper", serviceClass: "OrderService", serviceImplClass: "OrderServiceImpl" },
       ],
-    }))
-
-    // scaffold（A 的骨架）
-    writeArtifactJson(dir, "scaffold.json", makeScaffold({
       projectRoot: PROJECT_ROOT_REL,
       structure: { directories: ["src/main/java/com/example/order/service/impl"], pomXml: "pom.xml" },
       generated: {

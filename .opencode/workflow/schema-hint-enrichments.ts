@@ -85,7 +85,7 @@ export const NON_ZOD_VALIDATION_RULES: { phases: string[]; message: string }[] =
   },
   {
     phases: ["scaffold"],
-    message: "scaffold.json 的 mapperTestShells 中的 oraclePackage 必须与 plan.json 的 packageMappings 一致",
+    message: "scaffold.json 的 mapperTestShells 中的 oraclePackage 必须与 scaffold.json 的 packageMappings 一致",
   },
   {
     phases: ["scaffold"],
@@ -130,8 +130,8 @@ export const CROSS_SCHEMA_HINTS: Record<string, string[]> = {
     "callGraph 的 key/value 必须为 PKG.refName 格式；refName 须落在该包 subprograms 推导的合法集合内（非重载=裸名，重载={name}__序号，大小写不敏感计数重载）",
     "translationOrder 必须覆盖所有包",
   ],
-  plan: [
-    "plan.packageMappings 必须覆盖所有 inventory 包的 oraclePackage",
+  scaffold: [
+    "scaffold.packageMappings 必须覆盖所有 inventory 包的 oraclePackage（scope 模式下覆盖 scopePackages）",
   ],
   translate: [
     "subprogramMethods.oracleName 必须唯一且符合 refName 规范（重载用 {name}__序号）",
@@ -163,18 +163,11 @@ export const COMMON_PITFALLS: Record<string, string[]> = {
     'packages/{PKG}.json 的 procedures/functions 仅为名字数组；子程序详情（parameters/bodyLocation/directCalls）在 subprograms/{PKG.METHOD}.json',
     'Schema 允许额外字段（.passthrough()）——可添加不在 schema 中的 optional 字段帮助下游阶段，额外字段会透传不被剥离',
   ],
-  plan: [
-    'namingConvention 推荐值：camelCase / keep-oracle / mixed（不限死）',
-    'nullHandling 推荐值：optional / nullable / throw-empty',
-    'exceptionStrategy 推荐值：spring-data / custom-business / oracle-mirror',
-    'logFramework 推荐值：slf4j / log4j2',
-    'Schema 允许额外字段（.passthrough()）——可添加不在 schema 中的 optional 字段帮助下游阶段，额外字段会透传不被剥离',
-  ],
   scaffold: [
     'commonModules.classes.category 推荐全小写，如 "type-mapper" / "mybatis-fragment" / "mapper-interface" / "test-base"（不限死）',
     'projectRoot 为绝对路径（generated/{artifactId}），必须原样使用 Runtime Context / workOrder 注入的 projectRoot 值，勿自行编造路径',
     'mapperTestShells 中的 testClass 命名必须为 {MapperInterface}IntegrationTest',
-    'mapperTestShells 中的 oraclePackage 必须与 plan.json 的 packageMappings 一致',
+    'mapperTestShells 中的 oraclePackage 必须与 scaffold.json 的 packageMappings 一致',
     'h2SchemaFile 指向的文件必须存在于磁盘（src/test/resources/schema-h2.sql）',
     'schema-h2.sql 必须覆盖 inventory.json 中所有 tables 和 sequences',
     'schema-h2.sql 中 UDT 列必须跳过并加注释（-- H2 不支持 Oracle UDT），不能生成 H2 不支持的类型',

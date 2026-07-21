@@ -26,20 +26,12 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
       tools: ["read", "bash", "write", "workflow"],
     },
     {
-      name: "plan",
-      description: "Java 架构规划",
+      name: "scaffold",
+      description: "Spring Boot 项目骨架生成（含原 plan 的 targetProject + packageMappings 决策，Stage C 合并）",
       agentFile: "agent/java-architect.md",
       temperature: 0.2,
       maxRetries: 1,
       needsCrossSchemaValidation: true,
-      tools: ["read", "bash", "write", "edit", "workflow"],
-    },
-    {
-      name: "scaffold",
-      description: "Spring Boot 项目骨架生成",
-      agentFile: "agent/java-architect.md",
-      temperature: 0.2,
-      maxRetries: 1,
       tools: ["read", "bash", "write", "edit", "workflow"],
     },
     {
@@ -103,9 +95,8 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
   ],
 
   transitions: [
-    // ── 主线：无条件前进 ──
-    { from: "inventory",  condition: "always",  to: "plan" },
-    { from: "plan",       condition: "always",  to: "scaffold" },
+    // ── 主线：无条件前进（Stage C：plan 阶段已合并入 scaffold，inventory→scaffold 直连）──
+    { from: "inventory",  condition: "always",  to: "scaffold" },
     { from: "scaffold",   condition: "always",  to: "translate" },
     { from: "translate",  condition: "always",  to: "dedup" },
     { from: "dedup",      condition: "always",  to: "review" },
@@ -129,7 +120,6 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
 // + 顶层 inventory.json（轻量索引）。调用图由 dependency-graph.ts 按需从 subprograms.directCalls
 // 推导，不再落盘 dependency-graph.json。inventory-index.json 已不再落盘（scan→generateInventory 经内存 cache 交接）。
 const _INV_BASE = ["inventory.json", "packages/*.json", "subprograms/*.json", "tables/*.json"] as const
-const _PLAN = ["plan.json"] as const
 const _SCAFFOLD = ["scaffold.json"] as const
 const _DEDUP = ["dedup.json"] as const
 const _TRANSLATIONS = ["translations/*/translation.json"] as const
@@ -139,21 +129,20 @@ export const UPSTREAM_ARTIFACTS: Record<string, string[]> = {
   // inventory 无外部 upstream：scan action 扫描源码产出内存 InventoryIndex，generateInventory 据此落盘
   // packages/+subprograms/+tables/+inventory.json。inventory-index.json 不再落盘。
   inventory: [],
-  // plan 是框架设计（包映射/类型映射/规则/约定），不做逐过程翻译。
-  // 子程序结构/数量从 inventory 的 packages/{pkg}.json 取（complexity 在 packages.complexity）。
-  plan: [..._INV_BASE],
-  scaffold: [..._PLAN, ..._INV_BASE],
+  // Stage C：plan 阶段已合并入 scaffold。scaffold 自行从 inventory + 注入规约推导 targetProject +
+  // packageMappings（含 DDD 类名），写入 scaffold.json。原 plan.json 不复存在。
+  scaffold: [..._INV_BASE],
   // translate：FSD 是末尾 fsd sub-stage 产出的人工审核总结文档，纯末端产物——任何阶段都不读 FSD 作输入，
   // 故 translate UPSTREAM 不含 fsd。translate 读 source.sql 翻译（不读 analysis-slice，analyze 已砍）。
-  translate: [..._INV_BASE, ..._PLAN, ..._SCAFFOLD],
-  dedup: [..._PLAN, ..._SCAFFOLD, ..._INV_BASE, ..._TRANSLATIONS, "dedup-duplicates.json"],
+  translate: [..._INV_BASE, ..._SCAFFOLD],
+  dedup: [..._SCAFFOLD, ..._INV_BASE, ..._TRANSLATIONS, "dedup-duplicates.json"],
   // TODO (F9): translations/*/translation.json 在 dedup/review/verify 三阶段重复读取，
   // artifactCache 每次 advance 清空导致无法跨阶段缓存。考虑支持只读 artifact 的跨阶段缓存。
   // review-static.json：dispatch 前 engine 写入的项目级静态扫描产物；顶层文件不被 narrowUpstreamForShard 收窄。
-  review: [..._PLAN, ..._SCAFFOLD, ..._DEDUP, ..._TRANSLATIONS, "review-static.json"],
-  verify: [..._PLAN, ..._SCAFFOLD, ..._DEDUP, ..._TRANSLATIONS],
+  review: [..._SCAFFOLD, ..._DEDUP, ..._TRANSLATIONS, "review-static.json"],
+  verify: [..._SCAFFOLD, ..._DEDUP, ..._TRANSLATIONS],
   fix: [
-    ..._PLAN, ..._SCAFFOLD, ..._DEDUP,
+    ..._SCAFFOLD, ..._DEDUP,
     // 动态路径：取决于触发阶段（review 或 verify），plugin 注入时需根据 branchedFrom 拼接
     "review-summary.json", "verify-summary.json",
     // review 改项目级单文件：fix 读 review.json(语义 mustFix) + review-static.json(静态 finding)
@@ -176,14 +165,13 @@ export type PrerequisiteItem = string | string[]
 
 /** 目标阶段 → 必须存在的 artifact 文件名（string=必须，string[]=OR组） */
 export const PHASE_PREREQUISITES: Record<string, PrerequisiteItem[]> = {
-  plan: ["inventory.json", "packages", "subprograms"],
-  scaffold: ["plan.json", "inventory.json", "packages"],
-  translate: ["inventory.json", "packages", "subprograms", "plan.json", "scaffold.json"],
-  dedup: ["inventory.json", "plan.json", "scaffold.json", "translations"],
-  review: ["plan.json", "scaffold.json"],
-  verify: ["plan.json", "scaffold.json", "dedup.json"],
+  scaffold: ["inventory.json", "packages"],
+  translate: ["inventory.json", "packages", "subprograms", "scaffold.json"],
+  dedup: ["inventory.json", "scaffold.json", "translations"],
+  review: ["scaffold.json"],
+  verify: ["scaffold.json", "dedup.json"],
   fix: [
-    "plan.json", "scaffold.json", "dedup.json",
+    "scaffold.json", "dedup.json",
     // 触发阶段的 summary：review-summary.json 或 verify-summary.json，至少一个
     ["review-summary.json", "verify-summary.json"],
     "translations",

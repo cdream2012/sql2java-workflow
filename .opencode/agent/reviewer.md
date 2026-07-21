@@ -104,8 +104,7 @@ review 是**项目级单次审核**（无分片）。当 `incrementalContext.tar
 ### 输入
 
 - **上游 artifact**：
-  - `${artifactsDir}/plan.json` — 包映射（oraclePackage→javaPackage/DDD 组件类名）
-  - `${artifactsDir}/scaffold.json` — 项目结构
+  - `${artifactsDir}/scaffold.json` — 项目结构 + 包映射（packageMappings：oraclePackage→javaPackage/DDD 组件类名）
   - `${artifactsDir}/packages/{pkg}.json` — 逐包 inventory + complexity（依赖图由引擎按需推导，不落盘）
   - `${artifactsDir}/translations/*/translation.json` — 翻译记录
 - **Java 文件**：Runtime Context 中 `projectRoot` 指定的目录下的 Java 代码（使用 `read` 工具读取，路径为 `{projectRoot}/src/...`）
@@ -243,8 +242,7 @@ workflow({ action: "generateReviewSummary", runId: "<runId>" })
 ### 输入
 
 - **上游 artifact**：
-  - `${artifactsDir}/plan.json` — 包映射
-  - `${artifactsDir}/scaffold.json` — 项目结构
+  - `${artifactsDir}/scaffold.json` — 项目结构 + 包映射（packageMappings）
   - `${artifactsDir}/translations/*/translation.json` — 翻译记录
 - **Java 文件**：Runtime Context 中 `projectRoot` 指定的目录下的 Java 代码（编译/测试验证在该目录下运行 mvn）
 

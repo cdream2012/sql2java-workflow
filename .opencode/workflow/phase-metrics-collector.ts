@@ -380,9 +380,6 @@ function extractBusinessData(phase: string, artifactsDir: string): PhaseBusiness
     case "inventory":
       extractInventoryData(data, artifactsDir)
       break
-    case "plan":
-      extractPlanData(data, artifactsDir)
-      break
     case "scaffold":
       extractScaffoldData(data, artifactsDir)
       break
@@ -438,22 +435,15 @@ function extractInventoryData(data: PhaseBusinessData, dir: string): void {
   } catch { /* skip */ }
 }
 
-function extractPlanData(data: PhaseBusinessData, dir: string): void {
-  const json = readJsonSafe(join(dir, "plan.json"))
-  if (!json) return
-
-  try {
-    const count = safeArrayLen(json.packageMappings)
-    data.packageMappingsCount = count
-    data.javaPackageCount = count
-  } catch { /* skip */ }
-}
-
 function extractScaffoldData(data: PhaseBusinessData, dir: string): void {
   const json = readJsonSafe(join(dir, "scaffold.json"))
   if (!json) return
 
   try {
+    // packageMappings（Stage C：原 plan.json 字段合并到 scaffold.json）
+    const count = safeArrayLen(json.packageMappings)
+    data.packageMappingsCount = count
+    data.javaPackageCount = count
     const gen = json.generated as Record<string, unknown> | undefined
     if (gen) {
       // commonClasses 与 commonModules.classes 结构重叠（TODO F8），同一批文件可能两处都落——
@@ -822,11 +812,9 @@ function formatBusinessLines(phase: string, biz: PhaseBusinessData): string[] {
       fmt("独立子程序:", biz.standaloneProcedureCount)
       fmt("子程序总数:", biz.totalProcedureCount)
       break
-    case "plan":
+    case "scaffold":
       fmt("Java 包:", biz.javaPackageCount)
       fmt("包映射:", biz.packageMappingsCount)
-      break
-    case "scaffold":
       fmt("生成文件:", biz.generatedFiles)
       break
     case "translate":

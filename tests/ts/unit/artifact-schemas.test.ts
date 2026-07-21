@@ -6,7 +6,6 @@ import { describe, it, expect } from "vitest"
 import {
   InventoryIndexSchema,
   InventorySchema,
-  PlanSchema,
   ScaffoldSchema,
   TranslationSchema,
   ReviewSchema,
@@ -26,7 +25,7 @@ import {
 } from "@workflow/artifact-schemas"
 import {
   makeInventoryIndex, makeInventory,
-  makePlan, makeScaffold, makeTranslation,
+  makeScaffold, makeTranslation,
   makeReviewSummary, makeVerifySummary, makeDedup, makeFixArtifact,
 } from "../helpers/artifact-factory"
 
@@ -51,12 +50,17 @@ describe("Schema 有效数据通过校验", () => {
     expect(InventorySchema.safeParse(data).success).toBe(true)
   })
 
-  it("PlanSchema 通过", () => {
-    expect(PlanSchema.safeParse(makePlan()).success).toBe(true)
-  })
-
-  it("ScaffoldSchema 通过", () => {
+  it("ScaffoldSchema 通过（含 targetProject + packageMappings，Stage C 合并 plan）", () => {
     const data = {
+      targetProject: {
+        groupId: "com.example",
+        packageBase: "com.example",
+        javaVersion: "1.8",
+        springBootVersion: "2.7.x",
+      },
+      packageMappings: [
+        { oraclePackage: "PKG_A", javaPackage: "com.example.a", aggregate: "AAggregate" },
+      ],
       projectRoot: "/abs/path/generated/item-service",
       structure: {
         directories: ["src/main/java/com/example"],
@@ -336,53 +340,35 @@ describe("Schema 无效数据被拒绝", () => {
     expect(result.success).toBe(false)
   })
 
-  it("PlanSchema 不再要求 rules/typeMappings/conventions（Stage B 移至注入的 Java 代码规约）", () => {
-    const planData = {
-      targetProject: {
-        groupId: "com.example", artifactId: "item-service",
-        packageBase: "com.example.item", javaVersion: "17", springBootVersion: "3.2.0",
-      },
-      packageMappings: [],
-      manualReviewList: [],
-    }
-    const result = PlanSchema.safeParse(planData)
-    expect(result.success).toBe(true)
-    // 旧 plan 残留 rules/typeMappings/conventions 时由 passthrough 容忍（不校验、不消费）
-    const legacy = { ...planData, rules: { namingConvention: "snake_case" }, typeMappings: {}, conventions: "" }
-    expect(PlanSchema.safeParse(legacy).success).toBe(true)
+  it("ScaffoldSchema 不含 rules/typeMappings/conventions（Stage B/C 移至注入的 Java 代码规约；passthrough 容忍旧残留）", () => {
+    const base = makeScaffold()
+    expect(ScaffoldSchema.safeParse(base).success).toBe(true)
+    // 旧 plan/scaffold 残留 rules/typeMappings/conventions 时由 passthrough 容忍
+    const legacy = { ...base, rules: { namingConvention: "snake_case" }, typeMappings: {}, conventions: "" }
+    expect(ScaffoldSchema.safeParse(legacy).success).toBe(true)
+    // targetProject 不含 artifactId（Stage A/C：artifactId 来自 run-context）
+    expect(base.targetProject).not.toHaveProperty("artifactId")
   })
 
-  it("PlanSchema 拒绝无任何组件类名的 packageMapping（accessImpl/aggregate/serviceImplClass 全空）", () => {
-    const planData = {
-      targetProject: {
-        groupId: "com.example", artifactId: "item-service",
-        packageBase: "com.example.item", javaVersion: "1.8", springBootVersion: "2.7.x",
-      },
+  it("ScaffoldSchema 拒绝无任何组件类名的 packageMapping（accessImpl/aggregate/serviceImplClass 全空）", () => {
+    const data = makeScaffold({
       packageMappings: [
         // 仅 oraclePackage/javaPackage/mapperInterface，无任何对外暴露组件类名
         { oraclePackage: "PKG_A", javaPackage: "com.example.item.a", mapperInterface: "AMapper" },
       ],
-      rules: { namingConvention: "camelCase", nullHandling: "optional", exceptionStrategy: "custom-business", logFramework: "common-log" },
-      typeMappings: {}, manualReviewList: [], conventions: "",
-    }
-    const result = PlanSchema.safeParse(planData)
+    })
+    const result = ScaffoldSchema.safeParse(data)
     expect(result.success).toBe(false)
   })
 
-  it("PlanSchema 接受纯常量包映射（仅 aggregate 常量持有类，无 mapperInterface/行为层）", () => {
-    const planData = {
-      targetProject: {
-        groupId: "com.example", artifactId: "item-service",
-        packageBase: "com.example.item", javaVersion: "17", springBootVersion: "3.2.0",
-      },
+  it("ScaffoldSchema 接受纯常量包映射（仅 aggregate 常量持有类，无 mapperInterface/行为层）", () => {
+    const data = makeScaffold({
       packageMappings: [
         // 纯常量包：无子程序，只映射常量持有类，省略 mapperInterface/access/processor/builder/validator
         { oraclePackage: "PKG_CONST", javaPackage: "com.example.item.consts", aggregate: "MfgConst" },
       ],
-      rules: { namingConvention: "camelCase", nullHandling: "optional", exceptionStrategy: "custom-business", logFramework: "common-log" },
-      typeMappings: {}, manualReviewList: [], conventions: "",
-    }
-    const result = PlanSchema.safeParse(planData)
+    })
+    const result = ScaffoldSchema.safeParse(data)
     expect(result.success).toBe(true)
     expect(result.success && result.data.packageMappings[0].mapperInterface).toBeUndefined()
   })
@@ -405,7 +391,8 @@ describe("getArtifactFilename", () => {
     expect(getArtifactFilename("inventory")).toBe("inventory")
   })
 
-  it("plan → plan", () => {
+  it("plan 阶段已移除（Stage C），回退 phase 名", () => {
+    // plan 不再在 PHASE_FILENAME_MAP，回退返回 phase 名本身
     expect(getArtifactFilename("plan")).toBe("plan")
   })
 
@@ -415,12 +402,16 @@ describe("getArtifactFilename", () => {
 })
 
 describe("getSchemaForPhase", () => {
-  const knownPhases = ["inventory", "plan", "scaffold", "dedup", "review", "fix"]
+  const knownPhases = ["inventory", "scaffold", "dedup", "review", "fix"]
 
   it("已知阶段都返回非 null schema", () => {
     for (const phase of knownPhases) {
       expect(getSchemaForPhase(phase), `getSchemaForPhase("${phase}") should not be null`).not.toBeNull()
     }
+  })
+
+  it("plan 阶段已移除（Stage C）→ 返回 null", () => {
+    expect(getSchemaForPhase("plan")).toBeNull()
   })
 
   it("review 返回 ProjectReviewSchema（项目级单文件）", () => {

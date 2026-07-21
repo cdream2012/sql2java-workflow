@@ -494,6 +494,6 @@ export function scanReviewStatic(
 }
 
 // TODO(Stage 3): 接入 #2 scanMyBatisCompleteness（PL/SQL DML ↔ MyBatis statement 对照）、
-// #4 scanTypeMapping（plan.typeMappings ↔ Java 字段类型，需轻量类型解析）、
+// #4 scanTypeMapping（按注入的 Java 代码规约 §3.1 类型表 ↔ Java 字段类型，需轻量类型解析）、
 // #9 scanNamingConsistency（translation.subprogramMethods 过程名↔方法名可追溯性）、
 // #14 scanChineseComments（英文注释，保守 minor，避免噪声）。

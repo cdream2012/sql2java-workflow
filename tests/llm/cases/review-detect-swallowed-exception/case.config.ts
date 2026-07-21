@@ -18,7 +18,7 @@ import { writeFileSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
 import type { CaseConfig } from "../../harness"
 import { assertCheckFound, assertArtifactExists } from "../../harness"
-import { makePlan, makePackageArtifact, writeArtifactJson } from "../../../ts/helpers/artifact-factory"
+import { makePackageArtifact, writeArtifactJson } from "../../../ts/helpers/artifact-factory"
 
 const PACKAGE = "BAD_PKG"
 const PROJECT_ROOT_REL = "generated/bad-service"
@@ -36,15 +36,15 @@ const config: CaseConfig = {
       sourcePath: "pkg", packageNames: [PACKAGE], tables: [], standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
 
-    // plan（复用 factory，覆盖映射到 BAD_PKG）
-    writeArtifactJson(dir, "plan.json", makePlan({
+    // scaffold（Schema 形状：projectRoot 指向 fixture Java 所在工程；Stage C 含 targetProject + packageMappings）
+    writeArtifactJson(dir, "scaffold.json", {
+      targetProject: {
+        groupId: "com.example", packageBase: "com.example.bad",
+        javaVersion: "1.8", springBootVersion: "2.7.x",
+      },
       packageMappings: [
         { oraclePackage: PACKAGE, javaPackage: "com.example.bad", mapperInterface: "BadMapper", serviceClass: "BadService", serviceImplClass: "BadServiceImpl" },
       ],
-    }))
-
-    // scaffold（Schema 形状：projectRoot 指向 fixture Java 所在工程）
-    writeArtifactJson(dir, "scaffold.json", {
       projectRoot: PROJECT_ROOT_REL,
       structure: { directories: ["src/main/java/com/example/bad/service/impl"], pomXml: "pom.xml" },
       generated: {

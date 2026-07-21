@@ -155,7 +155,6 @@ describe.skip("prepareExecutionPoint（真实引擎推进，不调 opencode）",
         phase: "review",
         prepareArtifacts: dir => {
           writeFileSync(join(dir, "inventory.json"), '{"packageNames":["BAD_PKG"]}')
-          writeFileSync(join(dir, "plan.json"), '{"x":1}')
           writeFileSync(join(dir, "scaffold.json"), '{"x":1}')
         },
       })

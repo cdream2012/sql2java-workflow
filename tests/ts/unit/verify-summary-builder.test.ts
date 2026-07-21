@@ -23,9 +23,9 @@ afterEach(() => {
 })
 
 function setup(packages: string[], opts: { mappings?: any[]; files?: Record<string, string[]> } = {}) {
-  writeFileSync(join(dir, "scaffold.json"), JSON.stringify({ projectRoot: "/tmp/proj" }), "utf-8")
+  // Stage C：packageMappings 从 plan.json 移到 scaffold.json（verify 读 scaffold.json）
+  writeFileSync(join(dir, "scaffold.json"), JSON.stringify({ projectRoot: "/tmp/proj", packageMappings: opts.mappings ?? [] }), "utf-8")
   writeFileSync(join(dir, "inventory.json"), JSON.stringify({ packageNames: packages }), "utf-8")
-  writeFileSync(join(dir, "plan.json"), JSON.stringify({ packageMappings: opts.mappings ?? [] }), "utf-8")
   for (const pkg of packages) {
     mkdirSync(join(dir, "translations", pkg), { recursive: true })
     writeFileSync(

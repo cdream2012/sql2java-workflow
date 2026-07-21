@@ -15,7 +15,7 @@ import { makeReviewSummary, makeVerifySummary, makeFixArtifact, makeInventory } 
 /** 推进到 review 阶段并写入 review-summary（自动接受跨 schema warning） */
 function setupAtReview(ctx: ReturnType<typeof createEngineWithTempDir>, runId: string) {
   ctx.engine.start("sql2java", runId)
-  const phases = ["inventory", "analyze", "plan", "scaffold", "translate", "dedup"]
+  const phases = ["inventory", "scaffold", "translate", "dedup"]
   for (const _ of phases) {
     let r = ctx.engine.advance(runId)
     if (r.rejected && r.warningPending) {

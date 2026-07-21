@@ -84,7 +84,7 @@ describe("buildUnitScopeBlock", () => {
     expect(out2).toContain("shard-inputs/PKG_A/get__2/")
   })
 
-  it("translate：切片目录 + FSD 输入 + 输出 + 依赖签名引用（Phase 2 切片模式）", () => {
+  it("translate：切片目录 + 输出 + 依赖签名引用（Phase 2 切片模式；FSD 已移出 upstream）", () => {
     const art = join(dir, "c")
     mkdirSync(art, { recursive: true })
     writeSub(art, "PKG_A", "proc1", "proc1", "PROCEDURE", [{ package: "PKG_B", name: "other", line: 1, kind: "procedure" }])
@@ -94,8 +94,9 @@ describe("buildUnitScopeBlock", () => {
     // 切片目录（取代 sed -n / 整包）
     expect(out).toContain("shard-inputs/PKG_A/proc1/")
     expect(out).toContain("source.sql + meta.json")
-    expect(out).toContain("FSD 输入")
-    expect(out).toContain("fsd/PKG_A/proc1.md")
+    // FSD 已移出 upstream（末端产物不作输入），清单不再列 FSD 输入
+    expect(out).not.toContain("FSD 输入")
+    expect(out).not.toContain("fsd/")
     // per-unit 输出
     expect(out).toContain("translations/PKG_A/proc1.json")
     // 依赖签名引用预注入块（不再列 translation.json 路径）

@@ -34,7 +34,6 @@ describe("narrowUpstreamForIncremental", () => {
     expect(result).not.toContain("translations/PRICING/verify.json")
 
     // 全局只读 artifact 原样保留
-    expect(result).toContain("plan.json")
     expect(result).toContain("scaffold.json")
     expect(result).toContain("dedup.json")
     expect(result).toContain("review-static.json")
@@ -62,7 +61,6 @@ describe("narrowUpstreamForIncremental", () => {
     expect(result).not.toContain("translations/PRICING/translation.json")
     // 项目级单文件不动
     expect(result).toContain("review-static.json")
-    expect(result).toContain("plan.json")
     expect(result).toContain("dedup.json")
   })
 
@@ -75,7 +73,6 @@ describe("narrowUpstreamForIncremental", () => {
     expect(result).not.toContain("translations/*/translation.json")
     expect(result).not.toContain("translations/PRICING/translation.json")
     // 全局 artifact 保留
-    expect(result).toContain("plan.json")
     expect(result).toContain("scaffold.json")
     expect(result).toContain("dedup.json")
   })

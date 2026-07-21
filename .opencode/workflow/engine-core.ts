@@ -867,15 +867,15 @@ export class WorkflowEngine {
       }
     }
 
-    // plan 映射覆盖（仅 plan 完成后校验）
-    if (completedPhase === "plan") {
-      const plan = this.loadArtifactJson(artifactsDir, "plan")
-      if (!plan) {
-        findings.push({ message: "plan 映射校验跳过：plan artifact 不存在", severity: "warning" })
+    // packageMappings 覆盖校验（Stage C：原 plan 阶段校验合并到 scaffold 完成后）
+    if (completedPhase === "scaffold") {
+      const scaffold = this.loadArtifactJson(artifactsDir, "scaffold")
+      if (!scaffold) {
+        findings.push({ message: "packageMappings 校验跳过：scaffold artifact 不存在", severity: "warning" })
         return findings
       }
       const mappedNames = new Set(
-        (plan.packageMappings as Array<{ oraclePackage: string }>)
+        (scaffold.packageMappings as Array<{ oraclePackage: string }>)
           .map((m) => m.oraclePackage)
           .filter((n): n is string => typeof n === "string" && n.length > 0)
       )
@@ -887,14 +887,14 @@ export class WorkflowEngine {
         : null
       for (const name of invNames) {
         if (scopeUpper && !scopeUpper.has(name.toUpperCase())) continue // out-of-scope，不该映射
-        if (!mappedNames.has(name)) findings.push({ message: `plan 未映射包: ${name}`, severity: "warning" })
+        if (!mappedNames.has(name)) findings.push({ message: `scaffold.packageMappings 未映射包: ${name}`, severity: "warning" })
       }
       // scope 激活时补"越界映射"检查：packageMappings 含 scopePackages 之外的包 → warning
-      // （防架构师读全量上游后把 out-of-scope 包写进 plan，导致 scaffold 过量生成壳）
+      // （防 scaffold 读全量上游后把 out-of-scope 包写进 packageMappings，导致过量生成壳）
       if (scopeUpper) {
         for (const name of mappedNames) {
           if (!scopeUpper.has(name.toUpperCase())) {
-            findings.push({ message: `plan 越界映射包: ${name}（不在 scopePackages 闭包内，scope 模式下不应规划）`, severity: "warning" })
+            findings.push({ message: `scaffold.packageMappings 越界映射包: ${name}（不在 scopePackages 闭包内，scope 模式下不应规划）`, severity: "warning" })
           }
         }
       }

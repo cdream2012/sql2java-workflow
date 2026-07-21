@@ -1255,7 +1255,7 @@ function buildSharedInstructions(run: WorkflowRun): string {
 
 ### Artifact 写入规则
 
-- **JSON artifact**（plan.json、scaffold.json、translation.json 等元数据文件）使用 \`write\` 工具写入 \`\${artifactsDir}/\` 下的指定路径
+- **JSON artifact**（scaffold.json、translation.json 等元数据文件）使用 \`write\` 工具写入 \`\${artifactsDir}/\` 下的指定路径
 - **Java 源文件**（.java、.xml、.yml、pom.xml 等）必须写入 Runtime Context 中 \`projectRoot\` 指定的目录（绝对路径），**绝不能**写入 \`\${artifactsDir}/\` 下
 - **禁止写入以下目录**：.git/、.claude/、node_modules/（引擎会拦截并阻止）
 - **sourcePath 目录是只读的**，禁止向其中写入任何文件
@@ -2506,7 +2506,7 @@ function classifyWritePath(
  *  - translations 通配（translations 下所有 translation.json）→ 展开为已完成分片各包
  *  - packages 通配  → 收窄为本分片 targetPackages 各包
  *  - translate 阶段额外追加已完成分片的 translation.json（跨包调用依赖，translator.md 承诺）
- *  - 全局只读 artifact（dependency-graph.json、plan.json 等）原样保留
+ *  - 全局只读 artifact（scaffold.json、inventory.json 等）原样保留
  *
  * 跨包调用关系不需要读别的包的 packages/subprograms：translate 从已完成分片的
  * translation.json.subprogramMethods 取（依赖签名预注入）。
@@ -2604,7 +2604,7 @@ export function narrowUpstreamForShard(
  *  - translations/<pkg>/translation.json → fixedPackages 各包
  *  - translations/<pkg>/verify.json      → fixedPackages 各包（fix 专属）
  *  - packages/<pkg>.json                 → fixedPackages 各包（防御性，当前 fix/review/verify upstream 无此 glob）
- *  - 其余（plan.json/scaffold.json/dedup.json/review-static.json/
+ *  - 其余（scaffold.json/dedup.json/review-static.json/
  *    review.json/各 summary）原样保留
  *
  * 大小写约定同 narrowUpstreamForShard：直接拼 ${pkg}，目录名一致性由 translate 写入时保证

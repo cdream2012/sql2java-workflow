@@ -9,7 +9,7 @@ import { REFINE_CONSTRAINTS, QUALITY_GATE_HINTS, CROSS_SCHEMA_HINTS, COMMON_PITF
 // ═══════════════════════════════════════════════════════════════
 
 describe("renderSchemaHint", () => {
-  const ALL_PHASES = ["inventory", "plan", "scaffold", "translate", "dedup", "review", "verify", "fix"]
+  const ALL_PHASES = ["inventory", "scaffold", "translate", "dedup", "review", "verify", "fix"]
 
   it("每个 phase 都产出非空提示", () => {
     for (const phase of ALL_PHASES) {
@@ -64,10 +64,9 @@ describe("renderSchemaHint", () => {
     expect(hint).toContain('"info"')
   })
 
-  it("plan 阶段 namingConvention 在 pitfall 中有推荐值", () => {
-    const hint = renderSchemaHint("plan")
-    // schema 已放开为 string，不再包含枚举值，但 pitfall 仍推荐 camelCase
-    expect(hint).toContain("camelCase")
+  it("scaffold 阶段包含 projectRoot 格式要求", () => {
+    const hint = renderSchemaHint("scaffold")
+    expect(hint).toContain("projectRoot")
   })
 
   it("translate 阶段包含 status 枚举", () => {
@@ -152,8 +151,8 @@ describe("renderSchemaHint", () => {
 
   // ── 跨 Schema 校验 ──
 
-  it("plan 阶段包含跨 Schema 校验", () => {
-    const hint = renderSchemaHint("plan")
+  it("scaffold 阶段包含跨 Schema 校验（Stage C：packageMappings 覆盖校验合并到 scaffold）", () => {
+    const hint = renderSchemaHint("scaffold")
     expect(hint).toContain("--- 跨 Schema 校验 ---")
   })
 

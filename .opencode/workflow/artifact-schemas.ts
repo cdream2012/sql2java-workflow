@@ -232,60 +232,55 @@ export const InventoryIndexSchema = z.object({
 // Plan Schema
 // ============================================================================
 
-export const PlanSchema = z.object({
-  targetProject: z.object({
-    groupId: z.string(),
-    artifactId: z.string(),
-    packageBase: z.string(),
-    javaVersion: z.string(),
-    springBootVersion: z.string(),
-  }),
+// ============================================================================
+// 共享子 schema：原 plan.json 的 targetProject + packageMappings（Stage C 合并入 scaffold.json）
+// ============================================================================
 
-  packageMappings: z.array(z.object({
-    oraclePackage: z.string(),
-    javaPackage: z.string(),
-    /** DDD Mapper 接口；纯常量包（无 PROCEDURE/FUNCTION）不生成 Mapper，此字段可缺省。 */
-    mapperInterface: z.string().optional(),
-    /** @deprecated 三层架构遗留字段；DDD 改用 accessImpl。保留以兼容历史 run resume。 */
-    serviceClass: z.string().optional(),
-    /** @deprecated 三层架构遗留字段；DDD 改用 accessImpl。保留以兼容历史 run resume。 */
-    serviceImplClass: z.string().optional(),
-    /** DDD 接入层接口——对外暴露入口，跨包调用索引（subprogramMethods.javaClass）指向此类。 */
-    accessIntf: z.string().optional(),
-    /** DDD 接入层实现（@Component）。 */
-    accessImpl: z.string().optional(),
-    /** DDD 处理器（流程编排，不标 @Transactional）。 */
-    processor: z.string().optional(),
-    /** DDD 聚合根（业务逻辑编排，标 @Transactional）。 */
-    aggregate: z.string().optional(),
-    /** DDD 构建器（参数/数据构建、OUT 参数预定义）。 */
-    builder: z.string().optional(),
-    /** DDD 验证器（业务规则校验）。 */
-    validator: z.string().optional(),
-  })).refine(
-    (mappings) => mappings.every(m =>
-      [m.accessIntf, m.accessImpl, m.processor, m.aggregate, m.builder, m.validator, m.serviceClass, m.serviceImplClass]
-        .some(v => typeof v === "string" && v.trim().length > 0)
-    ),
-    { message: "每个 packageMapping 至少需要一个组件类名（DDD: accessImpl/accessIntf/aggregate/processor/builder/validator；遗留: serviceImplClass/serviceClass；纯常量包仅 aggregate 常量持有类）——下游 verify 归因 / translate 跨包索引 / 测试骨架生成均依赖此锚点" },
-  ),
+/** targetProject（artifactId 不在此——由 run-context.json 提供，引擎据此算 projectRoot） */
+export const TargetProjectSchema = z.object({
+  groupId: z.string(),
+  packageBase: z.string(),
+  javaVersion: z.string(),
+  springBootVersion: z.string(),
+})
 
-  // rules / typeMappings / conventions 已移除（Stage B）——改由注入的 Java 代码规约提供：
-  // 命名/异常/日志/事务/MyBatis 等约定见 java-code-spec.md 对应章节，Oracle→Java 类型映射见 §3.1。
-  // 旧 plan 残留这些字段时由 passthrough 容忍（不校验、不消费）。
-  // manualReviewList 已废弃（analyze 砍后不再产 translationNotes，plan 不预标记；review-focus 不读）。
-  // 保留 optional 容忍旧 plan/LLM 偶发写，passthrough 亦允许额外字段。
-  manualReviewList: z.array(z.object({
-    procedure: z.string(),
-    reason: z.string(),
-  })).optional(),
-}).passthrough()
+/** Oracle Package → Java 包 + DDD 组件类名映射。 */
+export const PackageMappingSchema = z.object({
+  oraclePackage: z.string(),
+  javaPackage: z.string(),
+  /** DDD Mapper 接口；纯常量包（无 PROCEDURE/FUNCTION）不生成 Mapper，此字段可缺省。 */
+  mapperInterface: z.string().optional(),
+  /** @deprecated 三层架构遗留字段；DDD 改用 accessImpl。保留以兼容历史 run resume。 */
+  serviceClass: z.string().optional(),
+  /** @deprecated 三层架构遗留字段；DDD 改用 accessImpl。保留以兼容历史 run resume。 */
+  serviceImplClass: z.string().optional(),
+  /** DDD 接入层接口——对外暴露入口，跨包调用索引（subprogramMethods.javaClass）指向此类。 */
+  accessIntf: z.string().optional(),
+  /** DDD 接入层实现（@Component）。 */
+  accessImpl: z.string().optional(),
+  /** DDD 处理器（流程编排，不标 @Transactional）。 */
+  processor: z.string().optional(),
+  /** DDD 聚合根（业务逻辑编排，标 @Transactional）。 */
+  aggregate: z.string().optional(),
+  /** DDD 构建器（参数/数据构建、OUT 参数预定义）。 */
+  builder: z.string().optional(),
+  /** DDD 验证器（业务规则校验）。 */
+  validator: z.string().optional(),
+}).refine(
+  (m) => [m.accessIntf, m.accessImpl, m.processor, m.aggregate, m.builder, m.validator, m.serviceClass, m.serviceImplClass]
+    .some(v => typeof v === "string" && v.trim().length > 0),
+  { message: "每个 packageMapping 至少需要一个组件类名（DDD: accessImpl/accessIntf/aggregate/processor/builder/validator；遗留: serviceImplClass/serviceClass；纯常量包仅 aggregate 常量持有类）——下游 verify 归因 / translate 跨包索引 / 测试骨架生成均依赖此锚点" },
+)
 
 // ============================================================================
-// Scaffold Schema
+// Scaffold Schema（Stage C：吸收原 plan.json 的 targetProject + packageMappings）
 // ============================================================================
 
 export const ScaffoldSchema = z.object({
+  /** Java 项目配置（原 plan.targetProject；artifactId 不在此，来自 run-context.json） */
+  targetProject: TargetProjectSchema,
+  /** Oracle Package → Java 包 + DDD 组件类名映射（原 plan.packageMappings） */
+  packageMappings: z.array(PackageMappingSchema),
   /** Java 项目输出根目录（绝对路径，由引擎注入，指向 cwd/generated/{artifactId}） */
   projectRoot: z.string(),
   structure: z.object({
@@ -823,7 +818,6 @@ import type { ZodType } from "zod"
 /** 阶段名 → 磁盘文件名映射（phase 名与文件名不一致时使用） */
 const PHASE_FILENAME_MAP: Record<string, string> = {
   inventory: "inventory",
-  plan: "plan",
   scaffold: "scaffold",
   translate: "translation",  // phase="translate" → 文件名 translation.json
   dedup: "dedup",
@@ -839,7 +833,6 @@ export function getArtifactFilename(phase: string): string {
 export function getSchemaForPhase(phase: string): ZodType | null {
   const schemaMap: Record<string, ZodType> = {
     inventory: InventorySchema,
-    plan: PlanSchema,
     scaffold: ScaffoldSchema,
     dedup: DedupSchema,
     // review 改项目级单文件：review.json 顶层产物（packages[] 覆盖全部包）

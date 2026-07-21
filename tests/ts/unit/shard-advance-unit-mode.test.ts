@@ -46,8 +46,8 @@ describe("engine.advance 分片推进 — unitMode 字段", () => {
     cpSync(srcArtifactsDir, txArtifactsDir, { recursive: true })
 
     engine.start("sql2java", txRunId, { sourcePath: FIXTURE_TINY })
-    // 推进到 translate（inventory→plan→scaffold→translate，analyze 已砍），acceptWarnings 绕过 engine-core 的轻量校验
-    const phases = ["inventory", "plan", "scaffold"]
+    // 推进到 translate（inventory→scaffold→translate；Stage C：plan 合并入 scaffold），acceptWarnings 绕过 engine-core 的轻量校验
+    const phases = ["inventory", "scaffold"]
     for (const _ of phases) {
       let r = engine.advance(txRunId, { result: "passed" })
       if (r.rejected && (r as any).warningPending) {

@@ -114,12 +114,12 @@ export function makeSubprogramArtifact(overrides: Record<string, unknown> = {}) 
   }
 }
 
-// ── Plan ─────────────────────────────────────────────────────
+// ── Scaffold ─────────────────────────────────────────────────
 
-export function makePlan(overrides: Record<string, unknown> = {}) {
+/** scaffold.json — 对齐 ScaffoldSchema（Stage C：吸收原 plan 的 targetProject + packageMappings） */
+export function makeScaffold(overrides: Record<string, unknown> = {}) {
   return {
     targetProject: {
-      artifactId: "item-service",
       groupId: "com.example",
       packageBase: "com.example.item",
       javaVersion: "1.8",
@@ -138,17 +138,6 @@ export function makePlan(overrides: Record<string, unknown> = {}) {
         validator: "ItemValidator",
       },
     ],
-    // rules/typeMappings/conventions 已移除（Stage B）——改由注入的 Java 代码规约提供
-    manualReviewList: [],
-    ...overrides,
-  }
-}
-
-// ── Scaffold ─────────────────────────────────────────────────
-
-/** scaffold.json — 对齐 ScaffoldSchema */
-export function makeScaffold(overrides: Record<string, unknown> = {}) {
-  return {
     projectRoot: "/abs/path/generated/item-service",
     structure: {
       directories: ["src/main/java/com/example/item"],
