@@ -73,7 +73,7 @@ const orchestratorSessionIds = new Set<string>()
 
 /**
  * 生成 run-<project>-YYYYMMDD-HHMMSS 格式的 runId。
- * project 取 sourcePath 的 basename（净化为文件名安全字符），缺失/为空时用 unknown 占位，
+ * project 取 sourcePath 的 basename（净化为文件名安全字符、连接符统一为 -，保留大小写），缺失/为空时用 unknown 占位，
  * 便于在 .workflow-artifacts/ 下按项目区分多次运行。runId 仅作目录名 + 字符串 id，无格式反解析。
  */
 export function formatRunId(sourcePath?: string): string {
@@ -84,8 +84,9 @@ export function formatRunId(sourcePath?: string): string {
   if (sourcePath) {
     // 取最终路径段（兼容尾部斜杠/反斜杠）
     const base = sourcePath.replace(/\\/g, "/").replace(/\/+$/, "").split("/").pop() ?? ""
-    // 净化为文件名安全字符：非 [a-zA-Z0-9_-] → _，折叠连续 _，去首尾 _
-    const sanitized = base.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "")
+    // 净化为文件名安全字符并统一连接符为 -（含下划线 _ 一并归一），避免 runId 里 -/_ 混排
+    // 导致子 agent 手拼路径错位（如 run-foo_bar 误记成 run_foo_bar）
+    const sanitized = base.replace(/[^a-zA-Z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "")
     if (sanitized) proj = sanitized
   }
   return `run-${proj}-${ts}`
@@ -94,7 +95,7 @@ export function formatRunId(sourcePath?: string): string {
 /**
  * 从 sourcePath 推导 Maven artifactId（用作 generated/<artifactId>/ 目录名）。
  * 取最终路径段，去扩展名，转 kebab-lowercase（Maven artifactId 惯例，匹配如 mfg-erp）。
- * 与 formatRunId 的 proj 段不同：后者保留大小写+下划线仅作 runId 目录，artifactId 走 kebab。
+ * 与 formatRunId 的 proj 段不同：后者保留大小写但连接符统一为 -（仅作 runId 目录），artifactId 走全小写 kebab。
  */
 export function projectSlugFromSourcePath(sourcePath?: string): string {
   if (!sourcePath) return "unknown"
@@ -1250,7 +1251,7 @@ function buildFullSystemPrompt(
   run: WorkflowRun | null,
   workOrder: string | null,
   effectiveAgentFile: string,
-  _effectiveSubStage: string | undefined,
+  effectiveSubStage: string | undefined,
   phase: string,
 ): string {
   // effectiveAgentFile 缺失（测试 / currentWorkflowContext 未设）→ 安全降级，仅返回 workOrder 段
@@ -1285,7 +1286,7 @@ function buildFullSystemPrompt(
     )
   }
   // 4. sharedInstructions
-  const sharedInstructions = run ? buildSharedInstructions(run) : ""
+  const sharedInstructions = run ? buildSharedInstructions(run, effectiveSubStage) : ""
   // 5. javaCodeSpec（--spec 整体替换语义保留：用户规约文件含 ## 章节即唯一规约，不与内置合并）
   const needsJavaSpec = JAVA_SPEC_AGENTS.some(a => effectiveAgentFile.includes(a))
   const rawSpec = needsJavaSpec ? readJavaCodeSpec() : ""
@@ -1333,7 +1334,18 @@ function buildFullSystemPrompt(
  * 构建共享指令文本块（Runtime Context 表格 + Artifact 写入规则 + 阶段小结）
  * 所有 agent 共享，由引擎自动注入，agent .md 文件不再包含这些重复内容
  */
-function buildSharedInstructions(run: WorkflowRun): string {
+function buildSharedInstructions(run: WorkflowRun, subStage?: string): string {
+  // slave（sub-stage）的 TASK_STATUS phase 须带 subStage 名（如 translate:2:skeleton），
+  // 以便从 STATUS 维度区分 6 个 sub-stage 的完成情况；master 不带（phase 级，如 translate:2）。
+  const slavePhaseHint = subStage
+    ? [
+        "",
+        `**slave（sub-stage）** 在 shardIndex 后再追加 subStage 名（你是 \`${subStage}\` sub-stage 的 slave，须带此段以便区分 6 个 sub-stage 的完成状态）：`,
+        "```json",
+        `{"phase":"translate:2:${subStage}","status":"completed"}`,
+        "```",
+      ].join("\n")
+    : ""
   return `### Runtime Context
 
 你的每次执行由工作流引擎注入以下 Runtime Context：
@@ -1349,6 +1361,11 @@ function buildSharedInstructions(run: WorkflowRun): string {
 | \`mainEntry\` | 翻译入口（可选）。过程级 \`subdir/PKG.refName\` 时触发闭包 scope 模式（仅译入口及其调用闭包，见 \`scopeLine\`）；缺省/纯包名时全量翻译 | 标识对外入口，plan/scaffold 消费 |
 | \`projectStructure\` | 自定义目录结构路径列表（可选，由 --spec 提取） | scaffold 阶段使用自定义目录布局替代默认模板 |
 | \`projectRoot\` | Java 项目输出根目录（绝对路径，scaffold 及之后阶段，可选） | scaffold 写入 Java 文件到此目录，后续阶段从此目录读取 |
+
+### 路径使用规则（重要）
+
+- **所有文件路径必须直接复制 Runtime Context / workOrder 中已展开的绝对路径实例**，⛔ 禁止自行拼接 runId、目录名或使用相对路径——runId 含 \`-\` 与项目段混排，手拼极易错位（如 \`run-MFG-ERP-...\` 误记成 \`run_MFG_ERP-...\` → 文件找不到）。
+- 读上游 artifact / shard-inputs 切片 / 写产物，一律用上方列表里给出的绝对路径；\`{artifactsDir}\`/\`{pkg}\`/\`{ref}\` 等占位符仅供理解结构，实际 read/write 必须用已展开的绝对路径。
 
 ### Artifact 写入规则
 
@@ -1405,13 +1422,14 @@ END_SUMMARY
 \`\`\`json
 {"phase":"translate:2","status":"completed"}
 \`\`\`
+${slavePhaseHint}
 
 异常/跳过时加 \`notes\`（≤20 字）：
 \`\`\`json
 {"phase":"{currentPhase}","status":"failed","notes":"schema 缺 direction 字段"}
 \`\`\`
 
-- 只保留核心字段：\`phase\`（阶段标识，分片阶段用 \`{currentPhase}:{shardIndex}\`，非分片阶段用 \`{currentPhase}\`）+ \`status\`（必须，completed|failed）+ \`notes\`（仅异常时，否则省略）。禁止再写 \`files\`/文件数——无人消费且 LLM 自数不准。
+- 只保留核心字段：\`phase\`（阶段标识，分片阶段用 \`{currentPhase}:{shardIndex}\`，非分片阶段用 \`{currentPhase}\`；slave 须再带 subStage 名 \`{currentPhase}:{shardIndex}:{subStage}\`）+ \`status\`（必须，completed|failed）+ \`notes\`（仅异常时，否则省略）。禁止再写 \`files\`/文件数——无人消费且 LLM 自数不准。
 - \`status\` 须与 WORKER_SUMMARY 一致。
 
 ⛔ 第 2 段 TASK_STATUS 必须是回复的**最后一段文本**——其后再不得输出任何文字。WORKER_SUMMARY 留在本 subagent session 供人查阅（进入子 session 可见）。禁止在任何一段贴代码/JSON 全文/源码片段（冗长内容只 \`write\` 到文件）。`

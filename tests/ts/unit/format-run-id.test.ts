@@ -15,7 +15,7 @@ describe("formatRunId", () => {
   })
 
   it("取最终路径段作为 project", () => {
-    expect(formatRunId("/a/b/c/order_mgmt")).toMatch(/^run-order_mgmt-\d{8}-\d{6}$/)
+    expect(formatRunId("/a/b/c/order_mgmt")).toMatch(/^run-order-mgmt-\d{8}-\d{6}$/)
     expect(formatRunId("C:\\Users\\me\\procurement")).toMatch(/^run-procurement-\d{8}-\d{6}$/)
   })
 
@@ -23,8 +23,8 @@ describe("formatRunId", () => {
     expect(formatRunId("/a/b/procurement/")).toMatch(/^run-procurement-\d{8}-\d{6}$/)
   })
 
-  it("净化非文件名安全字符为 _（折叠连续、去首尾）", () => {
-    expect(formatRunId("/a/my project.v2")).toMatch(/^run-my_project_v2-\d{8}-\d{6}$/)
+  it("净化非文件名安全字符并统一连接符为 -（折叠连续、去首尾）", () => {
+    expect(formatRunId("/a/my project.v2")).toMatch(/^run-my-project-v2-\d{8}-\d{6}$/)
     expect(formatRunId("/a/包名 中文")).toMatch(/^run-____-\d{8}-\d{6}$|^run-[a-zA-Z0-9_-]+-\d{8}-\d{6}$/)
   })
 
