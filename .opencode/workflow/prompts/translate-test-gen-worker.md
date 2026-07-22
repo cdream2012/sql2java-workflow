@@ -13,7 +13,7 @@
 ## 输出（稳定）
 
 - per-proc 测试 Java 文件：`write` 到 `projectRoot` 测试目录（`src/test/java/{javaPackage 以 / 分隔}/`，各 unit 独占测试文件，无冲突）。
-- Worker Status：`{{artifactsDir}}/status/translate.json`（含 shardIndex）。
+- ⛔ **不写 `status/translate.json`**——那是 translator master 的 advance 完成门控文件，仅 master 在 6 sub-stage 全过后写一次；slave 写会 clobber 门控、触发误 advance。你只在最后一段文本回 `TASK_STATUS` 给 master。
 
 ## 硬约束（稳定）
 

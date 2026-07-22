@@ -111,15 +111,16 @@ sub-stage 序列：skeleton → translate-core → test-gen → static-check →
 1. **取 slave workOrder**：调 `workflow({ action: "subdispatch", runId, subStage: "<stage名>" })`。
    - 返回 `metadata.agent`（slave agent 名，如 `translate-skeleton`）+ `metadata.minimalSubtaskPrompt`（静态触发器）。
    - 引擎已渲染并落盘该 slave 的 workOrder（`dispatch-logs/translate-<stage>-shardN.workOrder.md`），slave 系统提示会自动注入，**你无需中转 workOrder 全文**。
+   - ⛔ **顺序门禁**：引擎只允许 subdispatch「下一个未完成的 sub-stage」（见 workOrder「sub-stage 进度」块的"下一个该跑"）。跳序/乱序会被拒——这是**故意的**，防止你跳过 translate-core 让 test-gen/static-check 空跑。slave 失败重派同一 stage 不受影响（它仍是 nextExpected）。
 2. **派 slave**：用 **Task 工具** 调度 slave：
    ```
    task({ agent: metadata.agent, prompt: metadata.minimalSubtaskPrompt, description: "translate <stage> shardN" })
    ```
    - ⛔ **prompt 只用 minimalSubtaskPrompt 静态触发器**，勿含 workOrder 全文（slave 系统提示已注入，中转会污染你的上下文）。
 3. **阻塞等 slave 完成**：读 slave 返回的 TASK_STATUS（slave 回复最后一段文本，紧凑 JSON：status/files/notes）。
-   - `status: completed` → 进入下一 sub-stage。
+   - `status: completed` → **先调 `workflow({ action: "substageDone", runId, subStage: "<本 stage 名>" })` 标记完成**（引擎据此推进 nextExpected），再进入下一 sub-stage。
    - `status: failed` → 同 sub-stage 重派 slave 一次（有限重试）；仍失败则本分片整体 failed，输出 master TASK_STATUS(status:failed, notes 填失败 stage + 原因)。
-4. 6 个 sub-stage 全 completed → 本 unit 完成。
+4. 6 个 sub-stage 全 completed（`substageDone` 返回 `allDone=true`）→ 本 unit 完成，写 Worker Status。
 
 ### sub-stage 职责（仅供你理解，不替 slave 执行）
 
@@ -150,10 +151,12 @@ sub-stage 序列：skeleton → translate-core → test-gen → static-check →
 ### 硬约束
 
 - ⛔ **你不翻译代码、不写 Java/JSON 产物（status/translate.json 除外）**——per-unit JSON/lint.json/fsd .md/Java 文件**全由对应 slave 写**，你绝不直接写。你只调度 + 写 status。
+- ⛔ **`status/translate.json` 是你的 advance 完成门控文件，仅你在 6 sub-stage 全过后写一次**。slave **不写**它（slave 只在最后一段文本回 `TASK_STATUS` 给你）；若发现 slave 误写，你须在 6 sub-stage 全过后用正确的完整内容**覆盖**一次。你也**禁止 Read `status/translate.json`** 推断进度——它是你的输出不是输入，进度靠你的 todowrite + 各 slave 的 TASK_STATUS 维护。
 - ⛔ **6 个 sub-stage 必须全部派 slave 跑完**（skeleton→translate-core→test-gen→static-check→compile→fsd），每个都拿到 slave TASK_STATUS(completed) 后才能写 status。**禁止跳过任何 sub-stage**（尤其是 static-check / fsd 不能省——即使中断恢复也要从缺的 sub-stage 续派，不能自己直接收尾）。
-- ⛔ **禁止调 workflow 的 advance/confirm/retry/abort/dispatch/fixContinue/start**（引擎已拦）——流程推进由主编排者做。你唯一调的 workflow action 是 `subdispatch`。
+- ⛔ **禁止调 workflow 的 advance/confirm/retry/abort/dispatch/fixContinue/start**（引擎已拦）——流程推进由主编排者做。你唯一调的 workflow action 是 `subdispatch`（取 slave workOrder）+ `substageDone`（标记 sub-stage 完成）。
 - ⛔ **串行派 slave**：一次只派一个 sub-stage 的 slave，等其 TASK_STATUS 后再派下一个。禁止并行派多个 slave（同 unit 内 sub-stage 有依赖：skeleton→core→...→fsd）。
 - ⛔ 禁止 Read `dispatch-logs/` 下任何 workOrder 文件（slave 已从系统提示拿到，你读只污染上下文）。
+- ⛔ 禁止 Read `status/translate.json` / `run.json` / `logs/` 等推断任务进度——进度只靠你的 todowrite + slave TASK_STATUS。
 
 ### 输出
 

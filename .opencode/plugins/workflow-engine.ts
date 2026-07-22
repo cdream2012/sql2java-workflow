@@ -239,6 +239,27 @@ function getSlaveAgentMap(): Map<string, { subStage: string; agentFile: string }
   return m
 }
 
+/** translate sub-stage 规范顺序（skeleton → translate-core → test-gen → static-check → compile → fsd）。
+ *  顺序门禁 + 进度注入的单一来源——取自 phaseConfig.subStages 数组序。 */
+export function getSubStageOrder(phase: string): string[] {
+  const p = SQL2JAVA_WORKFLOW.phases.find(x => x.name === phase)
+  return (p?.subStages ?? []).map(s => s.name)
+}
+
+/** 当前分片已完成的 sub-stage 列表（存 incrementalContext.completedSubStages，分片推进时随 ic 整体替换自动重置）。 */
+export function getCompletedSubStages(entry: { incrementalContext?: any } | null | undefined): string[] {
+  const arr = entry?.incrementalContext?.completedSubStages
+  return Array.isArray(arr) ? arr.map(String) : []
+}
+
+/** 下一个该跑的 sub-stage = 规范序里首个未完成的；全完成返回 null。 */
+export function nextExpectedSubStage(phase: string, completed: string[]): string | null {
+  for (const name of getSubStageOrder(phase)) {
+    if (!completed.includes(name)) return name
+  }
+  return null
+}
+
 /** sessionID → agent 名（chat.params 记录，system.transform 读取以识别 slave session）。
  *  system.transform 的 input 无 agent 字段，须借此映射判断当前 session 是 master 还是某 slave。 */
 const sessionAgentMap = new Map<string, string>()
@@ -937,6 +958,7 @@ export function healShardIncrementalContext(
   if (alreadyCorrect) return null
   // A-2：自愈时保留 sub-stage 上下文（currentSubStage/currentBatch/totalBatches）与 previousFindings，
   // 仅修正脏 targetUnits/shardIndex/totalShards、丢弃脏 targetPackages。
+  // 保留 completedSubStages（#3 顺序门禁的完成信号源，丢了对同分片 resume 会误判从头来过）。
   return {
     targetUnits: correctUnits,
     shardIndex: si,
@@ -945,6 +967,7 @@ export function healShardIncrementalContext(
     ...(ic.currentBatch != null ? { currentBatch: ic.currentBatch } : {}),
     ...(ic.totalBatches != null ? { totalBatches: ic.totalBatches } : {}),
     ...(ic.previousFindings ? { previousFindings: ic.previousFindings } : {}),
+    ...(Array.isArray(ic.completedSubStages) ? { completedSubStages: ic.completedSubStages } : {}),
   }
 }
 
@@ -1198,6 +1221,29 @@ export function buildShardedWorkerOrder(
   // 9) shardLabelSuffix
   const shardLabelSuffix = (si !== undefined && ts !== undefined) ? `（分片 ${si + 1}/${ts}）` : ""
 
+  // 10) sub-stage 进度块（仅 master workOrder 注入；slave 不需要）
+  //     completedSubStages 存 incrementalContext，分片推进时随 ic 整体替换自动重置。
+  //     master 据"已完成 + 下一该跑"续派，resume 也不丢进度——配合 subdispatch 顺序门禁杜绝跳序。
+  let subStageProgressBlock = ""
+  if (phase === "translate" && !subStageOverride) {
+    const completedSubs = getCompletedSubStages(currentEntry)
+    const order = getSubStageOrder(phase)
+    const next = nextExpectedSubStage(phase, completedSubs)
+    const doneMarks = order.map(s => completedSubs.includes(s) ? `✅${s}` : `⬜${s}`).join(" → ")
+    const nextLabel = next ?? "—全完—"
+    const nextHint = next
+      ? "——`subdispatch` " + next + "，slave 跑完 TASK_STATUS(completed) 后调 `substageDone` 标记完成，再 subdispatch 下一 stage。"
+      : "——6 个 sub-stage 已全完，写 status/translate.json（含 shardIndex）收尾后输出 TASK_STATUS。"
+    subStageProgressBlock = [
+      "## sub-stage 进度（顺序门禁）",
+      "- 规范序：skeleton → translate-core → test-gen → static-check → compile → fsd",
+      `- 已完成：${completedSubs.length ? completedSubs.join(", ") : "无（本分片刚开始）"}`,
+      `- 状态：${doneMarks}`,
+      "- **下一个该跑的 sub-stage：`" + nextLabel + "`**" + nextHint,
+      "- ⛔ subdispatch 顺序门禁：只允许 subdispatch 上方“下一个该跑”的 stage；跳序/乱序会被引擎拒绝。slave 失败可重派同一 stage（它仍是 nextExpected）。",
+    ].join("\n")
+  }
+
   const ctx = {
     shardLabelSuffix,
     scopeBanner,
@@ -1213,6 +1259,7 @@ export function buildShardedWorkerOrder(
     depSignaturesBlock,
     schemaHint,
     rejectionErrorBlock,
+    subStageProgressBlock,
   }
   // translate 主从架构：dispatch 渲染的是 translator master 的 workOrder（currentSubStage 恒 undefined →
   // translate-worker.md 模板）。各 sub-stage slave 的 workOrder 由 master 调 workflow `subdispatch` action 渲染
@@ -1346,6 +1393,36 @@ function buildSharedInstructions(run: WorkflowRun, subStage?: string): string {
         "```",
       ].join("\n")
     : ""
+  // translate 主从架构：slave（subStage 非空）绝不写 status/{phase}.json——那是 master 的 advance 完成门控文件，
+  // 仅 master 在 6 sub-stage 全过后写一次；slave 写会 clobber 门控、触发误 advance。slave 只回 TASK_STATUS 文本。
+  // master（subStage 空）与非 translate 阶段照旧注入"写 Worker Status"段。
+  const workerStatusSection = subStage
+    ? [
+        "### Worker Status 写入（slave 不写）",
+        "",
+        `⛔ **你是 translate \`${subStage}\` sub-stage 的 slave，禁止写 \`\${artifactsDir}/status/translate.json\`**——它是 translator master 的 advance 完成门控文件，仅 master 在 6 sub-stage 全过后写一次。slave 写会 clobber 门控、可能触发误 advance。你的完成信号只在回复末尾的 \`TASK_STATUS\` 文本段（见下「阶段完成输出」），不落盘 status 文件。`,
+        "",
+      ].join("\n")
+    : [
+        "### Worker Status 写入",
+        "",
+        "完成阶段工作后，将 Worker Status 写入 \\${artifactsDir}/status/\\${currentPhase}.json（**本阶段最后一步**——它是 advance 的完成门控，未写则 advance 被拒）：",
+        "",
+        "```json",
+        "{",
+        '  "phase": "{currentPhase}",',
+        '  "shardIndex": <分片信息里的 shardIndex，1-based>,',
+        '  "status": "completed",',
+        '  "startedAt": "...",',
+        '  "completedAt": "...",',
+        '  "artifacts": ["写入的关键文件列表"],',
+        '  "metrics": { "completedSubprograms": N, "totalSubprograms": N }',
+        "}",
+        "```",
+        "",
+        "**分片阶段（analyze/translate）必填 \\`shardIndex\\`**（取分片信息里的 \\`shardIndex\\`，1-based，与「本分片序号」一致），advance 据此确认当前分片 Worker 已完成；shardIndex 缺失或不匹配当前分片 → advance 拒绝。非分片阶段省略 \\`shardIndex\\`。",
+        "",
+      ].join("\n")
   return `### Runtime Context
 
 你的每次执行由工作流引擎注入以下 Runtime Context：
@@ -1378,24 +1455,7 @@ function buildSharedInstructions(run: WorkflowRun, subStage?: string): string {
 - 逐包持久化：每处理完一个包立即写入 per-package artifact，避免中途崩溃丢失
 - 写入后不需要读回验证（引擎 advance 时会做 Zod 校验）
 
-### Worker Status 写入
-
-完成阶段工作后，将 Worker Status 写入 \`\${artifactsDir}/status/\${currentPhase}.json\`（**本阶段最后一步**——它是 advance 的完成门控，未写则 advance 被拒）：
-
-\`\`\`json
-{
-  "phase": "{currentPhase}",
-  "shardIndex": <分片信息里的 shardIndex，1-based>,
-  "status": "completed",
-  "startedAt": "...",
-  "completedAt": "...",
-  "artifacts": ["写入的关键文件列表"],
-  "metrics": { "completedSubprograms": N, "totalSubprograms": N }
-}
-\`\`\`
-
-**分片阶段（analyze/translate）必填 \`shardIndex\`**（取分片信息里的 \`shardIndex\`，1-based，与「本分片序号」一致），advance 据此确认当前分片 Worker 已完成；shardIndex 缺失或不匹配当前分片 → advance 拒绝。非分片阶段省略 \`shardIndex\`。
-
+${workerStatusSection}
 ### 阶段完成输出（重要：主 agent 只收你回复的最后一段文本）
 
 完成阶段工作后，你的回复末尾输出两段文本（顺序不可颠倒）：
@@ -3070,7 +3130,7 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
       args: {
         action: zFn.enum([
           "start", "scan", "advance", "confirm", "retry", "abort", "status", "list",
-          "prerequisites", "resume", "fixContinue", "dispatch", "progress", "subdispatch",
+          "prerequisites", "resume", "fixContinue", "dispatch", "progress", "subdispatch", "substageDone",
         ]),
         runId: zFn.string().optional(),
         sourcePath: zFn.string().optional(),
@@ -3100,9 +3160,9 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
           return `⛔ Worker（${agentName}）不能调用 workflow ${args.action}——这是编排者的职责。\n` +
             `请完成当前阶段工作，写入 artifact，输出 WORKER_SUMMARY + TASK_STATUS 即可。编排者会推进流程。`
         }
-        // subdispatch：translator master 专用——渲染某 sub-stage slave 的 workOrder 供 master 经 Task 工具派发。
-        if (args.action === "subdispatch" && agentName !== "translator") {
-          return `⛔ subdispatch 仅 translator master 可调（当前 caller: ${agentName || "unknown"}）。`
+        // subdispatch / substageDone：translator master 专用——渲染某 sub-stage slave 的 workOrder / 标记 sub-stage 完成。
+        if ((args.action === "subdispatch" || args.action === "substageDone") && agentName !== "translator") {
+          return `⛔ ${args.action} 仅 translator master 可调（当前 caller: ${agentName || "unknown"}）。`
         }
 
         // opencode 1.4.6: execute 必须返回 string，title/metadata 通过 context.metadata() 设置
@@ -4193,6 +4253,24 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
             if (currentWorkflowContext?.runId !== runId) setWorkflowContext(run)
             const currentEntry = engine.findCurrentEntry(run)
             const artifactsDir = `${ARTIFACT_DIR}/${runId}`
+            // ── 顺序门禁：subdispatch 只允许"下一个未完成的 sub-stage"，杜绝 master 跳序/乱序 ──
+            // completedSubStages 存 incrementalContext，分片推进时随 ic 整体替换自动重置。
+            // 重试当前未完成 stage 自然放行（它就是 nextExpected）；跳到更后的 stage 一律拒。
+            const completedSubs = getCompletedSubStages(currentEntry)
+            const expected = nextExpectedSubStage(run.currentPhase ?? "translate", completedSubs)
+            if (subStage !== expected) {
+              const expLabel = expected ?? "(均已完)"
+              return {
+                title: "subdispatch 顺序错",
+                output: [
+                  "⛔ sub-stage 顺序错：请求「" + subStage + "」，但下一个该跑的是「" + expLabel + "」。",
+                  "已完成 sub-stage：[" + (completedSubs.join(", ") || "无") + "]",
+                  "规范序：skeleton → translate-core → test-gen → static-check → compile → fsd",
+                  "禁止跳过/乱序（" + subStage + " 前尚有未完成的 " + expLabel + "）。请先 subdispatch " + (expected ?? "—无—") + "，slave 跑完 TASK_STATUS(completed) 后调 substageDone 标记完成，再 subdispatch 下一 stage。",
+                ].join("\n"),
+                metadata: { runId, dispatch: false, subStage, expected, completedSubs },
+              }
+            }
             // 渲染并持久化 slave workOrder（落盘 dispatch-logs/translate-{subStage}-shardN.workOrder.md），
             // system.transform hook 按 slave session 注入其系统提示。master 只拿最小 trigger 派 Task，保持上下文干净。
             buildShardedWorkerOrder(run, currentEntry, artifactsDir, null, subStage, subStageConfig.agentFile)
@@ -4201,7 +4279,7 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
             const ic = currentEntry?.incrementalContext
             return {
               title: `subdispatch: ${subStage}`,
-              output: `🔧 sub-stage ${subStage} workOrder 已渲染并落盘（slave agent: ${slaveAgent}）。用 Task 工具派 ${slaveAgent}，prompt 用**静态触发器**（metadata.minimalSubtaskPrompt，勿含 workOrder 全文——slave 系统提示已自动注入 workOrder）。阻塞等 slave TASK_STATUS 后再 subdispatch 下一 stage。`,
+              output: `🔧 sub-stage ${subStage} workOrder 已渲染并落盘（slave agent: ${slaveAgent}）。用 Task 工具派 ${slaveAgent}，prompt 用**静态触发器**（metadata.minimalSubtaskPrompt，勿含 workOrder 全文——slave 系统提示已自动注入 workOrder）。阻塞等 slave TASK_STATUS(completed) → 调 workflow({ action: "substageDone", runId, subStage: "${subStage}" }) 标记完成 → 再 subdispatch 下一 stage。`,
               metadata: {
                 runId,
                 phase: run.currentPhase,
@@ -4212,7 +4290,59 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
                 targetUnits: ic?.targetUnits,
                 minimalSubtaskPrompt: minimalPrompt,
                 nextAction: "dispatch",
+                completedSubs,
+                nextSubStage: expected,
               },
+            }
+          }
+
+          // ── substageDone — translator master 专用：标记某 sub-stage 的 slave 已 TASK_STATUS(completed) ──
+          // 写入 incrementalContext.completedSubStages（顺序门禁的完成信号源）。仅允许标记"下一个未完成"的 stage，
+          // 防止 master 跳序标记。全 6 完成后返回 allDone=true（master 据此写 status/translate.json 收尾）。
+          case "substageDone": {
+            const runId = (args.runId as string) || currentWorkflowContext?.runId
+            if (!runId) throw new Error("runId required (substageDone)")
+            const subStage = args.subStage as string | undefined
+            let run = engine.status(runId) ?? (() => { try { return engine.loadFromDisk(runId) } catch { return null } })()
+            if (!run) {
+              return { title: "Error", output: `Run ${runId} not found`, metadata: { runId } }
+            }
+            const phaseConfig = SQL2JAVA_WORKFLOW.phases.find(p => p.name === run.currentPhase)
+            const valid = (phaseConfig?.subStages ?? []).map(s => s.name)
+            if (!subStage || !valid.includes(subStage)) {
+              return { title: "substageDone error", output: `⛔ subStage 缺失或非法：${subStage ?? "(空)"}。可用：${valid.join("/")}`, metadata: { runId, subStage } }
+            }
+            const currentEntry = engine.findCurrentEntry(run)
+            if (!currentEntry) {
+              return { title: "substageDone error", output: `⛔ 找不到当前 entry（run ${runId} 无活跃 phase entry）`, metadata: { runId, subStage } }
+            }
+            const completedSubs = getCompletedSubStages(currentEntry)
+            const expected = nextExpectedSubStage(run.currentPhase ?? "translate", completedSubs)
+            if (subStage !== expected) {
+              const expLabel = expected ?? "(均已完)"
+              return {
+                title: "substageDone 顺序错",
+                output: "⛔ 不能标记「" + subStage + "」完成：下一个该标记的是「" + expLabel + "」。已完成：[" + (completedSubs.join(", ") || "无") + "]。请按序：先 subdispatch " + (expected ?? "—无—") + " 跑完 slave，再来 substageDone。",
+                metadata: { runId, subStage, expected, completedSubs },
+              }
+            }
+            // 幂等追加（去重保序），写回 incrementalContext 并持久化
+            if (!completedSubs.includes(subStage)) completedSubs.push(subStage)
+            currentEntry.incrementalContext = {
+              ...(currentEntry.incrementalContext ?? {}),
+              completedSubStages: completedSubs,
+            }
+            engine.persist(run)
+            const order = getSubStageOrder(run.currentPhase ?? "translate")
+            const allDone = order.every(s => completedSubs.includes(s))
+            const next = nextExpectedSubStage(run.currentPhase ?? "translate", completedSubs)
+            const tail = allDone
+              ? "🎉 6 个 sub-stage 全部完成——现在写 status/translate.json（含 shardIndex）收尾，再输出 TASK_STATUS。"
+              : "下一个：「" + (next ?? "—") + "」——subdispatch " + (next ?? "") + "。"
+            return {
+              title: `substageDone: ${subStage}`,
+              output: `✅ sub-stage ${subStage} 已标记完成（共 ${completedSubs.length}/${order.length}）。${tail}`,
+              metadata: { runId, subStage, completedSubs, allDone, nextSubStage: next },
             }
           }
 

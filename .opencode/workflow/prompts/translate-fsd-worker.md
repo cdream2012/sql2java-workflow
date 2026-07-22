@@ -31,7 +31,7 @@
 ## 输出（稳定）
 
 - FSD 文件：`fsd/{pkg}/{ref}.md`（refName 用 inventory 算好的，重载带 `__序号`）
-- Worker Status：`{{artifactsDir}}/status/translate.json`（含 shardIndex）
+- ⛔ **不写 `status/translate.json`**——那是 translator master 的 advance 完成门控文件，仅 master 在 6 sub-stage 全过后写一次；slave 写会 clobber 门控、触发误 advance。你只在最后一段文本回 `TASK_STATUS` 给 master。
 
 ## 硬约束（稳定）
 

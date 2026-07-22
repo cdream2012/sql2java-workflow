@@ -15,7 +15,7 @@
 ## 输出（稳定）
 
 - per-proc Java 文件 + Mapper XML：`write` 到 `projectRoot` 目录。每个 unit 的类文件各占一文件、互不共享（无 read-or-create；同包不同 unit 落不同 per-proc 文件，天然无冲突）。
-- Worker Status：`{{artifactsDir}}/status/translate.json`（最后一步写，含 shardIndex = 分片信息里的 shardIndex，1-based）。
+- ⛔ **不写 `status/translate.json`**——那是 translator master 的 advance 完成门控文件，仅 master 在 6 sub-stage 全过后写一次；slave 写会 clobber 门控、触发误 advance。你只在最后一段文本回 `TASK_STATUS` 给 master。
 
 ## 硬约束（稳定）
 
