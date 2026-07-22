@@ -2,14 +2,14 @@
  * refName 命名规范 —— 跨 artifact 子程序引用名的**单一真相源**。
  *
  * 规范：
- *   - 非重载子程序（同名仅出现 1 次）= Oracle 原始名（裸名）。
+ *   - 非重载子程序（同名仅出现 1 次）= PL/SQL 原始名（裸名）。
  *   - 重载子程序（同名出现 K 次）= `{name}__{序号}`，序号为该同名子程序在
  *     `inventory-packages/{PKG}.json` 的 `procedures` 数组中的第几次出现（1-based），
  *     **全部** K 个版本都带后缀（即 `__1`..`__K`），避免裸名撞重载。
  *
  * 该 refName 在以下四处必须一致：
  *   dependency-graph.json.callGraph 的 key/value、FSD 文件名、
- *   translation.json.subprogramMethods.oracleName、translation.json.completedSubprograms。
+ *   translation.json.subprogramMethods.plsqlName、translation.json.completedSubprograms。
  *
  * 本模块的纯函数被 validateCrossSchema 用作校验依据（见 engine-core.ts D9），
  * 也是 callGraph 重建等未来确定性代码的复用基础——约定不再只活在 markdown 注释里。
@@ -24,7 +24,7 @@
  *   refNamesForPackage(["get_param","get_param"]) // => ["get_param__1","get_param__2"]
  */
 export function refNamesForPackage(procedureNames: string[]): string[] {
-  // PL/SQL 标识符不区分大小写（Oracle 默认把未加引号的标识符大写化），因此 get_item 与
+  // PL/SQL 标识符不区分大小写（PL/SQL 默认把未加引号的标识符大写化），因此 get_item 与
   // GET_ITEM 是同一子程序、互为重载，必须按大写键合并计数——否则 analysis-builder 与
   // validateCrossSchema 的 validRefNameSet 会对大小写变体产出不相交的 refName 集合。
   // 第一遍：按大写键统计每个名字的总出现次数，判定是否重载
@@ -35,7 +35,7 @@ export function refNamesForPackage(procedureNames: string[]): string[] {
   }
 
   // 第二遍：重载名按出现顺序追加 1-based 序号（序号同样按大写键累计），非重载保留裸名。
-  // refName 保留 Oracle 原始大小写（裸名/带序号均用原始 name 拼接）。
+  // refName 保留 PL/SQL 原始大小写（裸名/带序号均用原始 name 拼接）。
   const seen = new Map<string, number>()
   return procedureNames.map((name) => {
     const key = name.toUpperCase()
@@ -62,7 +62,7 @@ export function refNameOf(sub: { name: string; overloadIndex: number | null }): 
 
 /**
  * 一个包所有**合法** refName 的集合（统一转大写，便于跨来源做大小写不敏感比对）。
- * 用于校验 callGraph 引用、subprogramMethods.oracleName 是否落在合法集合内。
+ * 用于校验 callGraph 引用、subprogramMethods.plsqlName 是否落在合法集合内。
  */
 export function validRefNameSet(procedureNames: string[]): Set<string> {
   return new Set(refNamesForPackage(procedureNames).map((r) => r.toUpperCase()))

@@ -65,7 +65,7 @@ export function makeInventory(overrides: Record<string, unknown> = {}) {
   return {
     sourcePath: "/test/source",
     packageNames: ["CORE_PKG", "BASE_PKG"],
-    tables: [{ name: "ITEMS", ddlFile: "schema/tables.sql", columns: [{ name: "ITEM_ID", oracleType: "NUMBER", nullable: false, isPrimaryKey: true }] }],
+    tables: [{ name: "ITEMS", ddlFile: "schema/tables.sql", columns: [{ name: "ITEM_ID", plsqlType: "NUMBER", nullable: false, isPrimaryKey: true }] }],
     standaloneProcedures: [],
     triggers: [],
     views: [],
@@ -127,8 +127,8 @@ export function makeScaffold(overrides: Record<string, unknown> = {}) {
     },
     packageMappings: [
       {
-        oracleSchema: "",
-        oraclePackage: "CORE_PKG",
+        plsqlSchema: "",
+        plsqlPackage: "CORE_PKG",
         javaPackage: "com.example.item",
         components: [
           { role: "service" },
@@ -145,7 +145,7 @@ export function makeScaffold(overrides: Record<string, unknown> = {}) {
     },
     generated: {
       entities: [],
-      stateHolders: [{ file: "src/main/java/com/example/item/CorePkgState.java", oracleSchema: "", oraclePackage: "CORE_PKG" }],
+      stateHolders: [{ file: "src/main/java/com/example/item/CorePkgState.java", plsqlSchema: "", plsqlPackage: "CORE_PKG" }],
       commonClasses: [
         { file: "src/main/java/com/example/item/exception/BusinessException.java", purpose: "业务异常基类" },
         { file: "src/main/java/com/example/item/exception/DataNotFoundException.java", purpose: "数据未找到" },
@@ -172,7 +172,7 @@ export function makeAnalysisPackage(overrides: Record<string, unknown> = {}) {
     subprograms: [
       {
         name: "GET_ITEM",
-        blocks: [{ type: "sql-statement" as const, oracleLine: 12, description: "SELECT INTO 查询", dependencies: [] }],
+        blocks: [{ type: "sql-statement" as const, plsqlLine: 12, description: "SELECT INTO 查询", dependencies: [] }],
         variables: [],
         cursors: [],
         exceptionHandlers: [],
@@ -196,7 +196,7 @@ export function makeTranslation(overrides: Record<string, unknown> = {}) {
     decisions: [],
     todos: [],
     subprogramMethods: [
-      { oracleName: "GET_ITEM", javaClass: "com.example.item.core.access.ItemAccessIntf", javaMethod: "getItem" },
+      { plsqlName: "GET_ITEM", javaClass: "com.example.item.core.access.ItemAccessIntf", javaMethod: "getItem" },
     ],
     ...overrides,
   }

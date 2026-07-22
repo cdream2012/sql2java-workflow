@@ -1,6 +1,6 @@
 # sql2java-workflow
 
-基于 AI Agent 的 Oracle PL/SQL → Spring Boot + MyBatis 端到端转译系统。确定性状态机驱动的单流水线工作流，以严格 1:1 忠实转换为原则，将 PL/SQL 翻译为可编译的 Java 应用。
+基于 AI Agent 的 PL/SQL → Spring Boot + MyBatis 端到端转译系统。确定性状态机驱动的单流水线工作流，以严格 1:1 忠实转换为原则，将 PL/SQL 翻译为可编译的 Java 应用。
 
 ## 架构概览
 
@@ -35,7 +35,7 @@ inventory → scaffold → translate → dedup → review → verify → 完成
 
 # 只译入口过程及其调用闭包（过程级 mainEntry，含点标识符原样捕获）
 /sql2java 请帮我把 /path/to/project 下的 schema.package.proc 转为 java
-/sql2java 帮我把 resources/mfg_erp_sql_tiny 的存储过程转成 java，入口为 pkg/CORE_PKG.bulk_receive
+/sql2java 帮我把 resources/MFG_ERP 的存储过程转成 java，入口为 MFG_ERP.F_BOM.explode
 
 # 状态 / 续传
 /sql2java 看下状态
@@ -168,5 +168,5 @@ nohup opencode run "/sql2java resume" --dangerously-skip-permissions --format js
 
 ## 输入输出
 
-- **输入**：一组 PL/SQL 文件（`.sql/.pks/.pkb/.pls`），单目录（推荐）/ `--header`+`--body` 双目录兜底 / 三路径。参见 `resources/mfg_erp_sql/`（单目录）、`resources/mfg_erp_sql_tiny/`（最小）、`resources/MFG_ERP/`（分目录）。
+- **输入**：一组 PL/SQL 文件（`.sql/.pks/.pkb/.pls`），单目录（推荐）/ `--header`+`--body` 双目录兜底 / 三路径。参见 `resources/MFG_ERP/`（分目录：`PACKAGE/` 包头 + `PACKAGE_BODY/` 包体）。
 - **输出**：可编译的 Java 项目（Spring Boot + MyBatis + Lombok）+ 转译过程 artifacts。

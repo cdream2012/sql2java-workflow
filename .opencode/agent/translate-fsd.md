@@ -21,10 +21,10 @@ permission:
 
 ## 职责
 
-- 读本 unit 源码 `shard-inputs/{pkg}/{ref}/source.sql` + 翻译决策 `translations/{pkg}/{ref}.json` 的 `decisions`（line/oracleConstruct/javaConstruct/reason/confidence）+ 依赖签名块（callGraph 内联）。
+- 读本 unit 源码 `shard-inputs/{pkg}/{ref}/source.sql` + 翻译决策 `translations/{pkg}/{ref}.json` 的 `decisions`（line/plsqlConstruct/javaConstruct/reason/confidence）+ 依赖签名块（callGraph 内联）。
 - 按 **6 板块模板填空**生成 `fsd/{pkg}/{ref}.md`（板块内容、固定收尾格式、自包含要求、注释规范详见注入的 **fsd project-spec**，此处不重复）：
   概览 / 表结构映射 / 依赖分析 / 业务规则 / 控制流与异常 / 特殊语法转化规约。
-- decisions 是板块 6 的结构化来源——对照 decisions 的 oracleConstruct/javaConstruct/reason 填板块 6 转化映射表。
+- decisions 是板块 6 的结构化来源——对照 decisions 的 plsqlConstruct/javaConstruct/reason 填板块 6 转化映射表。
 - 事务边界（COMMIT/ROLLBACK/PRAGMA AUTONOMOUS_TRANSACTION）标注为事务构造，具体 Java 事务映射见注入的 Java 代码规约 §9.1。
 
 ## 输出

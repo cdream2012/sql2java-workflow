@@ -875,8 +875,8 @@ export class WorkflowEngine {
         return findings
       }
       const mappedNames = new Set(
-        (scaffold.packageMappings as Array<{ oraclePackage: string }>)
-          .map((m) => m.oraclePackage)
+        (scaffold.packageMappings as Array<{ plsqlPackage: string }>)
+          .map((m) => m.plsqlPackage)
           .filter((n): n is string => typeof n === "string" && n.length > 0)
       )
       // scope 激活（mainEntry 过程级闭包）时期望集 = scopePackages（闭包内包）；
@@ -901,7 +901,7 @@ export class WorkflowEngine {
     }
 
     // translation.json.subprogramMethods refName + 唯一性校验
-    // oracleName 须唯一、且落在该包合法 refName 集合内（重载带 {name}__序号）。
+    // plsqlName 须唯一、且落在该包合法 refName 集合内（重载带 {name}__序号）。
     // translate 完成时所有包 translation.json 已齐 → 即时校验给 translator 反馈；dedup 再校验一次（幂等）。
     if (completedPhase === "translate" || completedPhase === "dedup") {
       const refNameByPkg = this.buildRefNameIndex(artifactsDir, anaNames)
@@ -912,19 +912,19 @@ export class WorkflowEngine {
           continue
         }
         const valid = refNameByPkg.get(pkg.toUpperCase())
-        const methods = Array.isArray(trans.subprogramMethods) ? (trans.subprogramMethods as Array<{ oracleName: string }>) : []
+        const methods = Array.isArray(trans.subprogramMethods) ? (trans.subprogramMethods as Array<{ plsqlName: string }>) : []
         const seen = new Set<string>()
         for (const m of methods) {
-          const key = (m.oracleName ?? "").toUpperCase()
+          const key = (m.plsqlName ?? "").toUpperCase()
           if (!key) {
-            findings.push({ message: `${pkg}: subprogramMethods 存在空 oracleName`, severity: "warning" })
+            findings.push({ message: `${pkg}: subprogramMethods 存在空 plsqlName`, severity: "warning" })
             continue
           }
-          if (seen.has(key)) findings.push({ message: `${pkg}: subprogramMethods 重复 oracleName: ${m.oracleName}`, severity: "warning" })
+          if (seen.has(key)) findings.push({ message: `${pkg}: subprogramMethods 重复 plsqlName: ${m.plsqlName}`, severity: "warning" })
           seen.add(key)
           if (valid && !valid.has(key)) {
             findings.push({
-              message: `${pkg}: subprogramMethods.oracleName "${m.oracleName}" 不在合法 refName 集合内（重载子程序应为 {name}__序号）`,
+              message: `${pkg}: subprogramMethods.plsqlName "${m.plsqlName}" 不在合法 refName 集合内（重载子程序应为 {name}__序号）`,
               severity: "warning",
             })
           }

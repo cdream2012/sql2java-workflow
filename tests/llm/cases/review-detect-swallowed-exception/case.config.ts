@@ -43,14 +43,14 @@ const config: CaseConfig = {
         javaVersion: "1.8", springBootVersion: "2.7.x",
       },
       packageMappings: [
-        { oraclePackage: PACKAGE, javaPackage: "com.example.bad", mapperInterface: "BadMapper", serviceClass: "BadService", serviceImplClass: "BadServiceImpl" },
+        { plsqlPackage: PACKAGE, javaPackage: "com.example.bad", mapperInterface: "BadMapper", serviceClass: "BadService", serviceImplClass: "BadServiceImpl" },
       ],
       projectRoot: PROJECT_ROOT_REL,
       structure: { directories: ["src/main/java/com/example/bad/service/impl"], pomXml: "pom.xml" },
       generated: {
         entities: [],
-        mapperInterfaces: [{ file: "src/main/java/com/example/bad/mapper/BadMapper.java", oraclePackage: PACKAGE }],
-        serviceShells: [{ file: IMPL_REL, oraclePackage: PACKAGE }],
+        mapperInterfaces: [{ file: "src/main/java/com/example/bad/mapper/BadMapper.java", plsqlPackage: PACKAGE }],
+        serviceShells: [{ file: IMPL_REL, plsqlPackage: PACKAGE }],
         commonClasses: [{ file: "src/main/java/com/example/bad/exception/AppException.java", purpose: "业务异常基类" }],
       },
       conventions: "Standard conventions",
@@ -74,7 +74,7 @@ const config: CaseConfig = {
       subprograms: [
         {
           name: "DO_SOMETHING",
-          blocks: [{ type: "exception-block", oracleLine: 1, description: "EXCEPTION WHEN OTHERS（空处理）", dependencies: [] }],
+          blocks: [{ type: "exception-block", plsqlLine: 1, description: "EXCEPTION WHEN OTHERS（空处理）", dependencies: [] }],
           variables: [],
           cursors: [],
           exceptionHandlers: [{ name: "OTHERS", actions: ["空 catch，吞异常"] }],
@@ -91,7 +91,7 @@ const config: CaseConfig = {
       totalSubprograms: 1,
       files: [{ path: IMPL_REL, role: "service-impl" }],
       decisions: [
-        { line: 10, oracleConstruct: "EXCEPTION WHEN OTHERS", javaConstruct: "try-catch(空)", reason: "异常映射（含缺陷：空 catch）", confidence: "high" },
+        { line: 10, plsqlConstruct: "EXCEPTION WHEN OTHERS", javaConstruct: "try-catch(空)", reason: "异常映射（含缺陷：空 catch）", confidence: "high" },
       ],
       todos: [],
     })

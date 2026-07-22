@@ -356,7 +356,7 @@ function scanTestCompleteness(artifactsDir: string, projectRoot: string, targetS
     ...((scaffold?.generated?.mapperTestShells ?? []) as any[]),
   ]
   for (const sh of shells) {
-    if (targetSet && sh.oraclePackage && !targetSet.has(String(sh.oraclePackage).toUpperCase())) continue
+    if (targetSet && sh.plsqlPackage && !targetSet.has(String(sh.plsqlPackage).toUpperCase())) continue
     const abs = resolve(projectRoot, sh.file)
     const lines = readFileLines(abs)
     if (lines.length === 0) continue
@@ -369,7 +369,7 @@ function scanTestCompleteness(artifactsDir: string, projectRoot: string, targetS
           severity: "major",
           category: "test-completeness",
           tool: "test-completeness",
-          packageName: String(sh.oraclePackage ?? "UNKNOWN"),
+          packageName: String(sh.plsqlPackage ?? "UNKNOWN"),
           message: "未实现的测试方法占位（// TODO: [test]/[mapper-test]）",
         })
       }
@@ -386,7 +386,7 @@ function scanTestCompleteness(artifactsDir: string, projectRoot: string, targetS
             severity: "major",
             category: "test-completeness",
             tool: "test-completeness",
-            packageName: String(sh.oraclePackage ?? "UNKNOWN"),
+            packageName: String(sh.plsqlPackage ?? "UNKNOWN"),
             message: "空测试方法体（无 arrange→act→assert）",
           })
           break

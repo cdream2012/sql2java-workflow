@@ -79,7 +79,7 @@ describe("buildVerifySummary", () => {
   it("测试失败按 javaPackage 前缀归因到包 → 该包 passed=false", () => {
     setup(
       ["PKG_A"],
-      { mappings: [{ oracleSchema: "", oraclePackage: "PKG_A", javaPackage: "com.a", components: [{ role: "service-impl" }] }] },
+      { mappings: [{ plsqlSchema: "", plsqlPackage: "PKG_A", javaPackage: "com.a", components: [{ role: "service-impl" }] }] },
     )
     writeCompileLog("[INFO] BUILD SUCCESS")
     writeTestLog([
@@ -96,7 +96,7 @@ describe("buildVerifySummary", () => {
   it("测试失败按 javaPackage 前缀归因到包 → 该包 passed=false（per-proc）", () => {
     setup(
       ["PKG_A"],
-      { mappings: [{ oracleSchema: "", oraclePackage: "PKG_A", javaPackage: "com.a", components: [{ role: "service-impl" }] }] },
+      { mappings: [{ plsqlSchema: "", plsqlPackage: "PKG_A", javaPackage: "com.a", components: [{ role: "service-impl" }] }] },
     )
     writeCompileLog("[INFO] BUILD SUCCESS")
     writeTestLog([
@@ -114,8 +114,8 @@ describe("buildVerifySummary", () => {
     setup(
       ["PKG_A", "PKG_B"],
       { mappings: [
-        { oracleSchema: "", oraclePackage: "PKG_A", javaPackage: "com.a", components: [{ role: "service-impl" }] },
-        { oracleSchema: "", oraclePackage: "PKG_B", javaPackage: "com.b", components: [{ role: "service-impl" }] },
+        { plsqlSchema: "", plsqlPackage: "PKG_A", javaPackage: "com.a", components: [{ role: "service-impl" }] },
+        { plsqlSchema: "", plsqlPackage: "PKG_B", javaPackage: "com.b", components: [{ role: "service-impl" }] },
       ] },
     )
     writeCompileLog("[INFO] BUILD SUCCESS")
@@ -133,7 +133,7 @@ describe("buildVerifySummary", () => {
   })
 
   it("IntegrationTest 失败 → testType=integration", () => {
-    setup(["PKG_A"], { mappings: [{ oracleSchema: "", oraclePackage: "PKG_A", javaPackage: "com.a", components: [{ role: "mapper" }] }] })
+    setup(["PKG_A"], { mappings: [{ plsqlSchema: "", plsqlPackage: "PKG_A", javaPackage: "com.a", components: [{ role: "mapper" }] }] })
     writeCompileLog("BUILD SUCCESS")
     writeTestLog([
       "Tests run: 1, Failures: 0, Errors: 1, Skipped: 0",

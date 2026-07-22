@@ -34,7 +34,7 @@ export const REFINE_CONSTRAINTS: Record<string, string[]> = {
     "packages/{PKG}.json 的 procedures/functions 仅为名字数组（详情在 subprograms/{PKG.METHOD}.json）；有子程序的包应有 bodyPath（procedure 实现体在 body 中）",
   ],
   translate: [
-    "subprogramMethods.oracleName 必须唯一（重载子程序用 {name}__序号 区分，禁用裸名重复）",
+    "subprogramMethods.plsqlName 必须唯一（重载子程序用 {name}__序号 区分，禁用裸名重复）",
   ],
   review: [
     "passed 与 mustFix 必须一致：passed=true 时 mustFix 必须为空，passed=false 时 mustFix 必须非空",
@@ -127,10 +127,10 @@ export const CROSS_SCHEMA_HINTS: Record<string, string[]> = {
     "translationOrder 必须覆盖所有包",
   ],
   scaffold: [
-    "scaffold.packageMappings 必须覆盖所有 inventory 包的 oraclePackage（scope 模式下覆盖 scopePackages）",
+    "scaffold.packageMappings 必须覆盖所有 inventory 包的 plsqlPackage（scope 模式下覆盖 scopePackages）",
   ],
   translate: [
-    "subprogramMethods.oracleName 必须唯一且符合 refName 规范（重载用 {name}__序号）",
+    "subprogramMethods.plsqlName 必须唯一且符合 refName 规范（重载用 {name}__序号）",
   ],
   dedup: [
     "extractedModules.affectedPackages 和 packageChanges.packageName 必须引用 inventory 中存在的包",
@@ -162,21 +162,21 @@ export const COMMON_PITFALLS: Record<string, string[]> = {
   scaffold: [
     'commonModules.classes.category 推荐全小写，如 "type-mapper" / "mybatis-fragment" / "mapper-interface" / "test-base"（不限死）',
     'projectRoot 为绝对路径（generated/{artifactId}），必须原样使用 Runtime Context / workOrder 注入的 projectRoot 值，勿自行编造路径',
-    'stateHolders 为 per-package {Pkg}State 持有类清单（{file, oracleSchema, oraclePackage}），scaffold 从 inventory constants+variables 生成',
+    'stateHolders 为 per-package {Pkg}State 持有类清单（{file, plsqlSchema, plsqlPackage}），scaffold 从 inventory constants+variables 生成',
     'packageMappings.components 为 per-proc 角色集模板（{role}，无 className），类名由 {ProcPascal}{RoleSuffix} 约定派生',
     'h2SchemaFile 指向的文件必须存在于磁盘（src/test/resources/schema-h2.sql）',
     'schema-h2.sql 必须覆盖 inventory.json 中所有 tables 和 sequences',
-    'schema-h2.sql 中 UDT 列必须跳过并加注释（-- H2 不支持 Oracle UDT），不能生成 H2 不支持的类型',
+    'schema-h2.sql 中 UDT 列必须跳过并加注释（-- H2 不支持 PL/SQL UDT），不能生成 H2 不支持的类型',
     'Schema 允许额外字段（.passthrough()）——可添加不在 schema 中的 optional 字段帮助下游阶段，额外字段会透传不被剥离',
   ],
   translate: [
     'status 推荐值："completed" / "partial"（不限死，允许其他状态值）',
     'files.role 推荐值："mapper-interface" / "mapper-xml" / "service" / "service-impl" / "dto" / "exception" / "test" / "mapper-integration-test"（不限死）',
     'confidence 推荐小写："high" / "medium" / "low"',
-    'subprogramMethods.oracleName：重载子程序必须用 {name}__序号，禁止裸名重复',
+    'subprogramMethods.plsqlName：重载子程序必须用 {name}__序号，禁止裸名重复',
     'totalSubprograms 等数字字段支持字符串自动转换（写 "5" 等同 5）',
     'files.role 使用 "mapper-integration-test" 标识 Mapper 集成测试文件',
-    '生产 Mapper XML 保持 Oracle 原生语法不变',
+    '生产 Mapper XML 保持 PL/SQL 原生语法不变',
     'H2 确实不兼容的 SQL 标 @Disabled（不修改 Mapper XML）',
     '测试数据 INSERT 使用硬编码 ID 值（不使用 SEQ.NEXTVAL）',
     'JdbcTemplate INSERT 测试数据的列必须与 schema-h2.sql 一致',

@@ -30,7 +30,7 @@ export interface InventoryPackageParsed {
 /**
  * 读取 packages/{pkg}.json + 聚合 subprograms/{pkg}.*.json。
  * 子程序文件按文件名自然序读取后，按 refNamesForPackage 重新对齐 refName（重载全部带序号）。
- * 包名大小写不敏感：Oracle 标识符大小写不敏感，用户给的 mainEntry 包名大小写可能与磁盘文件名
+ * 包名大小写不敏感：PL/SQL 标识符大小写不敏感，用户给的 mainEntry 包名大小写可能与磁盘文件名
  *（规范化大写）不一致，故精确名未命中时回退大小写不敏感扫描。
  * @returns 解析结构；包文件缺失返回 null
  */

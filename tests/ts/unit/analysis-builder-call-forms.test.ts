@@ -1,7 +1,7 @@
 /**
  * analysis-builder-call-forms.test.ts — 三种调用形式的 schema 锚定解析回归测试
  *
- * PL/SQL 过程调用三种写法（Oracle 名字解析语义）：
+ * PL/SQL 过程调用三种写法（PL/SQL 名字解析语义）：
  *   3 段 schema.pkg.proc → 完整路径精确匹配
  *   2 段 pkg.proc        → 补当前 caller schema（→ schema.pkg）
  *   1 段 proc            → 同包裸名（callerPkg）

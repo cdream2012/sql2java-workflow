@@ -59,7 +59,7 @@ describe("Schema 有效数据通过校验", () => {
         springBootVersion: "2.7.x",
       },
       packageMappings: [
-        { oracleSchema: "MFG", oraclePackage: "PKG_A", javaPackage: "com.example.a", components: [{ role: "service-impl" }, { role: "mapper" }] },
+        { plsqlSchema: "MFG", plsqlPackage: "PKG_A", javaPackage: "com.example.a", components: [{ role: "service-impl" }, { role: "mapper" }] },
       ],
       projectRoot: "/abs/path/generated/item-service",
       structure: {
@@ -68,7 +68,7 @@ describe("Schema 有效数据通过校验", () => {
       },
       generated: {
         entities: [],
-        stateHolders: [{ file: "src/main/java/com/example/a/PkgAState.java", oracleSchema: "MFG", oraclePackage: "PKG_A" }],
+        stateHolders: [{ file: "src/main/java/com/example/a/PkgAState.java", plsqlSchema: "MFG", plsqlPackage: "PKG_A" }],
         commonClasses: [],
       },
       conventions: "Standard Spring Boot conventions",
@@ -99,13 +99,13 @@ describe("Schema 有效数据通过校验", () => {
       decisions: [],
       todos: [],
       subprogramMethods: [
-        { oracleName: "get_item", javaClass: "com.example.item.service.ItemService", javaMethod: "getItem", javaFile: "service/ItemService.java" },
+        { plsqlName: "get_item", javaClass: "com.example.item.service.ItemService", javaMethod: "getItem", javaFile: "service/ItemService.java" },
       ],
     }
     expect(TranslationSchema.safeParse(data).success).toBe(true)
   })
 
-  it("TranslationSchema 重载子程序 refName 唯一（__序号区分，重复 oracleName 被拒）", () => {
+  it("TranslationSchema 重载子程序 refName 唯一（__序号区分，重复 plsqlName 被拒）", () => {
     const data = {
       packageName: "CORE_PKG",
       status: "completed",
@@ -115,17 +115,17 @@ describe("Schema 有效数据通过校验", () => {
       decisions: [],
       todos: [],
       subprogramMethods: [
-        { oracleName: "get_param__1", javaClass: "com.example.item.service.ItemService", javaMethod: "getParamById" },
-        { oracleName: "get_param__2", javaClass: "com.example.item.service.ItemService", javaMethod: "getParamByName" },
+        { plsqlName: "get_param__1", javaClass: "com.example.item.service.ItemService", javaMethod: "getParamById" },
+        { plsqlName: "get_param__2", javaClass: "com.example.item.service.ItemService", javaMethod: "getParamByName" },
       ],
     }
     // 合法：两个不同 refName → 通过
     expect(TranslationSchema.safeParse(data).success).toBe(true)
 
-    // 非法：重复 oracleName（裸名撞重载的典型错误）→ 被拒
+    // 非法：重复 plsqlName（裸名撞重载的典型错误）→ 被拒
     const dup = { ...data, subprogramMethods: [
-      { oracleName: "get_param", javaClass: "X", javaMethod: "a" },
-      { oracleName: "get_param", javaClass: "X", javaMethod: "b" },
+      { plsqlName: "get_param", javaClass: "X", javaMethod: "a" },
+      { plsqlName: "get_param", javaClass: "X", javaMethod: "b" },
     ] }
     const parsed = TranslationSchema.safeParse(dup)
     expect(parsed.success).toBe(false)
@@ -352,8 +352,8 @@ describe("Schema 无效数据被拒绝", () => {
   it("ScaffoldSchema 拒绝无 components 的 packageMapping（components 空数组）", () => {
     const data = makeScaffold({
       packageMappings: [
-        // 仅 oraclePackage/javaPackage，无任何组件
-        { oraclePackage: "PKG_A", javaPackage: "com.example.item.a", components: [] },
+        // 仅 plsqlPackage/javaPackage，无任何组件
+        { plsqlPackage: "PKG_A", javaPackage: "com.example.item.a", components: [] },
       ],
     })
     const result = ScaffoldSchema.safeParse(data)
@@ -364,7 +364,7 @@ describe("Schema 无效数据被拒绝", () => {
     const data = makeScaffold({
       packageMappings: [
         // 纯常量包：无子程序，只映射常量持有角色
-        { oracleSchema: "", oraclePackage: "PKG_CONST", javaPackage: "com.example.item.consts", components: [{ role: "constant" }] },
+        { plsqlSchema: "", plsqlPackage: "PKG_CONST", javaPackage: "com.example.item.consts", components: [{ role: "constant" }] },
       ],
     })
     const result = ScaffoldSchema.safeParse(data)
@@ -468,7 +468,7 @@ describe("类型放松 — 合理 LLM 变体不再被拒", () => {
     const data = {
       name: "T",
       ddlFile: "t.sql",
-      columns: [{ name: "C", oracleType: "NUM", nullable: true, isPrimaryKey: false, defaultValue: null }],
+      columns: [{ name: "C", plsqlType: "NUM", nullable: true, isPrimaryKey: false, defaultValue: null }],
     }
     expect(TableArtifactSchema.safeParse(data).success).toBe(true)
   })

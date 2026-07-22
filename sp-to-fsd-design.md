@@ -60,7 +60,7 @@ FSD 文档
 │   └── 异常处理路径（WHEN OTHERS → try-catch）
 │
 └── 6. 特殊语法转化规约（Special Syntax Conventions）
-    ├── Oracle 专有构造 → Java/MyBatis 等价写法
+    ├── PL/SQL 专有构造 → Java/MyBatis 等价写法
     ├── 事务边界说明
     └── 需手动审查的构造清单（标记 TODO）
 ```
@@ -91,19 +91,19 @@ FSD 文档
 
 ### 1.2 参数清单与 Java 类型映射
 
-| Oracle 参数 | 方向 | Oracle 类型 | Java 类型 | 说明 |
+| PL/SQL 参数 | 方向 | PL/SQL 类型 | Java 类型 | 说明 |
 |------------|------|------------|----------|------|
 | p_xxx | IN | NUMBER | BigDecimal | ... |
 | p_yyy | OUT | VARCHAR2 | String (返回值) | ... |
 
 **返回值**：（Function 才有）
-- Oracle: VARCHAR2 → Java: String
+- PL/SQL: VARCHAR2 → Java: String
 
 ### 1.3 转换策略
 
 1. **服务映射**：sp_xxx → XxxService.spXxx()
 2. **参数封装**：入参数量 → 独立参数 or DTO
-3. **返回类型**：Oracle 返回类型 → Java 类型
+3. **返回类型**：PL/SQL 返回类型 → Java 类型
 4. **设计模式**：Service / Util / ...
 5. **异常处理**：策略概述
 ```
@@ -130,7 +130,7 @@ FSD 文档
 
 #### ORDERS 表 → OrderDO
 
-| 列名 | Oracle 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
+| 列名 | PL/SQL 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
 |------|------------|----------|------------|------|------|-----------|
 | ID | NUMBER | Long | id | N | Y | ✓ |
 | CUSTOMER_ID | NUMBER | Long | customerId | N | | ✓ |
@@ -164,7 +164,7 @@ FSD 文档
 
 ### 3.1 调用的其他子程序
 
-| Oracle 调用 | 目标包 | 功能 | 已解析 Java 方法 | 状态 |
+| PL/SQL 调用 | 目标包 | 功能 | 已解析 Java 方法 | 状态 |
 |------------|--------|------|-----------------|------|
 | f_get_decimal_rtype(ccy) | UTIL_PKG | 获取小数位数 | CurrInfoService.fGetDecimalRtype() | ✓ 已有 |
 | f_num_to_deci(amount, n) | UTIL_PKG | 格式化 | NumberFormatUtil.fNumToDeci() | ✓ 已有 |
@@ -201,7 +201,7 @@ FSD 文档
 
 ### 4.1 校验规则
 
-| 规则 ID | 类别 | 描述 | Oracle 位置 | Java 实现 |
+| 规则 ID | 类别 | 描述 | PL/SQL 位置 | Java 实现 |
 |---------|------|------|------------|----------|
 | VAL-001 | 参数校验 | 优惠券 code 不能为空 | line 28 | if (StringUtils.isBlank(couponCode)) |
 | VAL-002 | 状态校验 | 优惠券必须为 ACTIVE 且未过期 | line 28-33 | mapper.selectActiveCoupon() == null → return 1001 |
@@ -209,7 +209,7 @@ FSD 文档
 
 ### 4.2 计算逻辑
 
-| 逻辑 ID | 描述 | Oracle 表达式 | Java 实现 |
+| 逻辑 ID | 描述 | PL/SQL 表达式 | Java 实现 |
 |---------|------|-------------|----------|
 | CALC-001 | 订单明细小计 | v_quantity * v_item_price | quantity.multiply(unitPrice) |
 | CALC-002 | 订单总金额 | SUM(subtotal) | totalAmount = totalAmount.add(subtotal) |
@@ -229,12 +229,12 @@ FSD 文档
 
 ### 4.4 边界条件
 
-| 条件 | 处理方式 | Oracle 行为 | Java 映射 |
+| 条件 | 处理方式 | PL/SQL 行为 | Java 映射 |
 |------|---------|------------|----------|
 | 购物车为空 | 提前退出 | RETURN | return result(1003) |
 | 优惠券不存在 | 返回错误码 | result_code = 1001 | result.setResultCode(1001) |
 | 库存不足 | 返回错误码 | result_code = 1002 | result.setResultCode(1002) |
-| 金额溢出 | Oracle NUMBER 精度 | 无溢出 | BigDecimal 自动扩展 |
+| 金额溢出 | PL/SQL NUMBER 精度 | 无溢出 | BigDecimal 自动扩展 |
 | 并发扣库存 | 无锁（存储过程串行） | 无 | WHERE available_qty >= #{qty} |
 ```
 
@@ -253,7 +253,7 @@ FSD 文档
 
 ### 5.2 分支逻辑
 
-| 分支 ID | 条件 | 真分支 | 假分支 | Oracle 行号 |
+| 分支 ID | 条件 | 真分支 | 假分支 | PL/SQL 行号 |
 |---------|------|--------|--------|------------|
 | BR-001 | v_coupon_id IS NULL | 返回 1001 | 继续校验 | line 34-36 |
 | BR-002 | v_discount_rate > 0 | 应用折扣 | 跳过折扣 | line 62-67 |
@@ -261,14 +261,14 @@ FSD 文档
 
 ### 5.3 循环结构
 
-| 循环 ID | 类型 | Oracle 构造 | Java 映射 | 退出条件 |
+| 循环 ID | 类型 | PL/SQL 构造 | Java 映射 | 退出条件 |
 |---------|------|------------|----------|---------|
 | LOOP-001 | 游标循环(库存检查) | OPEN/FETCH cart_cursor | for (item : cartItems) | 游标耗尽 |
 | LOOP-002 | 游标循环(插入明细) | OPEN/FETCH cart_cursor | for (item : cartItems) | 游标耗尽 |
 
 ### 5.4 异常处理
 
-| 异常 | Oracle 处理 | Java 映射 | 处理方式 |
+| 异常 | PL/SQL 处理 | Java 映射 | 处理方式 |
 |------|------------|----------|---------|
 | SQLEXCEPTION | ROLLBACK + result_code = -1 | @Transactional(rollbackFor) | Spring 自动回滚 |
 | NO_DATA_FOUND | (隐式) SELECT INTO 空 | catch (EmptyResultDataAccessException) | 设为 null |
@@ -283,9 +283,9 @@ FSD 文档
 ```markdown
 ## 6. 特殊语法转化规约
 
-### 6.1 Oracle → Java 构造映射
+### 6.1 PL/SQL → Java 构造映射
 
-| Oracle 构造 | 出现位置 | Java/MyBatis 等价 | 风险 |
+| PL/SQL 构造 | 出现位置 | Java/MyBatis 等价 | 风险 |
 |------------|---------|-----------------|------|
 | CURSOR cart_cursor IS SELECT ... | line 18-22 | mapper.selectCartItems() 返回 List | ✓ 安全 |
 | SELECT ... INTO v_coupon_id | line 28-33 | mapper.selectActiveCoupon() + null 检查 | ✓ 安全 |
@@ -293,7 +293,7 @@ FSD 文档
 
 ### 6.2 事务边界
 
-| Oracle 构造 | Java 映射 |
+| PL/SQL 构造 | Java 映射 |
 |------------|----------|
 | START TRANSACTION ... COMMIT/ROLLBACK | @Transactional(rollbackFor = Exception.class) |
 | 整体在事务中 | 方法级注解 |
@@ -332,7 +332,7 @@ FSD 文档
 
 #### 1.2 参数清单与 Java 类型映射
 
-| Oracle 参数 | 方向 | Oracle 类型 | Java 类型 | 说明 |
+| PL/SQL 参数 | 方向 | PL/SQL 类型 | Java 类型 | 说明 |
 |------------|------|------------|----------|------|
 | p_customer_id | IN | BIGINT | Long | 下单客户 ID |
 | p_coupon_code | IN | VARCHAR(32) | String | 优惠券代码（可为空） |
@@ -349,7 +349,7 @@ FSD 文档
 2. **参数封装**：入参 ≤ 5 → 独立参数（通过 `CreateOrderRequest` 传入）
 3. **返回类型**：3 个 OUT 参数 → `CreateOrderResult` DTO（resultCode, orderId, totalAmount）
 4. **设计模式**：Service 模式，事务由 `@Transactional` 管理
-5. **异常处理**：全局 `@Transactional(rollbackFor = Exception.class)`，取代 Oracle 的 `DECLARE CONTINUE HANDLER FOR SQLEXCEPTION`
+5. **异常处理**：全局 `@Transactional(rollbackFor = Exception.class)`，取代 PL/SQL 的 `DECLARE CONTINUE HANDLER FOR SQLEXCEPTION`
 
 ---
 
@@ -373,7 +373,7 @@ FSD 文档
 
 ##### ORDERS 表 → OrderDO
 
-| 列名 | Oracle 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
+| 列名 | PL/SQL 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
 |------|------------|----------|------------|------|------|-----------|
 | ID | BIGINT | Long | id | N | Y | ✓ (INSERT + UPDATE) |
 | CUSTOMER_ID | BIGINT | Long | customerId | N | | ✓ (INSERT) |
@@ -385,7 +385,7 @@ FSD 文档
 
 ##### ORDER_ITEMS 表 → OrderItemDO
 
-| 列名 | Oracle 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
+| 列名 | PL/SQL 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
 |------|------------|----------|------------|------|------|-----------|
 | ID | BIGINT | Long | id | N | Y | ✓ (自增) |
 | ORDER_ID | BIGINT | Long | orderId | N | | ✓ (INSERT) |
@@ -396,7 +396,7 @@ FSD 文档
 
 ##### CART_ITEMS 表 → CartItemDO
 
-| 列名 | Oracle 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
+| 列名 | PL/SQL 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
 |------|------------|----------|------------|------|------|-----------|
 | ID | BIGINT | Long | id | N | Y | — |
 | CUSTOMER_ID | BIGINT | Long | customerId | N | | ✓ (SELECT + UPDATE WHERE) |
@@ -408,7 +408,7 @@ FSD 文档
 
 ##### PRODUCTS 表 → ProductDO
 
-| 列名 | Oracle 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
+| 列名 | PL/SQL 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
 |------|------------|----------|------------|------|------|-----------|
 | ID | BIGINT | Long | id | N | Y | ✓ (JOIN 条件) |
 | NAME | VARCHAR(200) | String | name | N | | — |
@@ -416,7 +416,7 @@ FSD 文档
 
 ##### INVENTORY 表 → InventoryDO
 
-| 列名 | Oracle 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
+| 列名 | PL/SQL 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
 |------|------------|----------|------------|------|------|-----------|
 | ID | BIGINT | Long | id | N | Y | — |
 | PRODUCT_ID | BIGINT | Long | productId | N | | ✓ (SELECT + UPDATE WHERE) |
@@ -425,7 +425,7 @@ FSD 文档
 
 ##### COUPONS 表 → CouponDO
 
-| 列名 | Oracle 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
+| 列名 | PL/SQL 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
 |------|------------|----------|------------|------|------|-----------|
 | ID | BIGINT | Long | id | N | Y | ✓ (SELECT + UPDATE WHERE) |
 | CODE | VARCHAR(32) | String | code | N | | ✓ (SELECT WHERE) |
@@ -437,7 +437,7 @@ FSD 文档
 
 ##### ORDER_AUDIT_LOG 表 → OrderAuditLogDO
 
-| 列名 | Oracle 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
+| 列名 | PL/SQL 类型 | Java 类型 | Java 字段名 | 可空 | 主键 | 本 SP 使用 |
 |------|------------|----------|------------|------|------|-----------|
 | ID | BIGINT | Long | id | N | Y | ✓ (自增) |
 | ORDER_ID | BIGINT | Long | orderId | N | | ✓ (INSERT) |
@@ -471,7 +471,7 @@ FSD 文档
 
 `sp_process_order` 不直接调用其他存储过程或函数，所有逻辑内部完成。
 
-| Oracle 调用 | 目标包 | 功能 | 已解析 Java 方法 | 状态 |
+| PL/SQL 调用 | 目标包 | 功能 | 已解析 Java 方法 | 状态 |
 |------------|--------|------|-----------------|------|
 | （无外部调用） | — | — | — | — |
 
@@ -497,7 +497,7 @@ FSD 文档
 
 #### 4.1 校验规则
 
-| 规则 ID | 类别 | 描述 | Oracle 位置 | Java 实现 |
+| 规则 ID | 类别 | 描述 | PL/SQL 位置 | Java 实现 |
 |---------|------|------|------------|----------|
 | VAL-001 | 参数校验 | 优惠券 code 存在时才校验 | line 28-36 | `if (StringUtils.isNotBlank(couponCode))` |
 | VAL-002 | 状态校验 | 优惠券必须 status='ACTIVE' 且 expire_time > NOW() | line 28-33 | `mapper.selectActiveCoupon(code)` 返回 null 则无效 |
@@ -506,7 +506,7 @@ FSD 文档
 
 #### 4.2 计算逻辑
 
-| 逻辑 ID | 描述 | Oracle 表达式 | Java 实现 |
+| 逻辑 ID | 描述 | PL/SQL 表达式 | Java 实现 |
 |---------|------|-------------|----------|
 | CALC-001 | 订单明细小计 | `v_quantity * v_item_price` | `quantity.multiply(unitPrice)` |
 | CALC-002 | 累加总金额 | `p_total_amount = p_total_amount + subtotal` | `totalAmount = totalAmount.add(subtotal)` |
@@ -530,12 +530,12 @@ FSD 文档
 
 #### 4.4 边界条件
 
-| 条件 | 处理方式 | Oracle 行为 | Java 映射 |
+| 条件 | 处理方式 | PL/SQL 行为 | Java 映射 |
 |------|---------|------------|----------|
 | 优惠券不存在/已过期 | result_code = 1001，提前退出 | IF v_coupon_id IS NULL THEN SET 1001 | `if (coupon == null) { result.setResultCode(1001); return result; }` |
 | 库存不足 | result_code = 1002，提前退出 | IF v_stock_enough = 0 THEN SET 1002 | `if (stockAvailable == 0) { result.setResultCode(1002); return result; }` |
 | 购物车为空 | result_code = 1003 | 隐含（游标无数据） | `if (cartItems.isEmpty()) { result.setResultCode(1003); return result; }` |
-| 金额精度 | Oracle NUMBER 自动 | DECIMAL(12,2) 精度 | BigDecimal + `setScale(2, HALF_UP)` |
+| 金额精度 | PL/SQL NUMBER 自动 | DECIMAL(12,2) 精度 | BigDecimal + `setScale(2, HALF_UP)` |
 | 并发扣库存 | 存储过程串行执行 | 无锁竞争 | `WHERE available_qty >= #{quantity}` 乐观保护 |
 | 全局异常 | ROLLBACK + result_code = -1 | DECLARE CONTINUE HANDLER | `@Transactional(rollbackFor)` 自动回滚 |
 
@@ -602,7 +602,7 @@ flowchart TD
 
 #### 5.2 分支逻辑
 
-| 分支 ID | 条件 | 真分支 | 假分支 | Oracle 行号 |
+| 分支 ID | 条件 | 真分支 | 假分支 | PL/SQL 行号 |
 |---------|------|--------|--------|------------|
 | BR-001 | coupon_code 不为空 | 查询优惠券 | 跳过优惠券校验 | line 28 |
 | BR-002 | v_coupon_id IS NULL | 返回 1001 | 继续库存校验 | line 34-36 |
@@ -612,16 +612,16 @@ flowchart TD
 
 #### 5.3 循环结构
 
-| 循环 ID | 类型 | Oracle 构造 | Java 映射 | 遍历对象 | 退出条件 |
+| 循环 ID | 类型 | PL/SQL 构造 | Java 映射 | 遍历对象 | 退出条件 |
 |---------|------|------------|----------|---------|---------|
 | LOOP-001 | 游标循环（库存检查） | `OPEN cart_cursor; FETCH ... LOOP` | `for (CartItemDO item : cartItems)` | 购物车商品 | List 遍历完 |
 | LOOP-002 | 游标循环（插入明细） | `OPEN cart_cursor; FETCH ... LOOP` | `for (CartItemDO item : cartItems)` | 购物车商品 | List 遍历完 |
 
-**注意**：Oracle 中同一游标被打开两次（一次校验库存，一次插入明细）。Java 中查询一次 `selectCartItems()` 返回 List，两个 for 循环复用同一个 List。
+**注意**：PL/SQL 中同一游标被打开两次（一次校验库存，一次插入明细）。Java 中查询一次 `selectCartItems()` 返回 List，两个 for 循环复用同一个 List。
 
 #### 5.4 异常处理
 
-| 异常 | Oracle 处理 | Java 映射 | 处理方式 |
+| 异常 | PL/SQL 处理 | Java 映射 | 处理方式 |
 |------|------------|----------|---------|
 | SQLEXCEPTION (全局) | `DECLARE CONTINUE HANDLER → ROLLBACK; result_code = -1` | `@Transactional(rollbackFor = Exception.class)` | Spring 自动回滚 + 方法自然抛出异常 |
 | SELECT INTO 无数据 | (隐式 NO_DATA_FOUND) | 不适用（本 SP 用 COUNT 检查，不依赖 SELECT INTO 单行） | — |
@@ -631,9 +631,9 @@ flowchart TD
 
 ### 6. 特殊语法转化规约
 
-#### 6.1 Oracle → Java 构造映射
+#### 6.1 PL/SQL → Java 构造映射
 
-| # | Oracle 构造 | 出现位置 | Java/MyBatis 等价 | 风险 |
+| # | PL/SQL 构造 | 出现位置 | Java/MyBatis 等价 | 风险 |
 |---|------------|---------|-----------------|------|
 | 1 | `DECLARE cart_cursor CURSOR FOR SELECT ...` | line 18-22 | `mapper.selectCartItems(customerId)` 返回 `List<CartItemDO>` | ✓ 安全 |
 | 2 | `SELECT ... INTO v_coupon_id, v_discount_rate` | line 28-33 | `mapper.selectActiveCoupon(code)` 返回 `CouponDO` 或 null | ✓ 安全 |
@@ -648,7 +648,7 @@ flowchart TD
 
 #### 6.2 事务边界
 
-| Oracle 构造 | Java 映射 |
+| PL/SQL 构造 | Java 映射 |
 |------------|----------|
 | `START TRANSACTION` (line 49) | `@Transactional(rollbackFor = Exception.class)` 在 `processOrder()` 方法上 |
 | `COMMIT` (line 76) | Spring 声明式事务自动提交 |
@@ -660,7 +660,7 @@ flowchart TD
 
 | 构造 | 位置 | 原因 | 建议 |
 |------|------|------|------|
-| 游标复用 | cart_cursor 打开两次 | Oracle 游标用完需 CLOSE 再 OPEN；Java 中 List 可复用 | ✓ 已处理：查询一次 List，两个 for 循环 |
+| 游标复用 | cart_cursor 打开两次 | PL/SQL 游标用完需 CLOSE 再 OPEN；Java 中 List 可复用 | ✓ 已处理：查询一次 List，两个 for 循环 |
 | 折扣精度 | line 63 `v_discount_rate / 100` | DECIMAL(4,2) / INT 精度问题 | 使用 `BigDecimal.divide(HUNDRED, 2, RoundingMode.HALF_UP)` |
 | 并发库存扣减 | line 65-68 | 多线程同时扣减同一商品库存 | UPDATE WHERE 条件加 `AND available_qty >= #{quantity}`，检查影响行数 |
 

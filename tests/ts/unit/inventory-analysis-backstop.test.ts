@@ -17,7 +17,7 @@ import { buildInventoryFromIndex } from "@workflow/inventory-builder"
 import { validateArtifactOnDisk } from "@plugins/workflow-engine"
 import type { WorkflowRun } from "@workflow/engine-core"
 
-const FIXTURE_TINY = resolve(import.meta.dirname, "../fixtures/sql/tiny")
+const FIXTURE_MFG = resolve(import.meta.dirname, "../../../resources/MFG_ERP")
 // 唯一 runId，避免与其他测试/真实 run 冲突
 const RUN_ID = `test-analysis-backstop-${process.pid}`
 
@@ -27,7 +27,7 @@ const ARTIFACTS_DIR = join(".workflow-artifacts", RUN_ID)
 beforeAll(async () => {
   mkdirSync(ARTIFACTS_DIR, { recursive: true })
   // 1) prescan → 内存 InventoryIndex（不落盘）
-  const index = await scanSource(FIXTURE_TINY)
+  const index = await scanSource(FIXTURE_MFG)
   // 2) 纯代码生成 packages.+subprograms.+tables.+inventory.json（不调 generateDependencyGraph —— 模拟 worker 漏调）
   buildInventoryFromIndex(ARTIFACTS_DIR, index)
 }, 60000)
@@ -42,15 +42,15 @@ function makeRun(phase: string): WorkflowRun {
 
 describe("inventory reduce 缺失兜底", () => {
   it("缺 reduce → 引擎兜底：complexity 写入 packages，validateArtifactOnDisk 返回 null", () => {
-    // 兜底前：packages/CORE_PKG.json 无 complexity
-    const coreBefore = JSON.parse(readFileSync(join(ARTIFACTS_DIR, "packages", "CORE_PKG.json"), "utf-8"))
+    // 兜底前：packages/MFG_ERP.F_ITEM.json 无 complexity
+    const coreBefore = JSON.parse(readFileSync(join(ARTIFACTS_DIR, "packages", "MFG_ERP.F_ITEM.json"), "utf-8"))
     expect(coreBefore.complexity).toBeUndefined()
 
     const err = validateArtifactOnDisk(makeRun("inventory"))
     expect(err).toBeNull()
 
     // 兜底后：complexity 已写入
-    const coreAfter = JSON.parse(readFileSync(join(ARTIFACTS_DIR, "packages", "CORE_PKG.json"), "utf-8"))
+    const coreAfter = JSON.parse(readFileSync(join(ARTIFACTS_DIR, "packages", "MFG_ERP.F_ITEM.json"), "utf-8"))
     expect(coreAfter.complexity).toBeDefined()
     expect(coreAfter.complexity.riskLevel).toBe("high")
   })

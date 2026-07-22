@@ -4,7 +4,7 @@
  * 跨 Schema 约定：
  *   - Zod 只做结构校验，语义校验留给 review 阶段
  *   - 引擎层 validateCrossSchema() 负责跨 Schema 语义校验
- *   - 引擎对 Oracle 类型做大小写 normalize
+ *   - 引擎对 PL/SQL 类型做大小写 normalize
  */
 
 import { z } from "zod"
@@ -167,7 +167,7 @@ export const TableArtifactSchema = z.object({
   ddlFile: z.string().nullable().optional(),
   columns: z.array(z.object({
     name: z.string(),
-    oracleType: z.string(),
+    plsqlType: z.string(),
     nullable: z.boolean(),
     isPrimaryKey: z.boolean(),
     defaultValue: z.string().nullable().optional(),
@@ -244,14 +244,14 @@ export const TargetProjectSchema = z.object({
   springBootVersion: z.string(),
 })
 
-/** Oracle Package → Java 包 + per-proc 角色集映射（架构无关：components[] 由注入的 Java 代码规约
+/** PL/SQL Package → Java 包 + per-proc 角色集映射（架构无关：components[] 由注入的 Java 代码规约
  *  分层架构/工程结构章节定义的角色决定，4 文件/DDD/自定义模型通用）。
- *  per-proc 模型：components[] 为角色集模板（role），每个 Oracle 过程/函数按此角色集生成一组
+ *  per-proc 模型：components[] 为角色集模板（role），每个 PL/SQL 过程/函数按此角色集生成一组
  *  per-proc 类，类名 {ProcPascal}{RoleSuffix} 由命名约定派生（规约 §4.1），不再逐类枚举 className。 */
 export const PackageMappingSchema = z.object({
-  /** Oracle schema（大写；inventory packageName 拆点首段）。无 schema 前缀的包为空串。 */
-  oracleSchema: z.string().default(""),
-  oraclePackage: z.string(),
+  /** PL/SQL schema（大写；inventory packageName 拆点首段）。无 schema 前缀的包为空串。 */
+  plsqlSchema: z.string().default(""),
+  plsqlPackage: z.string(),
   /** Java 包 = {packageBase}.{schema-lower}.{pkg-lower}（规约 §工程结构 命名空间嵌套）。 */
   javaPackage: z.string(),
   /** per-proc 角色集模板（规约定义，如 service/service-impl/mapper）。每个过程按此集生成 per-proc 类，
@@ -268,7 +268,7 @@ export const PackageMappingSchema = z.object({
 export const ScaffoldSchema = z.object({
   /** Java 项目配置（原 plan.targetProject；artifactId 不在此，来自 run-context.json） */
   targetProject: TargetProjectSchema,
-  /** Oracle Package → Java 包 + 组件类名映射（架构无关，原 plan.packageMappings） */
+  /** PL/SQL Package → Java 包 + 组件类名映射（架构无关，原 plan.packageMappings） */
   packageMappings: z.array(PackageMappingSchema),
   /** Java 项目输出根目录（绝对路径，由引擎注入，指向 cwd/generated/{artifactId}） */
   projectRoot: z.string(),
@@ -292,8 +292,8 @@ export const ScaffoldSchema = z.object({
      */
     stateHolders: z.array(z.object({
       file: z.string(),
-      oracleSchema: z.string(),
-      oraclePackage: z.string(),
+      plsqlSchema: z.string(),
+      plsqlPackage: z.string(),
     })),
     /** H2 兼容建表脚本路径（相对于 projectRoot） */
     h2SchemaFile: z.string().optional(),
@@ -347,7 +347,7 @@ export const TranslationSchema = z.object({
 
   decisions: z.array(z.object({
     line: z.coerce.number(),
-    oracleConstruct: z.string(),
+    plsqlConstruct: z.string(),
     javaConstruct: z.string(),
     reason: z.string(),
     confidence: z.string(),
@@ -356,7 +356,7 @@ export const TranslationSchema = z.object({
   todos: z.array(z.object({
     file: z.string(),
     issue: z.string(),
-    oracleLine: z.coerce.number(),
+    plsqlLine: z.coerce.number(),
     suggestion: z.string(),
   })),
 
@@ -364,9 +364,9 @@ export const TranslationSchema = z.object({
    * 本包子程序 → Java 调用入口索引，供「依赖本包的后续翻译包」对接跨包调用。
    *
    * translate 按拓扑序逐包翻译：后翻译的包 A 调用本包子程序 y 时，read 本文件、在此按
-   * oracleName 查到 y 的真实 javaClass/javaMethod，避免靠 FSD 预估或命名猜测。
+   * plsqlName 查到 y 的真实 javaClass/javaMethod，避免靠 FSD 预估或命名猜测。
    *
-   * - oracleName：唯一引用名（refName）。非重载=Oracle 原始名；重载=`{name}__{序号}`（1-based，全部带序号），
+   * - plsqlName：唯一引用名（refName）。非重载=PL/SQL 原始名；重载=`{name}__{序号}`（1-based，全部带序号），
    *   与 callGraph key 的 refName、FSD 文件名一致。**唯一性由 refine 强制**（大小写不敏感去重），
    *   避免重载裸名重复导致跨包查找歧义。
    * - javaClass：调用入口的**全限定名**，即规约分层架构章节定义的对外入口角色类（调用方经
@@ -375,13 +375,13 @@ export const TranslationSchema = z.object({
    * - javaFile：入口角色类文件相对路径（可选，便于定位）。
    */
   subprogramMethods: z.array(z.object({
-    oracleName: z.string(),
+    plsqlName: z.string(),
     javaClass: z.string(),
     javaMethod: z.string(),
     javaFile: z.string().nullable().optional(),
   })).refine(
-    (methods) => new Set(methods.map((m) => m.oracleName.toUpperCase())).size === methods.length,
-    { message: "subprogramMethods.oracleName 必须唯一（重载子程序用 {name}__序号 区分，禁用裸名重复）" },
+    (methods) => new Set(methods.map((m) => m.plsqlName.toUpperCase())).size === methods.length,
+    { message: "subprogramMethods.plsqlName 必须唯一（重载子程序用 {name}__序号 区分，禁用裸名重复）" },
   ).default([]),
 }).passthrough()
 
@@ -412,7 +412,7 @@ export const UnitTranslationSchema = z.object({
   })),
   decisions: z.array(z.object({
     line: z.coerce.number(),
-    oracleConstruct: z.string(),
+    plsqlConstruct: z.string(),
     javaConstruct: z.string(),
     reason: z.string(),
     confidence: z.string(),
@@ -420,18 +420,18 @@ export const UnitTranslationSchema = z.object({
   todos: z.array(z.object({
     file: z.string(),
     issue: z.string(),
-    oracleLine: z.coerce.number(),
+    plsqlLine: z.coerce.number(),
     suggestion: z.string(),
   })),
   /** 本单元子程序（本 unit 根）→ Java 调用入口索引；merge 后并入聚合 translation.json */
   subprogramMethods: z.array(z.object({
-    oracleName: z.string(),
+    plsqlName: z.string(),
     javaClass: z.string(),
     javaMethod: z.string(),
     javaFile: z.string().nullable().optional(),
   })).refine(
-    (methods) => new Set(methods.map((m) => m.oracleName.toUpperCase())).size === methods.length,
-    { message: "subprogramMethods.oracleName 必须唯一（重载子程序用 {name}__序号 区分，禁用裸名重复）" },
+    (methods) => new Set(methods.map((m) => m.plsqlName.toUpperCase())).size === methods.length,
+    { message: "subprogramMethods.plsqlName 必须唯一（重载子程序用 {name}__序号 区分，禁用裸名重复）" },
   ).default([]),
 }).passthrough()
 
@@ -537,7 +537,7 @@ export const ReviewStaticFindingSchema = z.object({
   category: z.string(),
   /** 来源工具：checkstyle/pmd/todo/comment/java9api/mybatis/type-mapping/naming/test-completeness */
   tool: z.string(),
-  /** 归因到的 Oracle 包名；归因失败为 "UNKNOWN"（进 __unattributed__ 桶，仍注入 fix） */
+  /** 归因到的 PL/SQL 包名；归因失败为 "UNKNOWN"（进 __unattributed__ 桶，仍注入 fix） */
   packageName: z.string(),
   message: z.string(),
 }).passthrough()

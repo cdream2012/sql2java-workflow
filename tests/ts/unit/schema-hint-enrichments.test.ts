@@ -29,7 +29,7 @@ describe("REFINE_CONSTRAINTS 一致性", () => {
       "有子程序的包应有 bodyPath",
     ],
     translate: [
-      "subprogramMethods.oracleName 必须唯一",
+      "subprogramMethods.plsqlName 必须唯一",
     ],
     review: [
       "passed 与 mustFix 必须一致",
@@ -218,11 +218,11 @@ describe("COMMON_PITFALLS 一致性", () => {
     expect(hasPassedMustFix, "review pitfall 应包含 passed/mustFix 一致性提示").toBe(true)
   })
 
-  it("translate 阶段包含 oracleName 重载提示", () => {
+  it("translate 阶段包含 plsqlName 重载提示", () => {
     const pitfalls = COMMON_PITFALLS["translate"]
     expect(pitfalls).toBeDefined()
-    const hasOracleName = pitfalls!.some(p => p.includes("oracleName") && p.includes("__"))
-    expect(hasOracleName, "translate pitfall 应包含 oracleName 重载序号提示").toBe(true)
+    const hasPlsqlName = pitfalls!.some(p => p.includes("plsqlName") && p.includes("__"))
+    expect(hasPlsqlName, "translate pitfall 应包含 plsqlName 重载序号提示").toBe(true)
   })
 
   it("scaffold 阶段包含 packageMappings 提示（Stage C 合并 plan）", () => {

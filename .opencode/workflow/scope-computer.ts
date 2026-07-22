@@ -39,9 +39,9 @@ export interface InventoryPackageLike {
 export interface ParsedMainEntry {
   /** 入口文件所在子目录（相对 sourcePath），仅作校验；null = 未给 location */
   subdir: string | null
-  /** 包名（Oracle 原始大小写） */
+  /** 包名（PL/SQL 原始大小写） */
   pkg: string
-  /** refName 或裸名（Oracle 原始大小写）；重载须显式给 `name__N` */
+  /** refName 或裸名（PL/SQL 原始大小写）；重载须显式给 `name__N` */
   refName: string
 }
 
@@ -102,7 +102,7 @@ export function resolveEntry(
     return { ok: false, error: `入口包 ${parsed.pkg} 不在 inventory（检查包名拼写）` }
   }
 
-  // 大小写不敏感匹配包名（Oracle 标识符大小写不敏感）
+  // 大小写不敏感匹配包名（PL/SQL 标识符大小写不敏感）
   if (entryPkg.packageName.toUpperCase() !== parsed.pkg.toUpperCase()) {
     return { ok: false, error: `packages 数据包名 ${entryPkg.packageName} 与入口 ${parsed.pkg} 不匹配` }
   }

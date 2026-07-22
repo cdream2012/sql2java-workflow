@@ -90,7 +90,7 @@ permission:
 
 ### 类型映射
 
-Oracle → Java 类型映射见注入的 Java 代码规约 §3.1 Oracle → Java 类型映射表。
+PL/SQL → Java 类型映射见注入的 Java 代码规约 §3.1 PL/SQL → Java 类型映射表。
 
 ---
 
@@ -179,7 +179,7 @@ sub-stage 序列：skeleton → translate-core → test-gen → static-check →
 
 - **上游 artifact**：
   - `${artifactsDir}/packages/{pkg}.json` — 逐包 inventory + complexity（依赖图由引擎按需推导，不落盘）
-  - `${artifactsDir}/scaffold.json` — 包映射（oraclePackage→javaPackage/components[] 组件类名）+ 项目结构
+  - `${artifactsDir}/scaffold.json` — 包映射（plsqlPackage→javaPackage/components[] 组件类名）+ 项目结构
   - `${artifactsDir}/scaffold.json` — 项目结构
   - 触发阶段的 summary（`review-summary.json` 或 `verify-summary.json`）
   - 相关包的 per-package artifact（review.json / verify.json）
@@ -256,7 +256,7 @@ verify 触发的 fix（workOrder 含 `## 未覆盖行清单` 段）需按 jacoco
 ```
 
 **fix.json 约束（D12）**：
-- `fixedPackages` 必须使用 inventory 中的 Oracle 包名（如 `INVENTORY_PKG`）
+- `fixedPackages` 必须使用 inventory 中的 PL/SQL 包名（如 `INVENTORY_PKG`）
 - `fixedPackages` 必须包含触发阶段 summary 中所有失败包（`passed=false` **或** `staticPassed=false`）
 - 不能为空（至少修复一个包）
 
@@ -271,7 +271,7 @@ verify 触发的 fix（workOrder 含 `## 未覆盖行清单` 段）需按 jacoco
 - [ ] review 触发时：每个静态 finding（review-static.json）都有对应修复
 - [ ] verify 触发时：workOrder「## 未覆盖行清单」的每项（class:line）都有对应补测（行补正向用例、分支补缺失 if/else 一支）
 - [ ] fix.json 的 fixedPackages 覆盖所有失败包（passed=false 或 staticPassed=false 或覆盖率不达标包）
-- [ ] fixedPackages 使用 inventory 中的 Oracle 原始包名
+- [ ] fixedPackages 使用 inventory 中的 PL/SQL 原始包名
 - [ ] 修复遵循五原则，不引入新重构
 - [ ] unit 模式下受影响 unit 的 per-unit 文件已更新（聚合 translation.json 由 engine re-merge，不手写）
 - [ ] 更新了对应包的 translation.json

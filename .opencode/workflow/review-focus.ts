@@ -11,7 +11,7 @@
  *     #1→packages/{pkg}.json.complexity；#3/#5/#6/#7→源码 grep（NVL/EXCEPTION/AUTONOMOUS/CURSOR）。
  *     原 #5/#7 读 analysis SubprogramSchema（exceptionHandlers/cursors）、#1 读 plan.manualReviewList
  *     （来自 analysis.translationNotes）已废弃。
- *   - 锚点 = 翻译单元（PROCEDURE），subprogramMethods.oracleName=refName 给 Java 方法定位
+ *   - 锚点 = 翻译单元（PROCEDURE），subprogramMethods.plsqlName=refName 给 Java 方法定位
  *   - 无信号的纯 CRUD/低复杂度过程跳过语义审——靠 Step A 静态扫描兜底（省 LLM）
  *   - 复用 refname.ts 的 refNamesForPackage/pkgOf/refOf 解决重载 refName join
  *
@@ -73,14 +73,14 @@ function buildInvRefMap(artifactsDir: string, pkg: string): {
   return { refMap: m, complexity: (pkgInfo.complexity ?? {}) as { riskLevel?: string } }
 }
 
-/** translations/{pkg}/translation.json → refName → Java 锚点（subprogramMethods.oracleName=refName） */
+/** translations/{pkg}/translation.json → refName → Java 锚点（subprogramMethods.plsqlName=refName） */
 function buildMethodMap(artifactsDir: string, pkg: string): Map<string, JavaAnchor> {
   const m = new Map<string, JavaAnchor>()
   const tr = readJson(join(artifactsDir, "translations", pkg, "translation.json"))
   if (!tr || !Array.isArray(tr.subprogramMethods)) return m
   for (const sm of tr.subprogramMethods) {
-    if (!sm?.oracleName || !sm?.javaMethod) continue
-    m.set(String(sm.oracleName), {
+    if (!sm?.plsqlName || !sm?.javaMethod) continue
+    m.set(String(sm.plsqlName), {
       javaClass: String(sm.javaClass ?? ""),
       javaMethod: String(sm.javaMethod),
       javaFile: sm.javaFile ?? null,
@@ -175,11 +175,11 @@ export function buildReviewFocus(
     const testShells = (scaffold?.generated?.testShells ?? []) as any[]
     const mapperShells = (scaffold?.generated?.mapperTestShells ?? []) as any[]
     for (const sh of testShells) {
-      if (String(sh?.oraclePackage ?? "").toUpperCase() !== pkg.toUpperCase()) continue
+      if (String(sh?.plsqlPackage ?? "").toUpperCase() !== pkg.toUpperCase()) continue
       testFocus.push({ kind: "unit", absFile: absProj(sh.file) ?? String(sh.file), testClass: String(sh.testClass ?? ""), pkg })
     }
     for (const sh of mapperShells) {
-      if (String(sh?.oraclePackage ?? "").toUpperCase() !== pkg.toUpperCase()) continue
+      if (String(sh?.plsqlPackage ?? "").toUpperCase() !== pkg.toUpperCase()) continue
       testFocus.push({ kind: "integration", absFile: absProj(sh.file) ?? String(sh.file), testClass: String(sh.testClass ?? ""), pkg })
     }
   }

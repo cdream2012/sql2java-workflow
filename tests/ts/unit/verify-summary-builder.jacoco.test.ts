@@ -3,7 +3,7 @@
  *
  * 覆盖 buildVerifySummary 的覆盖率链路：
  *   - jacoco.xml 解析（class 级 counter + sourcefile 行级 gap）
- *   - 归因到 Oracle 包
+ *   - 归因到 PL/SQL 包
  *   - coverage.passed 判定（行 90% / 分支 75%）+ 纳入 allPassed
  *   - coverage-gaps.md 三段内容（未覆盖明细 / 未纳入统计范围 / 汇总）
  *   - 无 jacoco.xml 时跳过（不阻断）

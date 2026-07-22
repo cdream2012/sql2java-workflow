@@ -973,7 +973,7 @@ export function healShardIncrementalContext(
 
 /**
  * 大小写不敏感读取入口包的 packages/{pkg}.json + subprograms/{pkg}.*.json（parseInventoryPackage
- * 已做大小写不敏感匹配；Oracle 标识符大小写不敏感，用户给的 mainEntry 包名大小写可能与磁盘文件名不一致）。
+ * 已做大小写不敏感匹配；PL/SQL 标识符大小写不敏感，用户给的 mainEntry 包名大小写可能与磁盘文件名不一致）。
  * 返回 InventoryPackageLike（packageName/headerPath/bodyPath/procedures）或 null。
  */
 function loadEntryPkgRaw(artifactsDir: string, pkg: string): InventoryPackageLike | null {
@@ -1649,7 +1649,7 @@ export function mergeUnitTranslations(artifactsDir: string, pkgName: string): st
 
   const units: { refName: string; status: string }[] = []
   const completed: string[] = []
-  const methods: Array<{ oracleName: string; [k: string]: unknown }> = []
+  const methods: Array<{ plsqlName: string; [k: string]: unknown }> = []
   const files: unknown[] = []
   const decisions: unknown[] = []
   const todos: unknown[] = []
@@ -1673,9 +1673,9 @@ export function mergeUnitTranslations(artifactsDir: string, pkgName: string): st
     todos.push(...(u.todos ?? []))
   }
 
-  // subprogramMethods 按 oracleName 大写去重（后写覆盖先写，理论上同包不重复）
+  // subprogramMethods 按 plsqlName 大写去重（后写覆盖先写，理论上同包不重复）
   const methodMap = new Map<string, any>()
-  for (const m of methods) methodMap.set(String(m.oracleName).toUpperCase(), m)
+  for (const m of methods) methodMap.set(String(m.plsqlName).toUpperCase(), m)
   const dedupMethods = [...methodMap.values()]
 
   const presentRefs = new Set(units.map(u => u.refName))
@@ -1709,7 +1709,7 @@ export function mergeUnitTranslations(artifactsDir: string, pkgName: string): st
  * key = `PKG.SUBPROG`（大写）；value = { javaClass, javaMethod, javaFile, pkg }。
  * 同 key 后写覆盖。每次 mergeUnitTranslations 调用（per-package）增量合并。
  */
-function updateProcedureMap(artifactsDir: string, pkgName: string, methods: Array<{ oracleName?: string; javaClass?: string; javaMethod?: string; javaFile?: string | null }>): void {
+function updateProcedureMap(artifactsDir: string, pkgName: string, methods: Array<{ plsqlName?: string; javaClass?: string; javaMethod?: string; javaFile?: string | null }>): void {
   const mapPath = join(artifactsDir, "translations", "procedure-map.json")
   let map: Record<string, { javaClass: string | null; javaMethod: string | null; javaFile: string | null; pkg: string }> = {}
   try {
@@ -1718,9 +1718,9 @@ function updateProcedureMap(artifactsDir: string, pkgName: string, methods: Arra
     map = {}
   }
   for (const m of methods) {
-    const oracle = String(m.oracleName ?? "")
-    if (!oracle) continue
-    const key = oracle.includes(".") ? oracle.toUpperCase() : `${pkgName}.${oracle}`.toUpperCase()
+    const plsql = String(m.plsqlName ?? "")
+    if (!plsql) continue
+    const key = plsql.includes(".") ? plsql.toUpperCase() : `${pkgName}.${plsql}`.toUpperCase()
     map[key] = {
       javaClass: m.javaClass ?? null,
       javaMethod: m.javaMethod ?? null,
@@ -2937,7 +2937,7 @@ export function generateUnitSlices(
  * 按 analysis.callGraph 把本分片 unit 调用的、已完成 unit 的 Java 方法签名内联到 workOrder，worker
  * 不再 read translations/{pkg}/translation.json（消除"读聚合 translation 顺手全做"+ context 泄漏）。
  * - 同包跨单元 / 跨包已完成：读 translations/{目标包}/translation.json 的 subprogramMethods，按
- *   oracleName（大小写不敏感）匹配 callee ref，注入 {oracleName, javaClass, javaMethod, javaFile}。
+ *   plsqlName（大小写不敏感）匹配 callee ref，注入 {plsqlName, javaClass, javaMethod, javaFile}。
  * - 跨包未完成（拓扑序在后）：输出 TODO 占位，worker 标 TODO，review/fix 兜底（与 translator.md 一致）。
  * - 第一分片无依赖 / callGraph 空 → 返回 ""。
  *
@@ -2958,8 +2958,8 @@ export function buildDependencySignaturesBlock(
   const targetUnitsUpper = new Set(targetUnits.map(u => u.toUpperCase()))
 
   // 包 → 聚合 translation.json 的 subprogramMethods 缓存（多个 callee 命中同包只读一次）
-  const methodsCache = new Map<string, Array<{ oracleName: string; javaClass: string; javaMethod: string; javaFile?: string | null }> | null>()
-  function methodsForPkg(pkg: string): Array<{ oracleName: string; javaClass: string; javaMethod: string; javaFile?: string | null }> | null {
+  const methodsCache = new Map<string, Array<{ plsqlName: string; javaClass: string; javaMethod: string; javaFile?: string | null }> | null>()
+  function methodsForPkg(pkg: string): Array<{ plsqlName: string; javaClass: string; javaMethod: string; javaFile?: string | null }> | null {
     if (methodsCache.has(pkg)) return methodsCache.get(pkg) ?? null
     const p = join(artifactsDir, "translations", pkg, "translation.json")
     if (!existsSync(p)) { methodsCache.set(pkg, null); return null }
@@ -3004,7 +3004,7 @@ export function buildDependencySignaturesBlock(
         continue
       }
       const methods = methodsForPkg(tPkg)
-      const matched = (methods ?? []).filter(m => String(m.oracleName).toUpperCase() === tRef.toUpperCase())
+      const matched = (methods ?? []).filter(m => String(m.plsqlName).toUpperCase() === tRef.toUpperCase())
       if (matched.length === 0) {
         lines.push(`- // TODO: ${callee} 待对接（目标包已翻译但未找到该子程序签名）`)
         unitHas = true

@@ -18,7 +18,7 @@
 1. **去除 SQL 前缀**：禁止保留 `f_`/`r_`/`sp_` 等 SQL 函数/存储过程前缀。
 2. **PascalCase** 大驼峰命名，文件名清晰表达业务功能。
 3. **类型后缀**：必须含相应类型后缀（Service/ServiceImpl/Request/Response/Mapper/DO 等）。
-4. **类名派生**：`{ProcPascal}{RoleSuffix}`（`ProcPascal` = 本过程名转 PascalCase；`RoleSuffix` 按 Java 代码规约 §4.1 命名约定由 role 派生）。**禁止自行编造类名**——查 `{artifactsDir}/scaffold.json` 的 `packageMappings`（本 unit 所属 `oraclePackage` → 映射的 `components[]` 角色集）。
+4. **类名派生**：`{ProcPascal}{RoleSuffix}`（`ProcPascal` = 本过程名转 PascalCase；`RoleSuffix` 按 Java 代码规约 §4.1 命名约定由 role 派生）。**禁止自行编造类名**——查 `{artifactsDir}/scaffold.json` 的 `packageMappings`（本 unit 所属 `plsqlPackage` → 映射的 `components[]` 角色集）。
 5. **命名冲突检查**：同目录不得已有同名文件；不得与相似名混淆；文件名/路径层不得用 Java 关键字（`import`/`package`/`class` 等）。
 
 ## 四、包路径规范

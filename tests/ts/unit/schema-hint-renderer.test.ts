@@ -276,10 +276,10 @@ describe("renderSchemaHint — 常见被拒原因 (COMMON_PITFALLS)", () => {
     expect(hint).toContain("mustFix")
   })
 
-  it("translate 阶段 pitfalls 包含 oracleName 重载序号提示", () => {
+  it("translate 阶段 pitfalls 包含 plsqlName 重载序号提示", () => {
     const hint = renderSchemaHint("translate")
     expect(hint).toContain("⚡ 常见被拒原因")
-    expect(hint).toContain("oracleName")
+    expect(hint).toContain("plsqlName")
     expect(hint).toContain("__序号")
   })
 

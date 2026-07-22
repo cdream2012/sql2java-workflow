@@ -19,7 +19,7 @@ import { scanSource } from "@workflow/plsql-scanner"
 import { buildInventoryFromIndex } from "@workflow/inventory-builder"
 import { buildDependencyGraphFromIndex } from "@workflow/analysis-builder"
 
-const FIXTURE_TINY = resolve(import.meta.dirname, "../fixtures/sql/tiny")
+const FIXTURE_MFG = resolve(import.meta.dirname, "../../../resources/MFG_ERP")
 let engine: WorkflowEngine
 let dir: string
 const runId = "test-substage-advance"
@@ -32,14 +32,14 @@ beforeAll(async () => {
 
   const artifactsDir = join(dir, runId)
   mkdirSync(artifactsDir, { recursive: true })
-  const index = await scanSource(FIXTURE_TINY)
+  const index = await scanSource(FIXTURE_MFG)
   buildInventoryFromIndex(artifactsDir, index)
   buildDependencyGraphFromIndex(artifactsDir)
 }, 60000)
 
 /** 推进到 translate phase（inventory→scaffold→translate；Stage C：plan 已合并入 scaffold） */
 function advanceToTranslate(rid: string) {
-  engine.start("sql2java", rid, { sourcePath: FIXTURE_TINY })
+  engine.start("sql2java", rid, { sourcePath: FIXTURE_MFG })
   for (const _ of ["inventory", "scaffold"]) {
     let r = engine.advance(rid, { result: "passed" })
     if (r.rejected && (r as any).warningPending) {
@@ -61,18 +61,18 @@ describe("translate 主从架构 advance（无 sub-stage 短路）", () => {
     // 注入 1 unit shardPlan（entry 不带 currentSubStage——sub-stage 由 master 内部管）
     run.metadata.shardPlan = {
       phase: "translate", unitMode: true,
-      shards: [["CORE_PKG.get_item"]], completedShards: [],
+      shards: [["MFG_ERP.F_ITEM.get_item"]], completedShards: [],
     }
     const entry = engine.findCurrentEntry(run)!
     entry.incrementalContext = {
-      targetUnits: ["CORE_PKG.get_item"], shardIndex: 0, totalShards: 1,
+      targetUnits: ["MFG_ERP.F_ITEM.get_item"], shardIndex: 0, totalShards: 1,
     }
     engine.persist(run)
 
     // 无 per-unit JSON 短路已删 → advance 直走 G1-unit → status=partial 拒绝
-    mkdirSync(join(artifactsDir, "translations", "CORE_PKG"), { recursive: true })
-    writeFileSync(join(artifactsDir, "translations", "CORE_PKG", "get_item.json"), JSON.stringify({
-      unitRefName: "get_item", packageName: "CORE_PKG", status: "partial",
+    mkdirSync(join(artifactsDir, "translations", "MFG_ERP.F_ITEM"), { recursive: true })
+    writeFileSync(join(artifactsDir, "translations", "MFG_ERP.F_ITEM", "get_item.json"), JSON.stringify({
+      unitRefName: "get_item", packageName: "MFG_ERP.F_ITEM", status: "partial",
       completedSubprograms: [], files: [], decisions: [], todos: [],
       subprogramMethods: [],
     }), "utf-8")
@@ -84,10 +84,10 @@ describe("translate 主从架构 advance（无 sub-stage 短路）", () => {
     expect(adv.rejectionReason).toMatch(/completed|status/i)
 
     // 改写 status=completed → 通过（1 shard → transition 到 dedup）
-    writeFileSync(join(artifactsDir, "translations", "CORE_PKG", "get_item.json"), JSON.stringify({
-      unitRefName: "get_item", packageName: "CORE_PKG", status: "completed",
+    writeFileSync(join(artifactsDir, "translations", "MFG_ERP.F_ITEM", "get_item.json"), JSON.stringify({
+      unitRefName: "get_item", packageName: "MFG_ERP.F_ITEM", status: "completed",
       completedSubprograms: ["get_item"], files: [], decisions: [], todos: [],
-      subprogramMethods: [{ oracleName: "get_item", javaClass: "com.x.ItemAccess", javaMethod: "getItem", javaFile: "ItemAccess.java" }],
+      subprogramMethods: [{ plsqlName: "get_item", javaClass: "com.x.ItemAccess", javaMethod: "getItem", javaFile: "ItemAccess.java" }],
     }), "utf-8")
     let adv2 = engine.advance(rid, { result: "passed" })
     if (adv2.rejected && (adv2 as any).warningPending) {
@@ -107,20 +107,20 @@ describe("translate 主从架构 advance（无 sub-stage 短路）", () => {
     // 2 unit shardPlan：shard0 完成后 advance → shard advance 到 shard1
     run.metadata.shardPlan = {
       phase: "translate", unitMode: true,
-      shards: [["CORE_PKG.get_item"], ["CORE_PKG.put_item"]], completedShards: [],
+      shards: [["MFG_ERP.F_ITEM.get_item"], ["MFG_ERP.F_ITEM.find_item_id"]], completedShards: [],
     }
     const entry = engine.findCurrentEntry(run)!
     entry.incrementalContext = {
-      targetUnits: ["CORE_PKG.get_item"], shardIndex: 0, totalShards: 2,
+      targetUnits: ["MFG_ERP.F_ITEM.get_item"], shardIndex: 0, totalShards: 2,
     }
     engine.persist(run)
 
     // shard0 per-unit JSON completed → advance 触发 shard advance 到 shard1
-    mkdirSync(join(artifactsDir, "translations", "CORE_PKG"), { recursive: true })
-    writeFileSync(join(artifactsDir, "translations", "CORE_PKG", "get_item.json"), JSON.stringify({
-      unitRefName: "get_item", packageName: "CORE_PKG", status: "completed",
+    mkdirSync(join(artifactsDir, "translations", "MFG_ERP.F_ITEM"), { recursive: true })
+    writeFileSync(join(artifactsDir, "translations", "MFG_ERP.F_ITEM", "get_item.json"), JSON.stringify({
+      unitRefName: "get_item", packageName: "MFG_ERP.F_ITEM", status: "completed",
       completedSubprograms: ["get_item"], files: [], decisions: [], todos: [],
-      subprogramMethods: [{ oracleName: "get_item", javaClass: "com.x.ItemAccess", javaMethod: "getItem", javaFile: "ItemAccess.java" }],
+      subprogramMethods: [{ plsqlName: "get_item", javaClass: "com.x.ItemAccess", javaMethod: "getItem", javaFile: "ItemAccess.java" }],
     }), "utf-8")
     let adv = engine.advance(rid, { result: "passed" })
     if (adv.rejected && (adv as any).warningPending) {
@@ -130,7 +130,7 @@ describe("translate 主从架构 advance（无 sub-stage 短路）", () => {
 
     const nextEntry = engine.findCurrentEntry(engine.status(rid)!)!
     expect(nextEntry.incrementalContext?.shardIndex).toBe(1)
-    expect(nextEntry.incrementalContext?.targetUnits).toEqual(["CORE_PKG.put_item"])
+    expect(nextEntry.incrementalContext?.targetUnits).toEqual(["MFG_ERP.F_ITEM.find_item_id"])
     // 关键：新 entry 不带 currentSubStage
     expect(nextEntry.incrementalContext?.currentSubStage).toBeUndefined()
   })
@@ -143,18 +143,18 @@ describe("translate 主从架构 advance（无 sub-stage 短路）", () => {
     const run = advanceToTranslate(rid)
     run.metadata.shardPlan = {
       phase: "translate", unitMode: true,
-      shards: [["CORE_PKG.get_item"]], completedShards: [],
+      shards: [["MFG_ERP.F_ITEM.get_item"]], completedShards: [],
     }
     const entry = engine.findCurrentEntry(run)!
-    entry.incrementalContext = { targetUnits: ["CORE_PKG.get_item"], shardIndex: 0, totalShards: 1 }
+    entry.incrementalContext = { targetUnits: ["MFG_ERP.F_ITEM.get_item"], shardIndex: 0, totalShards: 1 }
     engine.persist(run)
 
     // per-unit JSON completed，但缺 lint.json + fsd .md（master 漏派 static-check/fsd）
-    mkdirSync(join(artifactsDir, "translations", "CORE_PKG"), { recursive: true })
-    writeFileSync(join(artifactsDir, "translations", "CORE_PKG", "get_item.json"), JSON.stringify({
-      unitRefName: "get_item", packageName: "CORE_PKG", status: "completed",
+    mkdirSync(join(artifactsDir, "translations", "MFG_ERP.F_ITEM"), { recursive: true })
+    writeFileSync(join(artifactsDir, "translations", "MFG_ERP.F_ITEM", "get_item.json"), JSON.stringify({
+      unitRefName: "get_item", packageName: "MFG_ERP.F_ITEM", status: "completed",
       completedSubprograms: ["get_item"], files: [], decisions: [], todos: [],
-      subprogramMethods: [{ oracleName: "get_item", javaClass: "com.x.ItemAccess", javaMethod: "getItem", javaFile: "ItemAccess.java" }],
+      subprogramMethods: [{ plsqlName: "get_item", javaClass: "com.x.ItemAccess", javaMethod: "getItem", javaFile: "ItemAccess.java" }],
     }), "utf-8")
     let adv = engine.advance(rid, { result: "passed" })
     if (adv.rejected && (adv as any).warningPending) {

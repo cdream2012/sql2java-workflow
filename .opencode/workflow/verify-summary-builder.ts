@@ -38,7 +38,7 @@ interface PkgFiles { javaFiles: string[] }
 
 interface JacocoGap { className: string; line: number; type: "line" | "branch" }
 interface JacocoClass {
-  /** 源文件相对路径（package name + sourcefilename，/ 分隔），用于归因到 Oracle 包 */
+  /** 源文件相对路径（package name + sourcefilename，/ 分隔），用于归因到 PL/SQL 包 */
   relPath: string
   sourceFileName: string
   lineMissed: number
@@ -336,7 +336,7 @@ function testBelongsToPkg(
   mappings: PkgMappingLite[],
   pkg: string,
 ): boolean {
-  const m = mappings.find(mp => mp.oraclePackage?.toUpperCase() === pkg.toUpperCase())
+  const m = mappings.find(mp => mp.plsqlPackage?.toUpperCase() === pkg.toUpperCase())
   if (!m || !m.javaPackage) return false
   const tc = String(testClass ?? "").toLowerCase()
   return tc.startsWith(String(m.javaPackage).toLowerCase() + ".")
@@ -473,11 +473,11 @@ function buildCoverage(artifactsDir: string, projectRoot: string, packages: stri
   }
   classes = businessClasses
 
-  // pkg → files 缓存（复用 locatePkgFiles，按 Oracle 包归因）
+  // pkg → files 缓存（复用 locatePkgFiles，按 PL/SQL 包归因）
   const pkgFilesCache = new Map<string, PkgFiles>()
   for (const pkg of packages) pkgFilesCache.set(pkg.toUpperCase(), locatePkgFiles(artifactsDir, pkg, warnings))
 
-  const byPkg = new Map<string, JacocoClass[]>() // key = Oracle 包名或 GLOBAL
+  const byPkg = new Map<string, JacocoClass[]>() // key = PL/SQL 包名或 GLOBAL
   for (const c of classes) {
     const owner = packages.find(p => classBelongsToPkg(c.relPath, pkgFilesCache.get(p.toUpperCase())!)) ?? "GLOBAL"
     const arr = byPkg.get(owner) ?? []

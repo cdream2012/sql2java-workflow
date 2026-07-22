@@ -155,9 +155,9 @@ interface RunMetrics {
 /** 运行级业务汇总 */
 interface RunBusinessData {
   sourcePath?: string
-  oraclePackageCount?: number
-  oracleProcedureCount?: number
-  oracleTableCount?: number
+  plsqlPackageCount?: number
+  plsqlProcedureCount?: number
+  plsqlTableCount?: number
   javaFileCount?: number
   reviewAverageScore?: number
   reviewPassedRate?: number
@@ -693,9 +693,9 @@ function buildRunBusinessData(phases: PhaseMetrics[], run: WorkflowRun): RunBusi
   const verify = phases.find(p => p.phase === "verify" && !p.fixIndex)
 
   if (inventory?.business) {
-    biz.oraclePackageCount = inventory.business.packageCount
-    biz.oracleProcedureCount = inventory.business.totalProcedureCount
-    biz.oracleTableCount = inventory.business.tableCount
+    biz.plsqlPackageCount = inventory.business.packageCount
+    biz.plsqlProcedureCount = inventory.business.totalProcedureCount
+    biz.plsqlTableCount = inventory.business.tableCount
   }
   if (translate?.business) {
     biz.javaFileCount = translate.business.generatedJavaFileCount
@@ -803,7 +803,7 @@ function formatBusinessLines(phase: string, biz: PhaseBusinessData): string[] {
 
   switch (phase) {
     case "inventory":
-      fmt("Oracle 包:", biz.packageCount)
+      fmt("PL/SQL 包:", biz.packageCount)
       fmt("表:", biz.tableCount)
       fmt("触发器:", biz.triggerCount)
       fmt("视图:", biz.viewCount)
@@ -924,9 +924,9 @@ function formatFinalReport(rm: RunMetrics): string {
     const d = typeof v === "boolean" ? (v ? "PASS" : "FAIL") : String(v)
     lines.push(`  ${l.padEnd(14)} ${d}`)
   }
-  if (b.oraclePackageCount != null) bizLine("Oracle 包:", b.oraclePackageCount)
-  if (b.oracleProcedureCount != null) bizLine("子程序:", b.oracleProcedureCount)
-  if (b.oracleTableCount != null) bizLine("表:", b.oracleTableCount)
+  if (b.plsqlPackageCount != null) bizLine("PL/SQL 包:", b.plsqlPackageCount)
+  if (b.plsqlProcedureCount != null) bizLine("子程序:", b.plsqlProcedureCount)
+  if (b.plsqlTableCount != null) bizLine("表:", b.plsqlTableCount)
   if (b.javaFileCount != null) bizLine("Java 文件:", b.javaFileCount)
   if (b.reviewAverageScore != null) bizLine("Review 均分:", b.reviewAverageScore)
   if (b.reviewPassedRate != null) bizLine("通过率:", b.reviewPassedRate + "%")

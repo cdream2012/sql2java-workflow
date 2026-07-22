@@ -18,7 +18,7 @@ import { scanSource } from "@workflow/plsql-scanner"
 import { buildInventoryFromIndex } from "@workflow/inventory-builder"
 import { buildDependencyGraphFromIndex } from "@workflow/analysis-builder"
 
-const FIXTURE_TINY = resolve(import.meta.dirname, "../fixtures/sql/tiny")
+const FIXTURE_MFG = resolve(import.meta.dirname, "../../../resources/MFG_ERP")
 let engine: WorkflowEngine
 let dir: string
 const runId = "test-shard-advance-unit"
@@ -31,7 +31,7 @@ beforeAll(async () => {
 
   const artifactsDir = join(dir, runId)
   mkdirSync(artifactsDir, { recursive: true })
-  const index = await scanSource(FIXTURE_TINY)
+  const index = await scanSource(FIXTURE_MFG)
   buildInventoryFromIndex(artifactsDir, index)
   buildDependencyGraphFromIndex(artifactsDir) // 产出 dependency-graph.json（含 procedureOrder）
 }, 60000)
@@ -45,7 +45,7 @@ describe("engine.advance 分片推进 — unitMode 字段", () => {
     const srcArtifactsDir = join(dir, runId)
     cpSync(srcArtifactsDir, txArtifactsDir, { recursive: true })
 
-    engine.start("sql2java", txRunId, { sourcePath: FIXTURE_TINY })
+    engine.start("sql2java", txRunId, { sourcePath: FIXTURE_MFG })
     // 推进到 translate（inventory→scaffold→translate；Stage C：plan 合并入 scaffold），acceptWarnings 绕过 engine-core 的轻量校验
     const phases = ["inventory", "scaffold"]
     for (const _ of phases) {
@@ -63,19 +63,19 @@ describe("engine.advance 分片推进 — unitMode 字段", () => {
     runAtTranslate.metadata.shardPlan = {
       phase: "translate",
       unitMode: true,
-      shards: [["CORE_PKG.get_item"], ["CORE_PKG.get_item_obj"]],
+      shards: [["MFG_ERP.F_ITEM.get_item"], ["MFG_ERP.F_ITEM.get_item_obj"]],
       completedShards: [],
     }
     const entry = engine.findCurrentEntry(runAtTranslate)!
-    entry.incrementalContext = { targetUnits: ["CORE_PKG.get_item"], shardIndex: 0, totalShards: 2 }
+    entry.incrementalContext = { targetUnits: ["MFG_ERP.F_ITEM.get_item"], shardIndex: 0, totalShards: 2 }
     engine.persist(runAtTranslate)
 
     // 写 shard 0 的 per-unit translation（G1-unit 要求 status=completed）
-    mkdirSync(join(txArtifactsDir, "translations", "CORE_PKG"), { recursive: true })
-    writeFileSync(join(txArtifactsDir, "translations", "CORE_PKG", "get_item.json"), JSON.stringify({
-      unitRefName: "get_item", packageName: "CORE_PKG", status: "completed",
+    mkdirSync(join(txArtifactsDir, "translations", "MFG_ERP.F_ITEM"), { recursive: true })
+    writeFileSync(join(txArtifactsDir, "translations", "MFG_ERP.F_ITEM", "get_item.json"), JSON.stringify({
+      unitRefName: "get_item", packageName: "MFG_ERP.F_ITEM", status: "completed",
       completedSubprograms: ["get_item"], files: [], decisions: [], todos: [],
-      subprogramMethods: [{ oracleName: "get_item", javaClass: "com.x.ItemAccessIntf", javaMethod: "getItem" }],
+      subprogramMethods: [{ plsqlName: "get_item", javaClass: "com.x.ItemAccessIntf", javaMethod: "getItem" }],
     }), "utf-8")
 
     // 推进 shard 0 → shard 1（G1-unit 校验 + 跨 schema warning 自动接受）
@@ -90,7 +90,7 @@ describe("engine.advance 分片推进 — unitMode 字段", () => {
     const nextEntry = engine.findCurrentEntry(run2)!
     expect(nextEntry.incrementalContext?.shardIndex).toBe(1)
     // ★ 核心断言：translate unitMode 下用 targetUnits，不是 targetPackages
-    expect(nextEntry.incrementalContext?.targetUnits).toEqual(["CORE_PKG.get_item_obj"])
+    expect(nextEntry.incrementalContext?.targetUnits).toEqual(["MFG_ERP.F_ITEM.get_item_obj"])
     expect(nextEntry.incrementalContext?.targetPackages).toBeUndefined()
     // 主从架构：新 shard entry 不带 currentSubStage（sub-stage 由 master 内部管）
     expect(nextEntry.incrementalContext?.currentSubStage).toBeUndefined()

@@ -1,6 +1,6 @@
 -- F_DIALECT.sql — GaussDB/openGauss 方言构造回归基线
 --
--- 用途：集中放 Oracle grammar 不支持的 GaussDB 方言构造，作为 grammar 增强的回归基线。
+-- 用途：集中放 PL/SQL grammar 不支持的 GaussDB 方言构造，作为 grammar 增强的回归基线。
 --   当前（grammar 未增强）跑 parseFileAst 应报语法错误 + 漏抽 ::/LIMIT 之后的调用；
 --   grammar 补 limit_clause / GET DIAGNOSTICS / :: 类型转换后，应 0 语法错误 +
 --   每个过程的 helper_ok / F_UTIL.f_log 调用都不漏抽 + 所有过程都被识别。
@@ -17,7 +17,7 @@ CREATE OR REPLACE PACKAGE BODY MFG_ERP.F_DIALECT AS
     NULL;
   END helper_ok;
 
-  -- 1. :: 类型转换（GaussDB PG 风格，Oracle 用 CAST）——结构性致命，验证不级联吞后续过程
+  -- 1. :: 类型转换（GaussDB PG 风格，PL/SQL 用 CAST）——结构性致命，验证不级联吞后续过程
   PROCEDURE p_cast IS
     v INTEGER;
   BEGIN
@@ -26,7 +26,7 @@ CREATE OR REPLACE PACKAGE BODY MFG_ERP.F_DIALECT AS
     F_UTIL.f_log('cast');
   END p_cast;
 
-  -- 2. LIMIT 分页（GaussDB/MySQL 风格，Oracle 用 ROWNUM / FETCH FIRST）
+  -- 2. LIMIT 分页（GaussDB/MySQL 风格，PL/SQL 用 ROWNUM / FETCH FIRST）
   PROCEDURE p_limit IS
     v INTEGER;
   BEGIN
@@ -50,7 +50,7 @@ CREATE OR REPLACE PACKAGE BODY MFG_ERP.F_DIALECT AS
     F_UTIL.f_log('limit_offset');
   END p_limit_offset;
 
-  -- 3. GET DIAGNOSTICS var = ROW_COUNT（openGauss 过程语句，Oracle 用 SQL%ROWCOUNT）
+  -- 3. GET DIAGNOSTICS var = ROW_COUNT（openGauss 过程语句，PL/SQL 用 SQL%ROWCOUNT）
   PROCEDURE p_diag IS
     v INTEGER;
   BEGIN
@@ -104,7 +104,7 @@ CREATE OR REPLACE PACKAGE BODY MFG_ERP.F_DIALECT AS
     helper_ok;
   END p_dollar;
 
-  -- 8. 无参过程/函数空括号 PROCEDURE p()（openGauss 方言，Oracle 写 PROCEDURE p 无括号）
+  -- 8. 无参过程/函数空括号 PROCEDURE p()（openGauss 方言，PL/SQL 写 PROCEDURE p 无括号）
   --    spec/body/standalone 的 parameter 列表改为允许空 ()
   PROCEDURE p_empty_paren() IS
   BEGIN

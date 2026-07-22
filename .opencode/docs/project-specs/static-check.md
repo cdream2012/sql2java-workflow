@@ -39,7 +39,7 @@
 | 1 | 逻辑等价 | 分支条件/循环边界/赋值顺序一致 |
 | 2 | SQL 完整性 | 每条 DML 有对应 Mapper 映射 |
 | 3 | 空值处理 | NVL/COALESCE/IS NULL 已处理 |
-| 4 | 类型映射 | Oracle→Java 类型按规约 §3.1 |
+| 4 | 类型映射 | PL/SQL→Java 类型按规约 §3.1 |
 | 5 | 异常映射 | EXCEPTION 块→try-catch |
 | 6 | 事务边界 | AUTONOMOUS_TRANSACTION 等 |
 | 7 | 游标映射 | OPEN/FETCH/CLOSE→for-each |

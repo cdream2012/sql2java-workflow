@@ -75,7 +75,7 @@ export function buildInventoryFromIndex(artifactsDir: string, idx: InventoryInde
     }
     // 软校验：包声明了子程序（procedures/functions 非空）但 bodyPath=null —— 无法翻译过程体。
     // 旧 InventoryPackageSchema 的 refine(procedures⇒bodyFile) 是硬门控，但会误伤合法的 spec-only 包
-    //（Oracle 允许仅 spec 声明），故此处降为非阻塞警告：scanner 漏收 body / 手写产物缺 body 时可见。
+    //（PL/SQL 允许仅 spec 声明），故此处降为非阻塞警告：scanner 漏收 body / 手写产物缺 body 时可见。
     const subCount = (Array.isArray(p.procedures) ? p.procedures.length : 0) + (Array.isArray(p.functions) ? p.functions.length : 0)
     if (subCount > 0 && !p.bodyPath) {
       warnings.push(`包 ${p.packageName} 声明了 ${subCount} 个子程序但 bodyPath 为空（无法翻译过程体，检查 body 文件是否漏收集）`)

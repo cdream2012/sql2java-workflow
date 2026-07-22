@@ -191,7 +191,7 @@ function finalizeInventoryIndex(
   // 未解析调用 warning：callee 非本项目子程序时记一条（去重，按 caller->callee 不含行号），
   // 供排查简称未命中 / 拼写错 / 外部依赖。**仅对限定调用（2/3 段，c.package !== callerPkg）记
   // warning**——裸名调用（c.package === callerPkg）含大量类型构造器 t_rec()、集合访问 arr(i)、
-  // 变量方法 obj.ext 等非过程调用噪声，静默丢弃不 warn。Oracle SYS 工具包（DBMS_/UTL_/HTP/HTF）
+  // 变量方法 obj.ext 等非过程调用噪声，静默丢弃不 warn。PL/SQL SYS 工具包（DBMS_/UTL_/HTP/HTF）
   // 亦静默。边仍丢弃。仅 directCalls 记 warning——packageRefs 捕获大量 localRecord.field / table.col
   // 噪声，不记 warning（schema 归一化修复照常生效，仅未解析时静默丢弃）。
   const warnedUnresolved = new Set<string>()

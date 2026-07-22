@@ -69,10 +69,10 @@ beforeAll(() => {
     packageName: "PKG_A", status: "done", completedSubprograms: ["get_item", "update_status", "create_order", "simple_crud"],
     totalSubprograms: 4,
     subprogramMethods: [
-      { oracleName: "get_item", javaClass: "FooAccessIntf", javaMethod: "getItem", javaFile: "src/main/java/com/x/access/FooAccessIntf.java" },
-      { oracleName: "update_status", javaClass: "FooAccessIntf", javaMethod: "updateStatus", javaFile: "src/main/java/com/x/access/FooAccessIntf.java" },
-      { oracleName: "create_order", javaClass: "FooAccessIntf", javaMethod: "createOrder", javaFile: "src/main/java/com/x/access/FooAccessIntf.java" },
-      { oracleName: "simple_crud", javaClass: "FooAccessIntf", javaMethod: "simpleCrud", javaFile: "src/main/java/com/x/access/FooAccessIntf.java" },
+      { plsqlName: "get_item", javaClass: "FooAccessIntf", javaMethod: "getItem", javaFile: "src/main/java/com/x/access/FooAccessIntf.java" },
+      { plsqlName: "update_status", javaClass: "FooAccessIntf", javaMethod: "updateStatus", javaFile: "src/main/java/com/x/access/FooAccessIntf.java" },
+      { plsqlName: "create_order", javaClass: "FooAccessIntf", javaMethod: "createOrder", javaFile: "src/main/java/com/x/access/FooAccessIntf.java" },
+      { plsqlName: "simple_crud", javaClass: "FooAccessIntf", javaMethod: "simpleCrud", javaFile: "src/main/java/com/x/access/FooAccessIntf.java" },
     ],
     files: [{ path: "src/main/java/com/x/access/FooAccessIntf.java", role: "access-intf" }],
   }))
@@ -82,8 +82,8 @@ beforeAll(() => {
     projectRoot: projectRoot,
     structure: { directories: [], pomXml: "" },
     generated: {
-      testShells: [{ file: "src/test/java/com/x/service/impl/FooServiceImplTest.java", oraclePackage: "PKG_A", testClass: "FooServiceImplTest" }],
-      mapperTestShells: [{ file: "src/test/java/com/x/FooMapperIntegrationTest.java", oraclePackage: "PKG_A", testClass: "FooMapperIntegrationTest", mapperInterface: "FooMapper" }],
+      testShells: [{ file: "src/test/java/com/x/service/impl/FooServiceImplTest.java", plsqlPackage: "PKG_A", testClass: "FooServiceImplTest" }],
+      mapperTestShells: [{ file: "src/test/java/com/x/FooMapperIntegrationTest.java", plsqlPackage: "PKG_A", testClass: "FooMapperIntegrationTest", mapperInterface: "FooMapper" }],
     },
   }))
 })

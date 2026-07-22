@@ -1,5 +1,5 @@
 ---
-description: "Oracle PL/SQL → Spring Boot + MyBatis 端到端转译命令。支持全流程、断点续传、指定阶段执行和状态查看。"
+description: "PL/SQL → Spring Boot + MyBatis 端到端转译命令。支持全流程、断点续传、指定阶段执行和状态查看。"
 permission:
   tool: allow
   bash: allow
