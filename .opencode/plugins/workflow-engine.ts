@@ -389,6 +389,7 @@ function clearWorkflowContext(): void {
   _cachedUserSpec = null
   _cachedUserSpecMtime = null
   _cachedUserSpecPath = null
+  _cachedProjectSpecs.clear()
   destroyLogger()
 }
 
@@ -418,6 +419,49 @@ function readJavaCodeSpec(): string {
     return content
   } catch {
     getLogger().warn("[workflow-engine]", `Java 代码规约文件未找到或不可读: ${specPath}`)
+    return ""
+  }
+}
+
+// ── per-agent 项目规约（project-spec）注入 ──
+//
+// 与 java-code-spec（通用 Java 规约，JAVA_SPEC_AGENTS 白名单统一注入）不同，project-spec 是
+// 每个 translate 子 agent / master 各自专属的「项目硬规则」md（融合自 ~/Desktop/specs，已适配本工作流）。
+// 按 agent .md basename 查映射表，命中则读对应 md（mtime 感知缓存）注入 system prompt 的独立段。
+// 未命中 / 文件缺失返回空串（.filter 跳过），不影响其它 agent。
+const PROJECT_SPEC_MAP: Record<string, string> = {
+  "translate-skeleton.md": "docs/project-specs/skeleton.md",
+  "translate-core.md": "docs/project-specs/translate-core.md",
+  "translate-test.md": "docs/project-specs/test-gen.md",
+  "translate-lint.md": "docs/project-specs/static-check.md",
+  "translate-compile.md": "docs/project-specs/compile.md",
+  "translate-fsd.md": "docs/project-specs/fsd.md",
+  "translator.md": "docs/project-specs/translator.md",
+}
+
+/** 缓存：specPath → { content, mtime }（缺失时不缓存，每次重试，语义同 readJavaCodeSpec） */
+const _cachedProjectSpecs = new Map<string, { content: string; mtime: number }>()
+
+/** 读取 agent 专属 project-spec（按 effectiveAgentFile basename 查映射表，mtime 感知缓存）。
+ *  未命中映射 / 文件缺失 → 返回空串。 */
+function readProjectSpec(effectiveAgentFile: string): string {
+  if (!effectiveAgentFile) return ""
+  const base = basename(effectiveAgentFile)
+  const rel = PROJECT_SPEC_MAP[base]
+  if (!rel) return ""
+  const specPath = join(findOpencodeDir(), rel)
+  try {
+    const stat = statSync(specPath)
+    const mtime = stat.mtimeMs
+    const cached = _cachedProjectSpecs.get(rel)
+    if (cached && cached.mtime === mtime) {
+      return cached.content
+    }
+    const content = readFileSync(specPath, "utf-8").trim()
+    _cachedProjectSpecs.set(rel, { content, mtime })
+    return content
+  } catch {
+    getLogger().warn("[workflow-engine]", `Project spec 文件未找到或不可读: ${specPath}`)
     return ""
   }
 }
@@ -1187,7 +1231,8 @@ export function buildShardedWorkerOrder(
 }
 
 /**
- * 构建完整 system prompt（6 段拼装）—— dispatch 与 system.transform 共用的单一来源。
+ * 构建完整 system prompt（7 段拼装：workOrder/shardBanner、common、phaseSection、javaCodeSpec、
+ * projectSpec、sharedInstructions、runtimeContext）—— dispatch 与 system.transform 共用的单一来源。
  *
  * 把原 system.transform hook 内的拼装逻辑提取为纯函数：读 agent .md 切 common/phaseSection，
  * 叠加 javaCodeSpec（含 --spec 整体替换分支）/ sharedInstructions / runtimeContext，前置 workOrder 段
@@ -1267,7 +1312,9 @@ function buildFullSystemPrompt(
   } else {
     javaCodeSpec = ""
   }
-  // 6. shardBanner（workOrder 缺失时作 parts[0] 兜底）
+  // 6. project-spec（agent 专属项目硬规则，按 effectiveAgentFile basename 注入；未命中返回空串）
+  const projectSpec = readProjectSpec(effectiveAgentFile)
+  // 7. shardBanner（workOrder 缺失时作 parts[0] 兜底）
   const shardBanner = run ? buildShardScopeBanner(run) : ""
   const hasWorkOrder = !!workOrder
   const parts = [
@@ -1275,6 +1322,7 @@ function buildFullSystemPrompt(
     common,
     phaseSection,
     javaCodeSpec,
+    projectSpec,
     sharedInstructions,
     hasWorkOrder ? "" : (runtimeContext ? "## Runtime Context\n\n" + runtimeContext : ""),
   ].filter((p) => p !== "")
@@ -5080,7 +5128,7 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
       }
 
       // 主路径：读 dispatch 落盘的完整 system prompt（落盘=注入=审核三者一致，单一来源）。
-      // dispatch 时已用 buildFullSystemPrompt 拼好 6 段，此处直接注入，不再现场拼。
+      // dispatch 时已用 buildFullSystemPrompt 拼好 7 段，此处直接注入，不再现场拼。
       if (run) {
         try {
           const full = readPersistedSystemPrompt(artDir, currentWorkflowContext.phase, si, ss)

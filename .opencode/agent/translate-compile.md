@@ -31,10 +31,7 @@ permission:
 - 无 JDK → 降级跳过 javac（记录 skipReason），语法正确性由 verify 兜底。
 
 ### 2. 封口
-本 unit 语法通过后，写 per-unit JSON `translations/{pkg}/{ref}.json`：
-- `status: "completed"`
-- `subprogramMethods`：本 unit 所有子程序（根 + cargo）→ Java 类/方法/文件映射，**javaFile 必须填全**（lint 子阶段已核对）。
-- `completedSubprograms`、`files`、`decisions`、`todos` 等按 UnitTranslationSchema 填。
+本 unit 语法通过后，写 per-unit JSON `translations/{pkg}/{ref}.json`：`status: "completed"` + `subprogramMethods`（子程序→Java 类/方法/文件映射，**javaFile 必须填全**，这是项目代码索引）+ `completedSubprograms`/`files`/`decisions`/`todos`。封口字段与索引字段要求详见注入的 **compile project-spec**，此处不重复。
 - 聚合 `translations/{pkg}/translation.json` 由 engine 自动 merge，**不直接写**。
 
 ## 输出

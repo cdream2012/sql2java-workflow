@@ -21,19 +21,10 @@ permission:
 
 ## 职责
 
-对本 unit 的 per-proc Java 文件（实现 + 测试）执行两步检查：
+对本 unit 的 per-proc Java 文件（实现 + 测试）执行两步检查（机械检查项 + 语义自审 9 类信号 + 命名/包路径/异常/只增不删 diff 检查的判定标准详见注入的 **static-check project-spec**，此处不重复）：
 
-**Step 1 — 机械检查（确定性）**：
-- **TODO 残留统计**：grep `// TODO: [translate]` 残留（translate-core 应已全清，残留即问题）。
-- **checkstyle / pmd**：若环境可用，跑规约扫描；不可用则降级为 grep 级检查。
-- **语法快查**：括号/分号/关键字等明显语法问题。
-- **subprogramMethods javaFile 完整性**：核对 per-unit 映射的 javaFile 非空（compile 封口前门禁）。
-
-**Step 2 — 语义自审（LLM，对照源码）**：
-- 读本 unit 的 per-proc Java 文件（translate-core 产出）+ PL/SQL 切片 `shard-inputs/{pkg}/{ref}/source.sql` + 依赖签名块。
-- 按 #1-#9 语义信号核对 Java 是否忠实反映 PL/SQL（信号同 reviewer 21 类清单的语义子集，规约由引擎注入不重复）：
-  - #1 逻辑等价（分支条件/循环边界/赋值顺序）、#2 SQL 完整性（每条 DML 有对应 Mapper 映射）、#3 空值处理（NVL/COALESCE/IS NULL）、#4 类型映射（§3.1）、#5 异常映射（EXCEPTION 块→try-catch）、#6 事务边界（AUTONOMOUS_TRANSACTION 等）、#7 游标映射、#8 参数方向（IN/OUT/IN OUT）、#9 命名追溯（过程名↔方法名可追溯）。
-- 每条 finding 记 `{signal, file, line, severity, issue}`；severity: critical/major/minor。无问题则 `selfReviewPassed: true`。
+- **Step 1 — 机械检查（确定性）**：TODO 残留统计 / checkstyle·pmd（不可用降级 grep）/ 语法快查 / subprogramMethods javaFile 完整性（compile 封口前门禁）。
+- **Step 2 — 语义自审（LLM，对照源码）**：读 per-proc Java + `shard-inputs/{pkg}/{ref}/source.sql` + 依赖签名块，按 #1-#9 语义信号（逻辑等价/SQL完整性/空值/类型/异常/事务/游标/参数方向/命名追溯）核对忠实度。每条 finding 记 `{signal, file, line, severity, issue}`；无问题则 `selfReviewPassed: true`。
 
 **非阻塞**：findings 记录到 lint.json，**不修复**（交 fix 阶段）、**不 fail unit**——status 恒 completed。语义 findings 是信息性记录（review 短路期间为唯一 per-unit 审查；review 恢复后可喂给全局 review）。
 

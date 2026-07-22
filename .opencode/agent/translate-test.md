@@ -24,8 +24,8 @@ permission:
 ## 职责
 
 - 读 translate-core 产出的本 unit per-proc Java 文件 + scaffold 的 `schema-h2.sql`（H2 建表脚本）。**scaffold 不再生成测试骨架**——你直接 `write` 完整 per-proc 测试类。
-- 为本 unit 的业务实现类（规约定义的业务实现角色）生成 per-proc 单元测试：类名按规约 §4.1 派生（`{ProcPascal}{业务实现后缀}Test`），`@ExtendWith(MockitoExtension.class)` + `@Mock` Mapper 依赖 + `@InjectMocks` 被测业务实现类。覆盖本过程的方法（方法名查 core 产出或依赖签名块）。
-- 为本 unit 的每个 SQL statement 生成 per-proc Mapper 集成测试：类名 `{ProcPascal}MapperIntegrationTest`，`@MybatisTest` + `@AutoConfigureTestDatabase(replace=NONE)` + `@Sql("classpath:schema-h2.sql")` + `@Autowired` Mapper。
+- 为本 unit 的业务实现类（规约定义的业务实现角色）生成 per-proc 单元测试：类名按规约 §4.1 派生（`{ProcPascal}{业务实现后缀}Test`），覆盖本过程的方法（方法名查 core 产出或依赖签名块）。Mockito 注解骨架、Mock 策略、单函数多覆盖模式、断言要求详见注入的 **test-gen project-spec**，此处不重复。
+- 为本 unit 的每个 SQL statement 生成 per-proc Mapper 集成测试：类名 `{ProcPascal}MapperIntegrationTest`（注解配置详见 test-gen project-spec）。
 - 测试用例覆盖正常路径 + 边界；断言用中文注释说明预期。
 - 不改翻译产物（只读 Java 文件，写测试文件）。测试文件落 `{projectRoot}/src/test/java/{javaPackage 以 / 分隔}/`，与被测 per-proc 类同包。
 

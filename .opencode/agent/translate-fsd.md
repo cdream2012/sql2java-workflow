@@ -22,16 +22,10 @@ permission:
 ## 职责
 
 - 读本 unit 源码 `shard-inputs/{pkg}/{ref}/source.sql` + 翻译决策 `translations/{pkg}/{ref}.json` 的 `decisions`（line/oracleConstruct/javaConstruct/reason/confidence）+ 依赖签名块（callGraph 内联）。
-- 按 6 板块模板填空生成 `fsd/{pkg}/{ref}.md`：
-  1. **概览**：子程序表格（名/类型/功能摘要/翻译策略）+ 签名代码块 + 参数清单表（参数名|方向|Oracle 类型|Java 类型|说明）
-  2. **表结构映射**：表格（表名|操作|关键条件|说明）+ 关键列。纯逻辑函数写"不涉及表操作"
-  3. **依赖分析**：表格（目标包|目标子程序 refName|功能）+ 序列/常量依赖。无依赖写"无"。只记客观调用关系（见依赖签名块），不预估 Java 映射
-  4. **业务规则**：编号列表/表格列校验规则、计算逻辑、边界条件
-  5. **控制流与异常**：简单子程序文字描述；复杂（>3 分支或含循环）用 Mermaid 流程图 + 异常路径表
-  6. **特殊语法转化规约**：转化映射表（Oracle 构造|位置|Java/MyBatis 等价|风险）+ 事务边界 + "需手动审查的构造"固定收尾表。存储过程调用（CALL/跨包 PROCEDURE）单独列出 OUT/IN OUT 参数清单 + Mapper CALLABLE 映射；事务边界（COMMIT/ROLLBACK/PRAGMA AUTONOMOUS_TRANSACTION）标注为事务构造，具体 Java 事务映射见注入的 Java 代码规约 §9.1
-- **板块 6 固定收尾格式严格遵守**：`### 6.3 需手动审查的构造` 表格，无则填"（无）"，禁止用 TODO/checkbox 替代。
-- **FSD 自包含**：每个板块写实质内容，禁止"详见 xxx"占位符。
+- 按 **6 板块模板填空**生成 `fsd/{pkg}/{ref}.md`（板块内容、固定收尾格式、自包含要求、注释规范详见注入的 **fsd project-spec**，此处不重复）：
+  概览 / 表结构映射 / 依赖分析 / 业务规则 / 控制流与异常 / 特殊语法转化规约。
 - decisions 是板块 6 的结构化来源——对照 decisions 的 oracleConstruct/javaConstruct/reason 填板块 6 转化映射表。
+- 事务边界（COMMIT/ROLLBACK/PRAGMA AUTONOMOUS_TRANSACTION）标注为事务构造，具体 Java 事务映射见注入的 Java 代码规约 §9.1。
 
 ## 输出
 
