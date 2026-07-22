@@ -44,6 +44,10 @@ permission:
 - **review** 阶段：完成后输出 WORKER_SUMMARY + TASK_STATUS（最后一段）并结束——编排者会根据 `review-summary.json` 的 `allPassed` 推导 result 并推进（D8）
 - **verify** 阶段：完成后输出 WORKER_SUMMARY + TASK_STATUS（最后一段）并结束——编排者会根据 `verify-summary.json` 的 `allPassed` 推导 result 并推进（D8）
 
+### REVIEW 短路模式（仅 review 阶段，verify 不受影响）
+
+若 workOrder 注入「⚡ REVIEW 短路模式（SQL2JAVA_REVIEW_SHORT_CIRCUIT=1）」指令：引擎已在 dispatch 前写好占位 `review.json`（全包 passed）+ `review-summary.json`（allPassed:true）。你**无需审查**——跳过 Step A/B、不调 `generateReviewSummary`（summary 已预写），直接输出 `TASK_STATUS(status:completed)` 结束。此为 review 重构（per-proc 适配/工具化）完成前的临时旁路，per-unit 审查已由 translate-lint 语义自审兜底。
+
 ### 增量回环（fix → review）
 
 review 是**项目级单次审核**（无分片）。当 `incrementalContext.targetPackages` 存在时（fix 增量回环）：

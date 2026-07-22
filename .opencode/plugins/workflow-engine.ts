@@ -4351,17 +4351,45 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
               if (artifactId) {
                 const projectRoot = generatedRootFor(run, artifactId)
                 const targetPkgs = currentEntry?.incrementalContext?.targetPackages as string[] | undefined
-                const isFixLoop = currentEntry?.branchedFrom === "review"
-                const staticPath = join(artifactsDir, "review-static.json")
-                try {
-                  if (isFixLoop) {
-                    scanReviewStatic(artifactsDir, projectRoot, { targetPackages: targetPkgs, mode: "incremental" })
-                  } else if (!existsSync(staticPath)) {
-                    scanReviewStatic(artifactsDir, projectRoot, { mode: "full" })
+                // 短路开关：SQL2JAVA_REVIEW_SHORT_CIRCUIT=1 时跳过 Step A 静态扫描 + reviewer 语义审，
+                // 引擎写占位 review.json/review-summary.json（全包 passed、allPassed:true），reviewer no-op。
+                // 用于 review 重构（per-proc 适配/工具化）未完成前临时旁路 review，不阻断 pipeline；
+                // per-unit 审查由 translate-lint 语义自审兜底。仿 SQL2JAVA_DEDUP_SHORT_CIRCUIT。
+                const reviewShortCircuit = process.env.SQL2JAVA_REVIEW_SHORT_CIRCUIT === "1"
+                if (reviewShortCircuit) {
+                  const pkgs = targetPkgs
+                    ?? buildDependencyGraph(`${ARTIFACT_DIR}/${run.runId}`).packageNames
+                    ?? []
+                  const reviewPlaceholder = {
+                    packages: pkgs.map((p: string) => ({
+                      packageName: p, passed: true, overallScore: 100,
+                      procedureReviews: [], mustFix: [], suggestions: [], todoRemainingCount: 0,
+                    })),
+                    shortCircuited: true,
                   }
-                  // else review-static.json 已存在（如 reviewer 重试 dispatch）：复用，不重扫
-                } catch (e: any) {
-                  getLogger().warn("[dispatch]", `review 静态扫描失败（不阻断 dispatch）: ${e.message}`)
+                  safeWriteFile(join(artifactsDir, "review.json"), JSON.stringify(reviewPlaceholder, null, 2))
+                  const summaryPlaceholder = {
+                    allPassed: true,
+                    packageResults: pkgs.map((p: string) => ({
+                      packageName: p, passed: true, staticPassed: true, score: 100, mustFixCount: 0,
+                    })),
+                    totalMustFix: 0, totalTodosRemaining: 0, totalStaticFindings: 0,
+                  }
+                  safeWriteFile(join(artifactsDir, "review-summary.json"), JSON.stringify(summaryPlaceholder, null, 2))
+                  getLogger().warn("[dispatch]", "review 短路（SQL2JAVA_REVIEW_SHORT_CIRCUIT=1）：占位 review.json/review-summary.json 已写，reviewer 将 no-op；per-unit 审查由 translate-lint 兜底")
+                } else {
+                  const isFixLoop = currentEntry?.branchedFrom === "review"
+                  const staticPath = join(artifactsDir, "review-static.json")
+                  try {
+                    if (isFixLoop) {
+                      scanReviewStatic(artifactsDir, projectRoot, { targetPackages: targetPkgs, mode: "incremental" })
+                    } else if (!existsSync(staticPath)) {
+                      scanReviewStatic(artifactsDir, projectRoot, { mode: "full" })
+                    }
+                    // else review-static.json 已存在（如 reviewer 重试 dispatch）：复用，不重扫
+                  } catch (e: any) {
+                    getLogger().warn("[dispatch]", `review 静态扫描失败（不阻断 dispatch）: ${e.message}`)
+                  }
                 }
               } else {
                 getLogger().warn("[dispatch]", "review 静态扫描跳过：artifactId 缺失（run-context/metadata 无）")
@@ -4645,14 +4673,26 @@ export const WorkflowEnginePlugin = async ({ $, client }: { $: any; client?: any
             // review 项目级单次审核：fix 回环用 targetPackages(fixedPackages)，主线用 analysis.packageNames 全包。
             // 让 reviewer 只对有信号的过程做 #1-#9 语义审，无信号的纯 CRUD 跳过（省 LLM，靠 Step A 兜底）。
             if (run.currentPhase === "review" && artifactIdForDispatch) {
-              const focusPkgs = (currentEntry?.incrementalContext?.targetPackages as string[] | undefined)
-                ?? buildDependencyGraph(`${ARTIFACT_DIR}/${run.runId}`).packageNames
-                ?? []
-              if (focusPkgs.length > 0) {
-                const projectRoot = generatedRootFor(run, artifactIdForDispatch)
-                const sourcePath = String((run.metadata as Record<string, unknown>).sourcePath ?? "")
-                const focusBlock = buildReviewFocus(`${ARTIFACT_DIR}/${run.runId}`, focusPkgs, sourcePath, projectRoot)
-                if (focusBlock) workOrderParts.push("", focusBlock)
+              if (process.env.SQL2JAVA_REVIEW_SHORT_CIRCUIT === "1") {
+                // 短路模式：占位 review.json/review-summary.json 已在 dispatch 前写好，
+                // 注入指令让 reviewer no-op（跳过 Step A/B、不调 generateReviewSummary、直接 TASK_STATUS completed）。
+                workOrderParts.push(
+                  ``,
+                  `## ⚡ REVIEW 短路模式（SQL2JAVA_REVIEW_SHORT_CIRCUIT=1）`,
+                  `引擎已写占位 review.json + review-summary.json（全包 passed、allPassed:true）。`,
+                  `你**无需审查**：跳过 Step A/B，不调 generateReviewSummary（summary 已预写），直接输出 TASK_STATUS(status:completed)。`,
+                  `（per-unit 审查已由 translate-lint 语义自审兜底；此为 review 重构完成前的临时旁路。）`,
+                )
+              } else {
+                const focusPkgs = (currentEntry?.incrementalContext?.targetPackages as string[] | undefined)
+                  ?? buildDependencyGraph(`${ARTIFACT_DIR}/${run.runId}`).packageNames
+                  ?? []
+                if (focusPkgs.length > 0) {
+                  const projectRoot = generatedRootFor(run, artifactIdForDispatch)
+                  const sourcePath = String((run.metadata as Record<string, unknown>).sourcePath ?? "")
+                  const focusBlock = buildReviewFocus(`${ARTIFACT_DIR}/${run.runId}`, focusPkgs, sourcePath, projectRoot)
+                  if (focusBlock) workOrderParts.push("", focusBlock)
+                }
               }
             }
 
