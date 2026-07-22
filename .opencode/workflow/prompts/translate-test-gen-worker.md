@@ -6,13 +6,13 @@
 
 ## 职责（稳定）
 
-- 读 translate-core 产出的本 unit Java 文件 + scaffold 生成的测试骨架（testShells / mapperTestShells）。
-- 为本 unit 行为类（Aggregate/Processor 等）生成单元测试；为本 unit 每个 SQL statement 生成 Mapper 集成测试（基于 H2 schema）。
+- 读 translate-core 产出的本 unit per-proc Java 文件 + scaffold 的 `schema-h2.sql`。**scaffold 不再生成测试骨架**——你直接 `write` 完整 per-proc 测试类。
+- 为本 unit 的业务实现类（规约定义的业务实现角色）生成 per-proc 单元测试（类名按规约 §4.1 派生，`@Mock` Mapper + `@InjectMocks` 被测类）；为本 unit 每个 SQL statement 生成 per-proc Mapper 集成测试（`@MybatisTest` + H2 schema）。
 - 不改翻译产物（只读 Java，写测试）。
 
 ## 输出（稳定）
 
-- 测试 Java 文件：写入 `projectRoot` 测试目录（read scaffold 骨架 + edit 填充）。
+- per-proc 测试 Java 文件：`write` 到 `projectRoot` 测试目录（`src/test/java/{javaPackage 以 / 分隔}/`，各 unit 独占测试文件，无冲突）。
 - Worker Status：`{{artifactsDir}}/status/translate.json`（含 shardIndex）。
 
 ## 硬约束（稳定）

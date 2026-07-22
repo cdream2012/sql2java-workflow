@@ -12,45 +12,44 @@
 
 > **包根项目特定**：规约中出现的 `com.example.translated` 仅为举例，实际包根由 scaffold 阶段按目标项目推导（如 `com.example.mfgerp`、`com.icbc.fmhm` 等），规约不规定固定包根。工程结构路径用 `{packageBase}`（项目根包）占位符表达。
 
-> **工程结构章节**：下方 `## 工程结构` 为**扁平**目录布局模板（所有类同处 `{packageBase}` 项目级包下，不按模块分子包，靠类名前缀区分 Oracle Package）。`{packageBase}` = scaffold 的 targetProject.packageBase。该章节正文仅含可解析路径（行内 `#` 注释由引擎剥离），供 `--spec` 结构提取与 scaffold 消费。
+> **工程结构章节**：下方 `## 工程结构` 为**命名空间嵌套**目录布局模板——Oracle 包映射为 Java 包（`{packageBase}/{schema}/{pkg}` 目录），过程/函数映射为该目录下的 per-proc 类（一文件一类）；仅全局共享件（entity/exception/util/config）单列全局目录。`{packageBase}` = scaffold 的 targetProject.packageBase（项目根，不含 schema）；`{schema}`/`{pkg}` 为占位符，scaffold 按 inventory 每个包实例化（小写）。该章节正文仅含可解析路径（行内 `#` 注释由引擎剥离），供 `--spec` 结构提取与 scaffold 消费。
 
 ## 工程结构
 
-src/main/java/{packageBase}/config              # Spring/MyBatis 配置
-src/main/java/{packageBase}/entity              # 数据对象 XxxDO（与数据库表一一对应）
-src/main/java/{packageBase}/mapper              # Mapper 接口
-src/main/java/{packageBase}/service             # Service 接口
-src/main/java/{packageBase}/service/impl        # ServiceImpl 实现
-src/main/java/{packageBase}/dto                 # 数据传输对象 XxxDTO
-src/main/java/{packageBase}/exception           # 业务异常体系 BusinessException 等
-src/main/java/{packageBase}/constant            # 纯常量包的常量持有类
-src/main/java/{packageBase}/util                # 通用工具类
-src/main/resources/mapper                        # MyBatis Mapper XML
-src/test/java/{packageBase}/service/impl        # ServiceImpl 单元测试
-src/test/java/{packageBase}/mapper              # Mapper 集成测试
+src/main/java/{packageBase}/config              # Spring/MyBatis 配置（全局）
+src/main/java/{packageBase}/entity              # 数据对象 XxxDO（与数据库表一一对应，全局共享，scaffold 生成）
+src/main/java/{packageBase}/exception           # 业务异常体系 BusinessException 等（全局）
+src/main/java/{packageBase}/util                # 通用工具类（全局）
+src/main/java/{packageBase}/{schema}/{pkg}      # 每个 Oracle schema.package 一个目录：per-proc 角色类（{Proc}Service/{Proc}ServiceImpl/{Proc}Mapper）+ 包级 {Pkg}State 持有类
+src/main/resources/mapper/{schema}/{pkg}        # per-proc Mapper XML（{Proc}Mapper.xml）
+src/test/java/{packageBase}/{schema}/{pkg}      # per-proc 测试类（{Proc}ServiceImplTest / {Proc}MapperIntegrationTest）
+src/test/resources                              # schema-h2.sql + application-test.yml
 
 ## 一、分层架构规范
 
 ### 1.1 分层职责
 
-| 层级 | 包名 | 职责 | 对应存储过程概念 |
+| 层级 | 目录 | 职责 | 对应存储过程概念 |
 |------|------|------|------------------|
-| **Entity** | `entity` | 数据对象（XxxDO），与数据库表字段一一对应 | 表/%ROWTYPE |
-| **Mapper** | `mapper` | MyBatis 接口，SQL 执行 | DML/查询 |
-| **Service** | `service` | 业务接口，对外暴露公共方法 | 存储过程入口/包规范 |
-| **ServiceImpl** | `service.impl` | 业务实现，流程编排 + 事务 + 异常 | 主存储过程调用链 |
-| **DTO** | `dto` | 跨层数据传输对象 | 过程参数/返回值 |
-| **Exception** | `exception` | 业务异常体系 | EXCEPTION 块 |
-| **Constant** | `constant` | 纯常量包的常量持有类 | 包级常量 |
-| **Util** | `util` | 通用工具方法 | 公共函数库 |
+| **Entity** | `{packageBase}/entity`（全局） | 数据对象（XxxDO），与数据库表字段一一对应 | 表/%ROWTYPE |
+| **Mapper** | `{packageBase}/{schema}/{pkg}`（per-proc） | MyBatis 接口，SQL 执行 | DML/查询 |
+| **Service** | `{packageBase}/{schema}/{pkg}`（per-proc） | 业务接口，对外暴露公共方法 | 存储过程入口/包规范 |
+| **ServiceImpl** | `{packageBase}/{schema}/{pkg}`（per-proc） | 业务实现，流程编排 + 事务 + 异常 | 主存储过程调用链 |
+| **DTO** | `{packageBase}/{schema}/{pkg}`（per-proc，按需） | 跨层数据传输对象 | 过程参数/返回值 |
+| **Exception** | `{packageBase}/exception`（全局） | 业务异常体系 | EXCEPTION 块 |
+| **State** | `{packageBase}/{schema}/{pkg}`（per-package） | 包级常量/变量持有类 `{Pkg}State` | 包级常量/包级变量 |
+| **Util** | `{packageBase}/util`（全局） | 通用工具方法 | 公共函数库 |
+
+> **映射粒度**：Oracle 包 → Java 包（`{packageBase}/{schema}/{pkg}` 目录，schema/pkg 段小写）；每个过程/函数 → 该目录下一组 per-proc 角色类（一文件一类，类名 `{ProcPascal}{Role}`，如 `CreateOrderService`/`CreateOrderServiceImpl`/`CreateOrderMapper`）。全局共享件（Entity/Exception/Util/Config）单列全局目录，不按包分子目录。下方代码示例中的 `Xxx`/`Order` 仅为命名演示，实际按 per-proc `{ProcPascal}` 命名。
 
 **规约要点：**
-1. 【强制】每个有子程序的 Oracle Package 映射为一组 Mapper + Service + ServiceImpl（+ 按需 DTO），Service 暴露公共方法、ServiceImpl 实现业务逻辑。
+1. 【强制】每个过程/函数映射为一组 per-proc 角色（默认 `Service` + `ServiceImpl` + `Mapper`，本规约可调）；Oracle Package 映射为 Java 包（`{packageBase}/{schema}/{pkg}` 目录）。Service 暴露该过程公共方法、ServiceImpl 实现业务逻辑。
 2. 【强制】Service 接口只声明方法签名，不含逻辑；所有业务逻辑在 ServiceImpl。
 3. 【强制】ServiceImpl 通过**构造器注入** Mapper（与 Lombok `@RequiredArgsConstructor` 配合），禁止字段注入。
 4. 【强制】涉及数据修改的 ServiceImpl 方法标注 `@Transactional(rollbackFor = Exception.class)`；只读查询方法可加 `@Transactional(readOnly = true)`。
 5. 【强制】跨包调用经被调方 **Service 接口**注入，不得直接引用他包 Mapper。
 6. 【强制】主存储过程含多个子流程（子程序调用 / 顺序逻辑段 / 跨包调用）时，ServiceImpl 按原 PL/SQL 调用顺序编排，体现"主存储过程调用链"。步骤单一的主存储过程保持单方法，不强拆。拆分依据是原 SP 的调用结构（调用语句边界），属忠实呈现而非重构，不违反"不重构"原则。
+7. 【强制】per-proc 类各占一文件（一 public 类一文件），类名 `{ProcPascal}{Role}`；包级常量/变量集中到 per-package 的 `{Pkg}State` 持有类（见 §3.4），不在 per-proc 类内散落。
 
 ## 二、ServiceImpl 实现模式
 
@@ -122,16 +121,20 @@ scaffold 生成 XxxDO 字段、translate 转译过程参数/返回值时，**统
 
 ### 3.2 存储过程 → Java 组件映射
 
+> per-proc 粒度：每个 `PROCEDURE`/`FUNCTION` 落为该包目录下一组独立类，类名 `{ProcPascal}{Role}`（`ProcPascal` = 过程名转 PascalCase，下划线分段首字母大写）。
+
 | 存储过程元素 | Java 对应组件 | 说明 |
 |-------------|---------------|------|
-| `PROCEDURE/FUNCTION` 入口 | `Service` + `ServiceImpl` | 对外接口 + 实现 |
-| 主流程/业务逻辑 | `ServiceImpl` | 编排 + 事务 + 异常 |
-| 变量声明/初始化 | `ServiceImpl` 方法内局部变量 | 默认值填充 |
-| 参数组装 | `DTO` / `Map<String,Object>` | 参数构建 |
-| IF-THEN-ELSE 校验 | `ServiceImpl` 内校验 + 抛 `ValidationException` | 业务校验 |
-| 跨包调用 | 被调方 `Service` 接口 | 外部服务 |
-| 公共函数 | `Util` | 工具类 |
+| `PROCEDURE/FUNCTION` 入口 | `{Proc}Service` + `{Proc}ServiceImpl` | per-proc 对外接口 + 实现 |
+| 主流程/业务逻辑 | `{Proc}ServiceImpl` | 编排 + 事务 + 异常 |
+| 变量声明/初始化 | `{Proc}ServiceImpl` 方法内局部变量 | 默认值填充（局部变量） |
+| 包级常量/变量 | `{Pkg}State` 持有类 | per-package，见 §3.4 |
+| 参数组装 | `{Proc}DTO` / `Map<String,Object>` | per-proc 参数构建 |
+| IF-THEN-ELSE 校验 | `{Proc}ServiceImpl` 内校验 + 抛 `ValidationException` | 业务校验 |
+| 跨包调用 | 被调方 `{Proc}Service` 接口 | 外部服务（按 `{packageBase}.{schema}.{pkg}.{Proc}Service` 派生） |
+| 公共函数 | `Util` | 全局工具类 |
 | `COMMIT/ROLLBACK` | `@Transactional` | 事务管理 |
+| DML/查询/存储过程调用 | `{Proc}Mapper` + `{Proc}Mapper.xml` | per-proc Mapper |
 
 ### 3.3 异常处理规范
 
@@ -160,29 +163,62 @@ try {
 3. 【强制】catch 块不得丢弃原始异常信息：必须包装重抛（`throw new BusinessException(msg, e)`）或经 `log.error(msg, e)` 记录完整堆栈；禁止空 catch、禁止仅打印 `e.getMessage()` 丢弃堆栈。
 4. 【强制】校验失败抛 `ValidationException`；数据不存在抛 `DataNotFoundException`；其他业务错误抛 `BusinessException`。
 
+### 3.4 包级状态映射（`{Pkg}State` 持有类）
+
+Oracle 包级常量与变量（package spec/body 顶层声明的 `constants`/`variables`）集中映射到 per-package 的 `{Pkg}State` 持有类，由 **scaffold** 从 inventory `packages/{pkg}.json` 的 `constants`+`variables` 一次性生成完整字段，translate 只读引用、不修改该类。
+
+```java
+// per-package 状态持有类（scaffold 生成，位于 {packageBase}/{schema}/{pkg}/{Pkg}State.java）
+@Component
+@Scope("session")  // 可变包变量按 session 作用域，贴 Oracle session 级语义
+public class FOrderState {
+    // 包级常量：static final
+    public static final String DEFAULT_STATUS = "ACTIVE";
+
+    // 包级可变变量：实例字段 + getter/setter（session 作用域 bean，每会话独立）
+    private Long cursorPos;
+    private BigDecimal runningTotal;
+
+    public Long getCursorPos() { return cursorPos; }
+    public void setCursorPos(Long cursorPos) { this.cursorPos = cursorPos; }
+    public BigDecimal getRunningTotal() { return runningTotal; }
+    public void setRunningTotal(BigDecimal runningTotal) { this.runningTotal = runningTotal; }
+}
+```
+
+**规约要点：**
+1. 【强制】包级常量（inventory `constants`）→ `public static final` 字段，类型按 §3.1。
+2. 【强制】包级可变变量（inventory `variables`）→ session 作用域 bean 的实例字段 + getter/setter（`@Scope("session")`），不得用 `static` 可变字段（线程不安全）。无包变量的包，holder 退化为纯常量类（可省 `@Scope`，字段全 `static final`）。
+3. 【强制】`{Proc}ServiceImpl` 读写包变量 → 注入 `{Pkg}State` bean，经 getter/setter 访问；不得在 per-proc 类内重新声明包级变量。
+4. 【强制】scaffold 生成 holder 时 Oracle 类型→Java 类型按 §3.1，常量名/值/类型保真，跨包引用对齐；变量 `defaultValue` 转为字段初始化或构造器默认。
+5. 【推荐】真正使用可变包状态且语义敏感的过程，review 阶段打 package-state flag 人工复核（session 作用域在非 web 上下文需确认可用性）。
+
 ## 四、编码规范
 
 ### 4.1 命名规范
 
 | 类型 | 命名规则 | 示例 |
 |------|----------|------|
-| Entity（数据对象） | `XxxDO` | `OrderDO` |
-| DTO | `XxxDTO` | `OrderQueryDTO` |
-| Mapper 接口 | `XxxMapper` | `OrderMapper` |
-| Service 接口 | `XxxService` | `OrderService` |
-| Service 实现 | `XxxServiceImpl` | `OrderServiceImpl` |
+| Entity（数据对象） | `{Table}DO` | `OrderDO` |
+| DTO | `{Proc}DTO` | `CreateOrderDTO` |
+| Mapper 接口 | `{Proc}Mapper` | `CreateOrderMapper` |
+| Service 接口 | `{Proc}Service` | `CreateOrderService` |
+| Service 实现 | `{Proc}ServiceImpl` | `CreateOrderServiceImpl` |
 | 异常类 | `XxxException` | `BusinessException` |
-| 常量持有类 | `XxxConstant` 或 `XxxConstants` | `MfgConstant` |
+| 包级状态持有类 | `{Pkg}State` | `FOrderState` |
 | 工具类 | `XxxUtil` | `StringUtil` |
-| 测试类 | `XxxTest` / `XxxIntegrationTest` | `OrderServiceImplTest` |
+| 测试类 | `{Proc}ServiceImplTest` / `{Proc}MapperIntegrationTest` | `CreateOrderServiceImplTest` |
+
+> `{Proc}` = 过程/函数名转 PascalCase（下划线分段首字母大写，如 `CREATE_ORDER` → `CreateOrder`）；`{Pkg}` = Oracle 包名转 PascalCase；`{Table}` = 表名转 PascalCase。Java 包段（`{schema}`/`{pkg}`）全小写（如 `mfg_erp`/`f_order`）。
 
 **规约要点：**
 1. 【强制】类名 UpperCamelCase；方法名、参数名、成员变量、局部变量 lowerCamelCase；常量全大写下划线分隔；包名全小写。
-2. 【强制】数据对象（与数据库表一一对应）统一使用 `XxxDO` 后缀；跨层数据传输用 `XxxDTO` 后缀；禁止 `XxxPOJO`。
+2. 【强制】数据对象（与数据库表一一对应）统一使用 `{Table}DO` 后缀；跨层数据传输用 `{Proc}DTO` 后缀；禁止 `XxxPOJO`。
 3. 【强制】POJO 类布尔属性不加 `is` 前缀；数据库布尔字段必须加 `is_`，在 resultMap 中映射。
 4. 【强制】命名不得以下划线或美元符号开始或结束；严禁拼音与英文混合，禁止直接使用中文。
 5. 【强制】抽象类用 `Abstract`/`Base` 开头；异常类用 `Exception` 结尾；测试类以被测类名开头、`Test` 结尾。
 6. 【推荐】Service/DAO 层方法前缀：`get` 取单个、`list` 取多个、`count` 取统计、`save/insert` 插入、`remove/delete` 删除、`update` 修改。
+7. 【强制】per-proc 类与 per-package holder 同处 `{packageBase}/{schema}/{pkg}` 目录，一文件一 public 类；类名由过程名/包名派生，禁止用 Oracle 包名做类名前缀拼接所有过程。
 
 ### 4.2 注释规范
 
@@ -369,10 +405,12 @@ for (OrderDO order : orderList) {
 
 ## 十、数据字典与常量
 
+包级常量集中到 per-package 的 `{Pkg}State` 持有类（见 §3.4，由 scaffold 从 inventory `constants` 生成）。纯常量包（无子程序）的 `{Pkg}State` 仅含 `static final` 字段、退化为纯常量类：
+
 ```java
-// 常量持有类（纯常量包，由 scaffold 生成）
-public final class MfgConstant {
-    private MfgConstant() { }
+// 纯常量包的 {Pkg}State（scaffold 生成，无 @Scope，字段全 static final）
+public final class FConstState {
+    private FConstState() { }
     public static final String PUB = "PUB";        // 字典源
     public static final String DIC40058 = "40058"; // 字典编号
 }
@@ -420,17 +458,18 @@ public interface OrderMapper {
 
 ## 十二、转换检查清单
 
-> 以下为**单个存储过程**的翻译落位顺序，指导 translator 把同一 SP 的逻辑落到 Service/ServiceImpl/Mapper；与工作流 stage 顺序（inventory→scaffold→translate→dedup→review→verify）是两个维度，勿混淆。
+> 以下为**单个存储过程**的翻译落位顺序，指导 translator 把同一 SP 的逻辑落到 per-proc 类（`{Proc}Service`/`{Proc}ServiceImpl`/`{Proc}Mapper`）；与工作流 stage 顺序（inventory→scaffold→translate→dedup→review→verify）是两个维度，勿混淆。
 
 转换 PL/SQL 存储过程时，按以下顺序执行：
 
 1. **Inventory**：扫描存储过程，识别输入/输出参数、业务逻辑、依赖对象。
-2. **Entity/DTO**：识别过程参数与返回值对应的数据对象（复用已有 DO 或新建 DTO）。
-3. **Mapper**：识别 DML/查询/存储过程调用，落到 Mapper 接口方法 + XML。
-4. **Service 接口**：为存储过程入口声明公共方法签名。
-5. **ServiceImpl**：将核心业务逻辑、变量初始化、校验、事务、异常处理落到 ServiceImpl 方法。
-6. **跨包调用**：将跨包调用封装为被调方 Service 接口注入。
-7. **测试**：编写 ServiceImpl 单元测试验证等价性 + Mapper 集成测试。
+2. **Entity/DTO**：识别过程参数与返回值对应的数据对象（复用全局 DO 或新建 per-proc `{Proc}DTO`）。
+3. **`{Pkg}State`**：确认包级常量/变量已在 scaffold 生成的 holder 中（只读引用，不重建）。
+4. **`{Proc}Mapper`**：识别 DML/查询/存储过程调用，落到 per-proc Mapper 接口方法 + XML。
+5. **`{Proc}Service`**：为该过程入口声明公共方法签名。
+6. **`{Proc}ServiceImpl`**：将核心业务逻辑、变量初始化、校验、事务、异常处理落到 per-proc ServiceImpl 方法；包变量读写经 `{Pkg}State` 访问。
+7. **跨包调用**：将跨包调用封装为被调方 `{Proc}Service` 接口注入。
+8. **测试**：编写 `{Proc}ServiceImpl` 单元测试验证等价性 + `{Proc}Mapper` 集成测试。
 
 ## 十三、常见陷阱与注意事项
 

@@ -244,16 +244,20 @@ export const TargetProjectSchema = z.object({
   springBootVersion: z.string(),
 })
 
-/** Oracle Package → Java 包 + 组件类名映射（架构无关：components[] 由注入的 Java 代码规约
- *  分层架构/工程结构章节定义的角色决定，4 文件/DDD/自定义模型通用）。 */
+/** Oracle Package → Java 包 + per-proc 角色集映射（架构无关：components[] 由注入的 Java 代码规约
+ *  分层架构/工程结构章节定义的角色决定，4 文件/DDD/自定义模型通用）。
+ *  per-proc 模型：components[] 为角色集模板（role），每个 Oracle 过程/函数按此角色集生成一组
+ *  per-proc 类，类名 {ProcPascal}{RoleSuffix} 由命名约定派生（规约 §4.1），不再逐类枚举 className。 */
 export const PackageMappingSchema = z.object({
+  /** Oracle schema（大写；inventory packageName 拆点首段）。无 schema 前缀的包为空串。 */
+  oracleSchema: z.string().default(""),
   oraclePackage: z.string(),
+  /** Java 包 = {packageBase}.{schema-lower}.{pkg-lower}（规约 §工程结构 命名空间嵌套）。 */
   javaPackage: z.string(),
-  /** 该包映射到的组件类（role 由规约定义，如 service/service-impl/mapper/aggregate/access-intf/constant 等；
-   *  className 为 Java 类名。至少 1 个——下游 verify 归因 / translate 跨包索引 / 测试骨架生成均依赖此锚点。 */
+  /** per-proc 角色集模板（规约定义，如 service/service-impl/mapper）。每个过程按此集生成 per-proc 类，
+   *  类名约定派生。至少 1 个——下游 verify 归因 / translate 跨包索引 / 测试生成据此 + 过程名派生类名。 */
   components: z.array(z.object({
     role: z.string(),
-    className: z.string(),
   })).min(1),
 })
 
@@ -276,36 +280,21 @@ export const ScaffoldSchema = z.object({
     pomXml: z.string(),
   }),
   generated: z.object({
-    /** 数据对象 Entity（tableName → DO；后缀按规约命名章节，如 XxxDO）。 */
+    /** 数据对象 Entity（tableName → DO；后缀按规约命名章节，如 XxxDO）。全局共享，scaffold 生成。 */
     entities: z.array(z.object({
       file: z.string(),
       tableName: z.string(),
     })),
-    mapperInterfaces: z.array(z.object({
-      file: z.string(),
-      oraclePackage: z.string(),
-    })),
     /**
-     * 仅记录纯常量包的常量持有类。
-     * 有子程序包的业务组件壳由 translate-skeleton 子阶段按 read-or-create 创建，
-     * 不在 scaffold 产出，故不在此记录。
+     * per-package 包级状态持有类 {Pkg}State（规约 §3.4）。
+     * scaffold 从 inventory packages/{pkg}.json 的 constants+variables 一次性生成完整字段，
+     * translate 只读引用。每个有子程序或包级常量/变量的包均生成一个。
      */
-    serviceShells: z.array(z.object({
+    stateHolders: z.array(z.object({
       file: z.string(),
+      oracleSchema: z.string(),
       oraclePackage: z.string(),
     })),
-    testShells: z.array(z.object({
-      file: z.string(),
-      oraclePackage: z.string(),
-      testClass: z.string(),
-    })).optional(),
-    /** Mapper 集成测试骨架（@MybatisTest + H2） */
-    mapperTestShells: z.array(z.object({
-      file: z.string(),
-      oraclePackage: z.string(),
-      testClass: z.string(),
-      mapperInterface: z.string(),
-    })).optional(),
     /** H2 兼容建表脚本路径（相对于 projectRoot） */
     h2SchemaFile: z.string().optional(),
     /** 测试用 application 配置路径（相对于 projectRoot） */

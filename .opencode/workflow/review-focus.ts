@@ -168,7 +168,10 @@ export function buildReviewFocus(
       })
     }
 
-    // 测试审查（#18/#20）：本包 testShells / mapperTestShells
+    // 测试审查（#18/#20）：per-proc 模型下 scaffold 不再产 testShells/mapperTestShells
+    // （已下放 translate-test-gen 直接 write per-proc 测试类）。此处 ?? [] 优雅降级——
+    // real per-proc run 暂无测试聚焦点；阶段 4 review 重构改为扫 src/test/java/{javaPackage}/ 下
+    // per-proc 测试文件。单测 mock 仍直供 testShells 走旧路径（passthrough 保留）。
     const testShells = (scaffold?.generated?.testShells ?? []) as any[]
     const mapperShells = (scaffold?.generated?.mapperTestShells ?? []) as any[]
     for (const sh of testShells) {

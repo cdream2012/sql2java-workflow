@@ -127,12 +127,13 @@ export function makeScaffold(overrides: Record<string, unknown> = {}) {
     },
     packageMappings: [
       {
+        oracleSchema: "",
         oraclePackage: "CORE_PKG",
         javaPackage: "com.example.item",
         components: [
-          { role: "service", className: "ItemService" },
-          { role: "service-impl", className: "ItemServiceImpl" },
-          { role: "mapper", className: "ItemMapper" },
+          { role: "service" },
+          { role: "service-impl" },
+          { role: "mapper" },
         ],
       },
     ],
@@ -144,11 +145,7 @@ export function makeScaffold(overrides: Record<string, unknown> = {}) {
     },
     generated: {
       entities: [],
-      mapperInterfaces: [{ file: "src/main/java/com/example/item/mapper/ItemMapper.java", oraclePackage: "CORE_PKG" }],
-      serviceShells: [
-        { file: "src/main/java/com/example/item/service/ItemService.java", oraclePackage: "CORE_PKG" },
-        { file: "src/main/java/com/example/item/service/impl/ItemServiceImpl.java", oraclePackage: "CORE_PKG" },
-      ],
+      stateHolders: [{ file: "src/main/java/com/example/item/CorePkgState.java", oracleSchema: "", oraclePackage: "CORE_PKG" }],
       commonClasses: [
         { file: "src/main/java/com/example/item/exception/BusinessException.java", purpose: "业务异常基类" },
         { file: "src/main/java/com/example/item/exception/DataNotFoundException.java", purpose: "数据未找到" },

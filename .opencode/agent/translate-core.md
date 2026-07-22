@@ -23,11 +23,12 @@ permission:
 
 ## 职责
 
-- 读 skeleton 产出的 Java 文件（含 `// TODO: [translate]` 桩）+ 本 unit SQL 切片 + 依赖签名块。
+- 读 skeleton 产出的本 unit per-proc Java 文件（含 `// TODO: [translate]` 桩）+ 本 unit SQL 切片 + 依赖签名块。
 - 逐个 TODO 桩：用真实翻译替换桩体，**删除该 TODO 注释**。翻译一个删一个，严格对应。
 - **完成后文件不得残留任何 `// TODO: [translate]`**（lint 子阶段会核对残留）。
+- **包级常量/变量**：经 scaffold 生成的 per-package `{Pkg}State` 持有类访问（规约 §3.4）——常量直引 `static final` 字段，可变变量经注入的 holder bean getter/setter 读写。不得在 per-proc 类内重新声明包级变量。
 - 不确定项由 LLM 给出最佳翻译，不留 TODO；真正无法确定的写中文注释说明，交 review/fix。
-- 不新建文件（skeleton 已建），只用 read + edit 替换桩体。
+- 不新建文件（skeleton 已建 per-proc 类），只用 read + edit 替换桩体。
 - 不写测试（test-gen 子阶段的事）。
 
 ## 输出

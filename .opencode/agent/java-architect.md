@@ -57,9 +57,9 @@ permission:
 
 ### 目标
 
-根据 inventory + packages/*.json + 注入的 Java 代码规约，**决策 Java 项目配置（targetProject）+ 包映射（packageMappings）**，并生成完整 Maven 项目骨架：pom.xml、目录结构、数据对象、Mapper 空壳、测试类骨架、基础设施类，以及**纯常量包的常量持有类**。产出 `scaffold.json`。
+根据 inventory + packages/*.json + 注入的 Java 代码规约，**决策 Java 项目配置（targetProject）+ 包映射（packageMappings）**，并生成 Maven 项目骨架：pom.xml、全局目录结构、数据对象（DO）、基础设施类、**per-package 包级状态持有类（{Pkg}State）**、schema-h2、测试配置。产出 `scaffold.json`。
 
-> **业务组件壳不在 scaffold 创建**——有子程序包的业务组件壳（规约定义的 per-package 业务角色）由 translate-skeleton 子阶段按 read-or-create 创建。scaffold 只建项目级公共件 + 纯常量包常量持有类。
+> **per-proc 业务类不在 scaffold 创建**——每个过程/函数的 per-proc 角色类（规约 §一/§3.2 定义的业务接口/业务实现/Mapper 角色）由 translate-skeleton 子阶段按过程独立 write 创建（一文件一类，各分片独占）。scaffold 只建项目级全局件 + per-package 状态持有类。Mapper 接口空壳、测试类骨架均不由 scaffold 生成（下放 translate）。
 
 ### 输入
 
@@ -82,17 +82,19 @@ permission:
 - `groupId` / `packageBase` — 基于源码项目名
 - `javaVersion` / `springBootVersion` — **必须严格使用规约"Java 版本与框架配置"段落的值**
 
-**0.3 决策 packageMappings**（写入 `packageMappings[]`，每项含 `oraclePackage`/`javaPackage`/`components[]`）：按规约分层架构/工程结构章节定义的角色，为每个期望包填 `components[]`（每组件 `{role, className}`，role 与 className 按规约命名章节）：
-- **有子程序的包**：填规约定义的 per-package 业务角色（含对外入口角色——`subprogramMethods.javaClass` 指向它）+ mapper 角色
-- **纯常量包（const-only，procedures 与 functions 均空）**：仅填规约定义的常量持有角色（无业务角色/mapper），常量持有类由 Step 6 生成
-- **scope 下 unit 不在 scopeUnits 的包**：有子程序者只映射角色（壳由 skeleton 空建，不译方法体）；纯常量包只映射常量持有角色
-- `javaPackage` 按规约工程结构章节（默认扁平 = packageBase，规约另有规定时从其规定）
+**0.3 决策 packageMappings**（写入 `packageMappings[]`，每项含 `oracleSchema`/`oraclePackage`/`javaPackage`/`components[]`）：按规约分层架构/工程结构章节定义的 per-proc 角色集，为每个期望包填 `components[]`（每项仅 `{role}`——角色集模板，per-proc 类名由 `{ProcPascal}{RoleSuffix}` 约定派生，**不逐类枚举 className**）：
+- `oracleSchema`：inventory `packageName` 拆首个 `.` 的前段（大写）；无 schema 前缀的包填空串
+- `oraclePackage`：包名（与 inventory 包标识同形，用于下游包匹配）
+- `javaPackage`：`{packageBase}.{schema-lower}.{pkg-lower}`（规约 §工程结构 命名空间嵌套；无 schema 时为 `{packageBase}.{pkg-lower}`）
+- **有子程序的包**：填规约定义的 per-proc 业务角色集（业务接口 + 业务实现 + mapper 角色）
+- **纯常量包（const-only，procedures 与 functions 均空）**：仅填规约定义的常量持有角色（无业务角色/mapper），状态持有类由 Step 6 生成
+- **scope 下 unit 不在 scopeUnits 的包**：有子程序者只映射角色集（per-proc 类壳由 skeleton 建，不译方法体）；纯常量包只映射常量持有角色
 
 #### Step 1: 创建 Maven 项目结构
 
-使用 `projectRoot` 作项目根。**优先使用自定义 `projectStructure`**（Runtime Context 有则严格按其路径列表创建，`{packageBase}` 替换为 packageBase 路径）。无 `projectStructure` 时按**注入规约 §工程结构**章节创建目录（规约定义各角色 layer 路径 + 项目级公共目录）。
+使用 `projectRoot` 作项目根。**优先使用自定义 `projectStructure`**（Runtime Context 有则严格按其路径列表创建，`{packageBase}`/`{schema}`/`{pkg}` 替换为实际段）。无 `projectStructure` 时按**注入规约 §工程结构**章节创建目录：全局公共目录（数据对象/异常/工具/配置）+ 每个 Oracle 包的命名空间目录 `{packageBase}/{schema}/{pkg}`（放 per-package 状态持有类）。
 
-> 业务组件目录（规约 per-package 角色的 layer）由 translate-skeleton 写壳时隐式创建，scaffold 不预建。scaffold 只创建它自己写文件的目录（项目级公共目录 + 纯常量包常量目录）。若自定义 `projectStructure` 含业务组件目录，按用户列表创建（空目录无害）。
+> per-proc 业务类目录 `{packageBase}/{schema}/{pkg}` 由 translate-skeleton 写 per-proc 类时隐式创建，scaffold 不预建业务类文件。scaffold 只创建它自己写文件的目录（全局公共目录 + 各包状态持有类目录）。
 
 #### Step 2: 生成 pom.xml
 
@@ -138,73 +140,28 @@ scaffold 生成**确定的、可直接完成**的公共模块（其余由 dedup 
 - 注解：`@Data`（Lombok）、`@TableName`（如适用）；布尔属性不加 `is` 前缀
 - 必须写 `toString`；注释格式遵循规约
 
-#### Step 5: 生成 Mapper 接口和 XML 空壳
+#### Step 5: 生成 per-package 状态持有类 {Pkg}State
 
-为每个**有子程序**的 Oracle Package 生成（按规约 mapper 角色的层路径；XML 写 `src/main/resources/mapper/`）：Mapper 接口空壳（`@Mapper` 注解）+ Mapper XML（namespace 配置）。**纯常量包跳过**（无 mapper 角色的包不生成，也不记入 `mapperInterfaces`）。
+> per-proc 业务类（业务接口/业务实现/Mapper）由 translate-skeleton 按过程独立创建，scaffold 不生成。本 Step 只生成 per-package 的**包级状态持有类**（规约 §3.4）。
 
-#### Step 6: 生成纯常量包常量持有类
+为每个有包级常量或变量的 Oracle 包生成 `{Pkg}State` 持有类，位于该包命名空间目录 `{packageBase}/{schema}/{pkg}/{PkgPascal}State.java`：
+- 读 `packages/{pkg}.json` 的 `constants` + `variables`，一次性生成完整字段
+- **包级常量**（`constants`）→ `public static final` 字段，Oracle 类型→Java 类型按规约 §3.1，常量名/值/类型保真，跨包引用对齐，按功能分组加中文注释
+- **包级变量**（`variables`）→ session 作用域 bean 实例字段 + getter/setter（`@Component @Scope("session")`），`defaultValue` 转字段初始化；无包变量的包退化为纯常量类（字段全 `static final`，可省 `@Scope`）
+- 类名 `{PkgPascal}State`（`PkgPascal` = 包名转 PascalCase）；纯常量类用 `public final class` + 私有构造，有可变变量用普通 `@Component` 类
+- 该类记入 `generated.stateHolders`（`{file, oracleSchema, oraclePackage}`）。translate 只读引用，不修改此类
 
-> 业务组件壳已下放 translate-skeleton——scaffold 不为有子程序的包预建业务组件壳。skeleton 处理某包首个 unit 时按 read-or-create 建壳（类名/路径查 `scaffold.json.packageMappings.components`）。本 Step 只为**纯常量包**生成常量持有类。
+> 无子程序且无包级常量/变量的包不生成状态持有类。纯常量包（无子程序）的 `{Pkg}State` 即其唯一 Java 产物（退化为纯常量类）。
 
-**纯常量包**：`components` 仅含规约常量持有角色（无业务角色/mapper）的包——无子程序、不走 translate/skeleton，其常量持有类必须由 scaffold 生成。在规约定义的常量目录下生成该角色 `className` 所指的常量持有类：`public final class` + 私有构造 + 把 `packages/{pkg}.json` 的 `constants` 逐个译为 `public static final` 字段（Oracle 类型→Java 类型按规约 §3.1，常量名/值/类型保真，跨包引用对齐），按功能分组加中文注释。该类记入 `serviceShells`。常量持有类是纯常量容器，不加业务注解/业务方法。
+#### Step 5.5: Mapper 接口 / 测试类（不下放说明）
 
-有子程序的包在本 Step **不生成任何文件**（业务组件壳交由 skeleton）。
+> Mapper 接口空壳 + XML、单元测试类、Mapper 集成测试类均**不由 scaffold 生成**——下放 translate：
+> - **Mapper 接口 + XML**：translate-skeleton 为每个过程建 per-proc Mapper（按规约命名约定派生类名）
+> - **单元测试 / Mapper 集成测试**：translate-test-gen 为每个过程建 per-proc 测试类，直接 write 完整类（不填 scaffold 骨架）
+>
+> scaffold.json 不再记录 `mapperInterfaces`/`testShells`/`mapperTestShells`。
 
-#### Step 6.5: 生成单元测试骨架
-
-为每个有业务实现类的 packageMapping 生成单元测试骨架——按规约，业务逻辑在业务实现角色类，单测针对它（Mock 其 Mapper 依赖）。
-
-1. 从 `packageMappings` 中筛选有业务实现角色组件的映射（纯常量包跳过——无业务逻辑，无须单测）
-2. 对每个映射在规约定义的测试目录下生成 `{业务实现类}Test.java`
-
-**测试类骨架模板**：
-- `@ExtendWith(MockitoExtension.class)` 类注解
-- `@Mock` 声明 Mapper 依赖（类名从 `packageMappings.components` 的 mapper 角色推导——业务实现类由 translate-skeleton 创建，scaffold 不再读其字段）
-- `@InjectMocks` 注入被测业务实现类（类名从 `packageMappings.components` 的业务实现角色推导）
-- **测试方法由 translate-test 子阶段填充**：scaffold 不知 Java 方法名（由 translate-skeleton 决定），测试骨架只建类壳 + `@Mock`/`@InjectMocks`。规约异常体系为 unchecked 时测试方法签名无需 `throws`：
-  ```java
-  @Test
-  @DisplayName("{methodName} 测试")
-  void {methodName}_shouldComplete() {
-      // TODO: [test] 待 translate 阶段填充测试逻辑
-  }
-  ```
-- 类注释使用中文 Javadoc，含 `@author sql2java-workflow` 和 `@date`
-
-#### Step 6.6: 生成 Mapper 集成测试骨架
-
-为每个有 mapper 角色组件的 packageMapping 生成 Mapper 集成测试骨架，在规约定义的 mapper 测试目录下生成 `{MapperInterface}IntegrationTest.java`。
-
-**模板**：
-```java
-import org.junit.jupiter.api.DisplayName;
-import org.mybatis.spring.boot.test.autoconfigure.MybatisTest;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.jdbc.Sql;
-
-/**
- * {MapperName} Mapper 集成测试 — 验证 MyBatis SQL 映射正确性
- * @author sql2java-workflow
- * @date {date}
- */
-@MybatisTest
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Sql(scripts = "classpath:schema-h2.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_METHOD)
-@DisplayName("{MapperName} Mapper 集成测试")
-class {MapperName}IntegrationTest {
-    @Autowired private {MapperName} {mapperName};
-    @Autowired private JdbcTemplate jdbcTemplate;
-    // TODO: [mapper-test] 待 translate 阶段填充 Mapper 集成测试逻辑
-}
-```
-
-> ⚠️ `@AutoConfigureTestDatabase` 的 import 必须是 `org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase`（带 `.jdbc` 子包）。
-
-- `@MybatisTest` 只加载 MyBatis 组件，配合 H2 验证 SQL 映射；`@AutoConfigureTestDatabase(replace = NONE)` 阻止 Spring 替换数据源；`JdbcTemplate` 用于测试数据准备；TODO 用 `[mapper-test]` 区别于单元测试的 `[test]`。
-
-#### Step 6.7: 生成 schema-h2.sql
+#### Step 6: 生成 schema-h2.sql
 
 从 `inventory.json` 的 tables + sequences + views 生成 H2 兼容 DDL，写入 `src/test/resources/schema-h2.sql`：
 1. 建表：逐列生成 DDL，Oracle→H2 类型按规约 §3.1 推导（H2 Oracle 模式可直接用 VARCHAR2/NUMBER/DATE）；PK 加 `PRIMARY KEY`，`nullable=false` 加 `NOT NULL`，有默认值加 `DEFAULT`；Oracle UDT 列跳过加注释；移除分区子句
@@ -212,7 +169,7 @@ class {MapperName}IntegrationTest {
 3. 视图：简化视图（跳过 UDT 列加注释）
 4. 外键：保留
 
-#### Step 6.8: 生成测试配置
+#### Step 7: 生成测试配置
 
 `src/test/resources/application-test.yml` 配 H2 数据源：
 ```yaml
@@ -233,34 +190,31 @@ mybatis:
 ```
 - `MODE=Oracle`：H2 Oracle 兼容；`DB_CLOSE_DELAY=-1`：JVM 关闭前保持连接；`DATABASE_TO_LOWER=TRUE`：配合 `map-underscore-to-camel-case`；`{typeAliasesPackage}` 从 packageBase 推导
 
-#### Step 7: 写入 scaffold.json
+#### Step 8: 写入 scaffold.json
 
 组装符合 ScaffoldSchema 的 JSON：
 - `targetProject`：Step 0 决策（不含 artifactId）
-- `packageMappings`：Step 0 决策（`oraclePackage`/`javaPackage`/`components[]`；纯常量包仅常量持有角色组件）
+- `packageMappings`：Step 0 决策（`oracleSchema`/`oraclePackage`/`javaPackage`/`components[]`；`components[]` 为 per-proc 角色集模板 `{role}`，无 className；纯常量包仅常量持有角色）
 - `coverageExcludes`：**规约 §工程结构 中非业务目录的路径子串列表**（如数据对象/异常/工具/配置目录的 `"{dir}/"` 形式）——verify 阶段 excludeReason 读此过滤 jacoco class，pom jacoco excludes 与此同步
 - `projectRoot`：原样使用 Runtime Context 注入值
 - `structure`：目录列表 + pomXml 内容
-- `generated`：所有生成文件清单（entities、mapperInterfaces、serviceShells、testShells、mapperTestShells、h2SchemaFile、testApplicationConfig、commonClasses）。**`serviceShells` 仅记录纯常量包的常量持有类**——有子程序包的业务组件壳由 translate-skeleton 创建，不在此
+- `generated`：scaffold 自身产出清单（entities、stateHolders、h2SchemaFile、testApplicationConfig、commonClasses）。per-proc 业务类/Mapper/测试类由 translate 产出，不在此
 - 编码约定不写入 scaffold.json（`conventions` 字段已移除）——由注入规约提供
 
-示例（角色名/层路径仅为占位，实际以规约为准）：
+示例（角色名/路径仅为占位，实际以规约为准）：
 ```json
 {
   "targetProject": { "groupId": "com.example", "packageBase": "com.example.app", "javaVersion": "1.8", "springBootVersion": "2.7.x" },
   "packageMappings": [
-    { "oraclePackage": "PKG_ORDER", "javaPackage": "com.example.app",
-      "components": [ {"role": "<入口角色>", "className": "Order<入口>"}, {"role": "<业务实现角色>", "className": "Order<实现>"}, {"role": "mapper", "className": "OrderMapper"} ] }
+    { "oracleSchema": "MFG_ERP", "oraclePackage": "MFG_ERP.F_ORDER", "javaPackage": "com.example.app.mfg_erp.f_order",
+      "components": [ {"role": "<业务接口角色>"}, {"role": "<业务实现角色>"}, {"role": "mapper"} ] }
   ],
   "coverageExcludes": ["<数据对象目录>/", "<异常目录>/", "<工具目录>/", "<配置目录>/"],
   "projectRoot": "/path/to/generated/app",
   "structure": { "directories": ["src/main/java/com/example/app", "..."], "pomXml": "<?xml ..." },
   "generated": {
     "entities": [{ "file": ".../{数据对象目录}/Order<后缀>.java", "tableName": "T_ORDER" }],
-    "mapperInterfaces": [{ "file": ".../OrderMapper.java", "oraclePackage": "PKG_ORDER" }],
-    "serviceShells": [{ "file": ".../{常量目录}/ConstPkg<后缀>.java", "oraclePackage": "PKG_CONST" }],
-    "testShells": [{ "file": "src/test/.../Order<实现>Test.java", "oraclePackage": "PKG_ORDER", "testClass": "Order<实现>Test" }],
-    "mapperTestShells": [{ "file": "src/test/.../OrderMapperIntegrationTest.java", "oraclePackage": "PKG_ORDER", "testClass": "OrderMapperIntegrationTest", "mapperInterface": "OrderMapper" }],
+    "stateHolders": [{ "file": ".../mfg_erp/f_order/FOrderState.java", "oracleSchema": "MFG_ERP", "oraclePackage": "MFG_ERP.F_ORDER" }],
     "h2SchemaFile": "src/test/resources/schema-h2.sql",
     "testApplicationConfig": "src/test/resources/application-test.yml",
     "commonClasses": [],
@@ -270,22 +224,20 @@ mybatis:
 ```
 
 **字段说明**：
-- `serviceShells`：仅纯常量包常量持有类；有子程序包业务组件壳由 translate-skeleton 创建，不记录
-- `testShells[].testClass`：`{业务实现类}Test`；`mapperTestShells[].testClass`：`{MapperInterface}IntegrationTest`
+- `packageMappings.components`：per-proc 角色集模板（`{role}`，无 className）；per-proc 类名由 translate 按规约 §4.1 `{ProcPascal}{RoleSuffix}` 派生
+- `stateHolders`：per-package `{Pkg}State` 持有类清单；per-proc 业务类/Mapper/测试类由 translate 产出，不在此记录
 - `coverageExcludes`：路径子串列表，与 pom jacoco excludes 同源
 
 ### 质量检查
 
 - [ ] pom.xml 可被 Maven 解析；含 JUnit5+Mockito（spring-boot-starter-test）、H2、mybatis-spring-boot-starter-test、jacoco-maven-plugin（prepare-agent+report 无 check；excludes 与 coverageExcludes 同步）
-- [ ] 目录结构按规约 §工程结构；业务组件目录由 translate-skeleton 创建（scaffold 不预建）
+- [ ] 目录结构按规约 §工程结构；全局公共目录由 scaffold 创建，per-proc 业务类目录由 translate-skeleton 创建
 - [ ] 数据对象覆盖 inventory 所有表（后缀按规约命名章节）
-- [ ] `targetProject` + `packageMappings`（含 `components[]`）+ `coverageExcludes` 已写入 scaffold.json
-- [ ] packageMappings 覆盖期望包；Mapper 接口覆盖有子程序的包
-- [ ] **scaffold 不生成有子程序包的业务组件壳**（由 translate-skeleton 创建）
-- [ ] 纯常量包生成常量持有类并记入 serviceShells，未生成业务组件/Mapper 及其测试
+- [ ] `targetProject` + `packageMappings`（含 `oracleSchema`/`components[]` 角色集）+ `coverageExcludes` 已写入 scaffold.json
+- [ ] packageMappings 覆盖期望包
+- [ ] **scaffold 不生成 per-proc 业务类/Mapper/测试类**（由 translate 创建）
+- [ ] per-package `{Pkg}State` 持有类覆盖有包级常量/变量的包（constants→static final，variables→session bean 字段），记入 stateHolders
 - [ ] 基础设施类（按规约 §十四）已生成
-- [ ] 单元测试骨架覆盖有业务实现角色的 packageMapping（纯常量包跳过）；为类壳 + `@Mock`/`@InjectMocks`
-- [ ] Mapper 集成测试骨架覆盖有 mapper 角色的 packageMapping
 - [ ] schema-h2.sql 覆盖 inventory 所有 tables/sequences；UDT 列跳过加注释
 - [ ] application-test.yml 配 H2（MODE=Oracle）
 - [ ] Java 文件可编译；scaffold.json.generated 记录所有已生成文件

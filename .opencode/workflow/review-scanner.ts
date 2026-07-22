@@ -349,6 +349,8 @@ function scanTestCompleteness(artifactsDir: string, projectRoot: string, targetS
   if (!existsSync(scaffoldPath)) return findings
   let scaffold: any
   try { scaffold = JSON.parse(readFileSync(scaffoldPath, "utf-8")) } catch { return findings }
+  // per-proc 模型下 scaffold 不再产 testShells/mapperTestShells（已下放 translate-test-gen）。
+  // ?? [] 优雅降级——real run 暂无测试完整性 finding；阶段 4 review 重构改为扫 per-proc 测试目录。
   const shells = [
     ...((scaffold?.generated?.testShells ?? []) as any[]),
     ...((scaffold?.generated?.mapperTestShells ?? []) as any[]),

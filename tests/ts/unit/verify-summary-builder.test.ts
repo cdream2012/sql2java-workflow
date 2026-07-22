@@ -76,10 +76,10 @@ describe("buildVerifySummary", () => {
     expect(summary.compilation.errors.length).toBe(1)
   })
 
-  it("测试失败按组件类名前缀归因到包 → 该包 passed=false", () => {
+  it("测试失败按 javaPackage 前缀归因到包 → 该包 passed=false", () => {
     setup(
       ["PKG_A"],
-      { mappings: [{ oraclePackage: "PKG_A", components: [{ role: "service-impl", className: "AServiceImpl" }] }] },
+      { mappings: [{ oracleSchema: "", oraclePackage: "PKG_A", javaPackage: "com.a", components: [{ role: "service-impl" }] }] },
     )
     writeCompileLog("[INFO] BUILD SUCCESS")
     writeTestLog([
@@ -93,10 +93,10 @@ describe("buildVerifySummary", () => {
     expect(summary.testExecution.testErrors[0].testType).toBe("unit")
   })
 
-  it("测试失败按 components 类名前缀归因到包 → 该包 passed=false", () => {
+  it("测试失败按 javaPackage 前缀归因到包 → 该包 passed=false（per-proc）", () => {
     setup(
       ["PKG_A"],
-      { mappings: [{ oraclePackage: "PKG_A", components: [{ role: "service-impl", className: "AServiceImpl" }] }] },
+      { mappings: [{ oracleSchema: "", oraclePackage: "PKG_A", javaPackage: "com.a", components: [{ role: "service-impl" }] }] },
     )
     writeCompileLog("[INFO] BUILD SUCCESS")
     writeTestLog([
@@ -110,12 +110,12 @@ describe("buildVerifySummary", () => {
     expect(summary.testExecution.testErrors[0].testType).toBe("unit")
   })
 
-  it("ServiceImpl: 跨包前缀碰撞不误归因（ItemServiceImpl 不命中 ItemServiceImplV2Test）", () => {
+  it("跨包 javaPackage 前缀隔离不误归因（com.b 的测试不命中 com.a 包）", () => {
     setup(
       ["PKG_A", "PKG_B"],
       { mappings: [
-        { oraclePackage: "PKG_A", components: [{ role: "service-impl", className: "ItemServiceImpl" }] },
-        { oraclePackage: "PKG_B", components: [{ role: "service-impl", className: "ItemServiceImplV2" }] },
+        { oracleSchema: "", oraclePackage: "PKG_A", javaPackage: "com.a", components: [{ role: "service-impl" }] },
+        { oracleSchema: "", oraclePackage: "PKG_B", javaPackage: "com.b", components: [{ role: "service-impl" }] },
       ] },
     )
     writeCompileLog("[INFO] BUILD SUCCESS")
@@ -133,7 +133,7 @@ describe("buildVerifySummary", () => {
   })
 
   it("IntegrationTest 失败 → testType=integration", () => {
-    setup(["PKG_A"], { mappings: [{ oraclePackage: "PKG_A", components: [{ role: "mapper", className: "AMapper" }] }] })
+    setup(["PKG_A"], { mappings: [{ oracleSchema: "", oraclePackage: "PKG_A", javaPackage: "com.a", components: [{ role: "mapper" }] }] })
     writeCompileLog("BUILD SUCCESS")
     writeTestLog([
       "Tests run: 1, Failures: 0, Errors: 1, Skipped: 0",

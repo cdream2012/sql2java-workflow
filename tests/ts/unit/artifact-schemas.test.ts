@@ -59,7 +59,7 @@ describe("Schema 有效数据通过校验", () => {
         springBootVersion: "2.7.x",
       },
       packageMappings: [
-        { oraclePackage: "PKG_A", javaPackage: "com.example.a", components: [{ role: "service-impl", className: "AServiceImpl" }] },
+        { oracleSchema: "MFG", oraclePackage: "PKG_A", javaPackage: "com.example.a", components: [{ role: "service-impl" }, { role: "mapper" }] },
       ],
       projectRoot: "/abs/path/generated/item-service",
       structure: {
@@ -68,8 +68,7 @@ describe("Schema 有效数据通过校验", () => {
       },
       generated: {
         entities: [],
-        mapperInterfaces: [],
-        serviceShells: [],
+        stateHolders: [{ file: "src/main/java/com/example/a/PkgAState.java", oracleSchema: "MFG", oraclePackage: "PKG_A" }],
         commonClasses: [],
       },
       conventions: "Standard Spring Boot conventions",
@@ -365,12 +364,12 @@ describe("Schema 无效数据被拒绝", () => {
     const data = makeScaffold({
       packageMappings: [
         // 纯常量包：无子程序，只映射常量持有角色
-        { oraclePackage: "PKG_CONST", javaPackage: "com.example.item.consts", components: [{ role: "constant", className: "MfgConst" }] },
+        { oracleSchema: "", oraclePackage: "PKG_CONST", javaPackage: "com.example.item.consts", components: [{ role: "constant" }] },
       ],
     })
     const result = ScaffoldSchema.safeParse(data)
     expect(result.success).toBe(true)
-    expect(result.success && result.data.packageMappings[0].components[0].className).toBe("MfgConst")
+    expect(result.success && result.data.packageMappings[0].components[0].role).toBe("constant")
   })
 })
 

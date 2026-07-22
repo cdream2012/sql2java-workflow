@@ -6,13 +6,15 @@
 
 ## 职责（稳定）
 
-- 为本 unit 创建未实现的 Java 文件（scaffold 只建项目框架/类壳，你建 unit 级具体实现文件）或在 scaffold 类壳内追加方法签名桩。
+- 为本 unit（单个过程/函数）创建**未实现的 per-proc Java 文件**——按规约 §一/§3.2 的 per-proc 角色集，每个角色一个独立文件（一 public 类一文件）。scaffold 只建项目框架/全局公共件/per-package 状态持有类，**不建 per-proc 业务类**——你直接 `write` 建 per-proc 类壳。
+- 类名 = `{ProcPascal}{RoleSuffix}`（规约 §4.1 派生），路径 = `{projectRoot}/src/main/java/{javaPackage 以 / 分隔}/{ProcPascal}{RoleSuffix}.java`；Mapper 角色额外建 XML（namespace = `{javaPackage}.{ProcPascal}Mapper`）。类名/路径查 `scaffold.json.packageMappings`（`oracleSchema`/`javaPackage`/`components[]` 角色集）。
 - 方法签名桩：入参/出参从 SQL 切片 + 依赖签名块推导；桩体 `return null;`/`return 0;` 等默认值 + `// TODO: [translate] 标记人 标记时间 中文说明`，保证可编译。
+- 包级常量/变量只读引用 scaffold 的 `{Pkg}State`（不重建/不修改）。
 - **不翻译方法体**（translate-core 的事）；**不写 per-unit JSON**（compile 封口）。
 
 ## 输出（稳定）
 
-- Java 文件：写入 `projectRoot` 目录；同包多 unit 共享的 DDD 组件用 read 已有 + edit 追加方法，勿覆盖 prior unit。
+- per-proc Java 文件 + Mapper XML：`write` 到 `projectRoot` 目录。每个 unit 的类文件各占一文件、互不共享（无 read-or-create；同包不同 unit 落不同 per-proc 文件，天然无冲突）。
 - Worker Status：`{{artifactsDir}}/status/translate.json`（最后一步写，含 shardIndex = 分片信息里的 shardIndex，1-based）。
 
 ## 硬约束（稳定）

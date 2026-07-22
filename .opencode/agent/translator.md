@@ -125,7 +125,7 @@ sub-stage 序列：skeleton → translate-core → test-gen → static-check →
 |-----------|-------------|------|
 | skeleton | translate-skeleton | 未实现 Java 文件 + 方法签名桩 + `// TODO: [translate]` 占位（可编译桩） |
 | translate-core | translate-core | 替换 TODO 桩为真实翻译，文件无 `// TODO: [translate]` 残留 |
-| test-gen | translate-test | 业务实现类单测 + Mapper 集成测试（填 scaffold 测试骨架） |
+| test-gen | translate-test | per-proc 业务实现类单测 + Mapper 集成测试（直接 write，scaffold 不再产测试骨架） |
 | static-check | translate-lint | `translations/{pkg}/{ref}.lint.json`（TODO 残留 / checkstyle / pmd / javaFile 完整性，不修复） |
 | compile | translate-compile | javac 语法校验 + 修复循环 + 封口 `translations/{pkg}/{ref}.json`（status=completed） |
 | fsd | translate-fsd | `fsd/{pkg}/{ref}.md`（模板填空 FSD 说明书） |

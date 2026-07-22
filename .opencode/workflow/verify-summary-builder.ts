@@ -328,26 +328,18 @@ function classBelongsToPkg(classRelPath: string, files: PkgFiles): boolean {
   return false
 }
 
-/** 测试类是否属于本包（按 scaffold.json packageMappings.components 的组件类名 + Test/IntegrationTest 后缀精确匹配）。
- *  架构无关：遍历该包所有组件 className，匹配 {className}Test / {className}IntegrationTest。 */
+/** 测试类是否属于本包（per-proc 模型：按 packageMappings.javaPackage 前缀匹配测试类 FQN）。
+ *  per-proc 测试类位于 {javaPackage} 下（{ProcPascal}{RoleSuffix}Test），故按 FQN 包前缀归因。
+ *  surefire `<<< FAILURE! - [Class.method]` 中 Class 为测试类 FQN（parseTestExecution 已拆出方法名）。 */
 function testBelongsToPkg(
   testClass: string,
   mappings: PkgMappingLite[],
   pkg: string,
 ): boolean {
   const m = mappings.find(mp => mp.oraclePackage?.toUpperCase() === pkg.toUpperCase())
-  if (!m || !Array.isArray(m.components)) return false
-  // Surefire 的 <<< FAILURE! - [Class.method] 中 Class 可能是全限定名，取简单类名。
-  // 测试类命名约定：单元测试 = {组件类}Test，集成测试 = {组件类}IntegrationTest。
-  // 用精确后缀匹配，避免 startsWith 跨包前缀碰撞（如 ItemOrder 误命中 ItemOrderV2Test）。
-  const simple = testClass.slice(testClass.lastIndexOf(".") + 1).toLowerCase()
-  for (const comp of m.components) {
-    const c = comp?.className
-    if (typeof c !== "string" || c === "N/A") continue
-    const base = c.toLowerCase()
-    if (simple === base + "test" || simple === base + "integrationtest") return true
-  }
-  return false
+  if (!m || !m.javaPackage) return false
+  const tc = String(testClass ?? "").toLowerCase()
+  return tc.startsWith(String(m.javaPackage).toLowerCase() + ".")
 }
 
 function findDirCaseInsensitive(parent: string, name: string): string | undefined {

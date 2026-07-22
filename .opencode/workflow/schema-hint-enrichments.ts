@@ -85,10 +85,6 @@ export const NON_ZOD_VALIDATION_RULES: { phases: string[]; message: string }[] =
   },
   {
     phases: ["scaffold"],
-    message: "scaffold.json 的 mapperTestShells 中的 oraclePackage 必须与 scaffold.json 的 packageMappings 一致",
-  },
-  {
-    phases: ["scaffold"],
     message: "scaffold.json 的 h2SchemaFile 指向的文件必须存在于磁盘",
   },
 ]
@@ -166,8 +162,8 @@ export const COMMON_PITFALLS: Record<string, string[]> = {
   scaffold: [
     'commonModules.classes.category 推荐全小写，如 "type-mapper" / "mybatis-fragment" / "mapper-interface" / "test-base"（不限死）',
     'projectRoot 为绝对路径（generated/{artifactId}），必须原样使用 Runtime Context / workOrder 注入的 projectRoot 值，勿自行编造路径',
-    'mapperTestShells 中的 testClass 命名必须为 {MapperInterface}IntegrationTest',
-    'mapperTestShells 中的 oraclePackage 必须与 scaffold.json 的 packageMappings 一致',
+    'stateHolders 为 per-package {Pkg}State 持有类清单（{file, oracleSchema, oraclePackage}），scaffold 从 inventory constants+variables 生成',
+    'packageMappings.components 为 per-proc 角色集模板（{role}，无 className），类名由 {ProcPascal}{RoleSuffix} 约定派生',
     'h2SchemaFile 指向的文件必须存在于磁盘（src/test/resources/schema-h2.sql）',
     'schema-h2.sql 必须覆盖 inventory.json 中所有 tables 和 sequences',
     'schema-h2.sql 中 UDT 列必须跳过并加注释（-- H2 不支持 Oracle UDT），不能生成 H2 不支持的类型',
