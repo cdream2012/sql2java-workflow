@@ -1,14 +1,15 @@
 /**
- * scaffold-input-builder — scaffold 派发前的确定性预聚合（零 LLM）
+ * scaffold-input-builder — scaffold 派发前的确定性预聚合（零 LLM，packages-only）
  *
  * 仿 review-scanner.ts 的 scanReviewStatic：dispatch 前 engine 调 generateScaffoldInput，
- * 读 inventory.json + packages/*.json + tables/*.json，抽出 scaffold 真正消费的窄字段，
- * 聚合成一份紧凑 scaffold-input.json 落盘。scaffold 子 agent 只读这一份，不再挨个 Read
- * 60+ 个原始 artifact（subprograms/*.json 完全不消费；packages/tables 的噪声字段丢弃）。
+ * 读 inventory.json + packages/*.json，抽出 scaffold 真正消费的窄字段，聚合成一份紧凑
+ * scaffold-input.json 落盘。scaffold 子 agent 只读这一份，不再挨个 Read 原始 artifact。
  *
- * 设计见 [[scaffold-input-aggregation]]。scaffold 消费的上游数据（java-architect.md Step 0.4/4/5/6）：
- *   - inventory.json：packageNames、sequences[]、views[]（views 已含 columns）、tableNames（仅名）
- *   - tables/{name}.json：name、columns[]、primaryKey、foreignKeys（丢 ddlFile）
+ * tables/sequences/views **不在此**——DO 实体 + schema-h2.sql 由 do-schema-builder 引擎在
+ * scaffold 完成后确定性生成（读 tables/*.json + inventory 直接落盘），表数据全程不进 LLM 上下文。
+ *
+ * 设计见 [[scaffold-input-aggregation]]。scaffold 消费的上游数据（java-architect.md Step 0.4/5）：
+ *   - inventory.json：packageNames（稳定顺序）
  *   - packages/{name}.json：packageName、sourcePath、constants、variables、procedures（名）、functions（名）
  *
  * 注：扫描器按设计把包级 constants/variables 留空交 LLM 兜底，故每个包带上 sourcePath，
@@ -37,32 +38,22 @@ export interface ScaffoldInput {
     procedures: string[]
     functions: string[]
   }>
-  tables: Array<{
-    name: string
-    columns: unknown[]
-    primaryKey: unknown
-    foreignKeys: unknown[]
-  }>
-  sequences: unknown[]
-  views: unknown[]
 }
 
 /**
- * 从 inventory + packages + tables 聚合 scaffold-input.json，落盘到 artifactsDir。
- * 单文件缺失/解析失败 → warn 跳过该项，不阻断 dispatch（镜像 review 静态扫描容错风格）。
+ * 从 inventory + packages 聚合 scaffold-input.json（packages-only），落盘到 artifactsDir。
+ * tables/sequences/views 不在此——DO 实体 + schema-h2.sql 由 do-schema-builder 引擎确定性生成，
+ * 表数据全程不进 LLM 上下文。单文件缺失/解析失败 → warn 跳过，不阻断 dispatch。
  */
 export function generateScaffoldInput(artifactsDir: string): ScaffoldInput {
   const log = getLogger()
   const inv = readJsonOrNull(join(artifactsDir, "inventory.json"))
   if (!inv) {
     log.warn("[scaffold-input]", `inventory.json 缺失/不可解析：${artifactsDir}/inventory.json，跳过聚合`)
-    return { packageNames: [], packages: [], tables: [], sequences: [], views: [] }
+    return { packageNames: [], packages: [] }
   }
 
   const packageNames: string[] = Array.isArray(inv.packageNames) ? inv.packageNames : []
-  const tableNames: string[] = Array.isArray(inv.tableNames) ? inv.tableNames : []
-  const sequences: unknown[] = Array.isArray(inv.sequences) ? inv.sequences : []
-  const views: unknown[] = Array.isArray(inv.views) ? inv.views : []
 
   // packages：仅保留 scaffold 消费字段 + sourcePath（constants/variables 空时兜底读源码用）
   const packages = packageNames.map((pn) => {
@@ -83,23 +74,8 @@ export function generateScaffoldInput(artifactsDir: string): ScaffoldInput {
     }
   })
 
-  // tables：列定义实际在 tables/*.json（inventory.json 只有 tableNames），丢 ddlFile 噪声
-  const tables = tableNames.map((tn) => {
-    const tbl = readJsonOrNull(join(artifactsDir, "tables", `${tn}.json`))
-    if (!tbl) {
-      log.warn("[scaffold-input]", `tables/${tn}.json 缺失/不可解析，跳过`)
-      return { name: tn, columns: [], primaryKey: null, foreignKeys: [] }
-    }
-    return {
-      name: tbl.name ?? tn,
-      columns: Array.isArray(tbl.columns) ? tbl.columns : [],
-      primaryKey: tbl.primaryKey ?? null,
-      foreignKeys: Array.isArray(tbl.foreignKeys) ? tbl.foreignKeys : [],
-    }
-  })
-
-  const out: ScaffoldInput = { packageNames, packages, tables, sequences, views }
+  const out: ScaffoldInput = { packageNames, packages }
   writeFileSync(join(artifactsDir, "scaffold-input.json"), JSON.stringify(out, null, 2))
-  log.info("[scaffold-input]", `聚合完成：${packages.length} 包 / ${tables.length} 表 → ${join(artifactsDir, "scaffold-input.json")}`)
+  log.info("[scaffold-input]", `聚合完成：${packages.length} 包 → ${join(artifactsDir, "scaffold-input.json")}`)
   return out
 }

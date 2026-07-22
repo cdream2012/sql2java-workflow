@@ -1,11 +1,11 @@
 /**
- * scaffold-input-builder.test.ts — generateScaffoldInput 聚合单测
+ * scaffold-input-builder.test.ts — generateScaffoldInput 聚合单测（packages-only）
  *
- * 用合成 inventory + packages + tables 样本验证：
- *   - 仅保留 scaffold 消费的窄字段，丢弃噪声（subprograms 不读；packages 的 types/exceptions/
- *     bodyPath/estimatedLoc/complexity 丢；tables 的 ddlFile 丢）
+ * 用合成 inventory + packages 样本验证：
+ *   - 仅保留 packages 窄字段，丢弃噪声（types/exceptions/bodyPath/estimatedLoc/complexity）
  *   - sourcePath 取 absolutePaths[0] ?? headerPath（constants/variables 空时兜底读源码用）
  *   - 稳定顺序保持（packageNames 序 → 包内 procedures/functions 原序）
+ *   - tables/sequences/views 不进产物（DO/schema-h2 由 do-schema-builder 引擎生成）
  *   - 单文件缺失容错（warn 跳过，不阻断）
  */
 
@@ -21,14 +21,14 @@ describe("generateScaffoldInput", () => {
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), "scaffold-input-"))
     mkdirSync(join(dir, "packages"), { recursive: true })
+    // tables 目录存在但聚合器不应再读它（DO/schema-h2 改由 do-schema-builder 读）
     mkdirSync(join(dir, "tables"), { recursive: true })
 
     writeFileSync(join(dir, "inventory.json"), JSON.stringify({
       packageNames: ["SCHEMA.PKG_A", "SCHEMA.PKG_B"],
-      tableNames: ["SCHEMA.T_FOO", "SCHEMA.T_BAR"],
-      sequences: [{ name: "SCHEMA.SEQ_FOO", startWith: 1, incrementBy: 1 }],
-      views: [{ name: "SCHEMA.V_FOO", columns: ["c1", "c2"] }],
-      triggers: [{ name: "NOISE_TRIGGER" }], // 不应进 scaffold-input
+      tableNames: ["SCHEMA.T_FOO"], // 不应进 packages-only 产物
+      sequences: [{ name: "SCHEMA.SEQ_FOO" }], // 不应进产物
+      views: [{ name: "SCHEMA.V_FOO" }], // 不应进产物
     }))
 
     writeFileSync(join(dir, "packages", "SCHEMA.PKG_A.json"), JSON.stringify({
@@ -55,31 +55,17 @@ describe("generateScaffoldInput", () => {
       procedures: [],
       functions: ["GET_B"],
     }))
-
-    writeFileSync(join(dir, "tables", "SCHEMA.T_FOO.json"), JSON.stringify({
-      name: "SCHEMA.T_FOO",
-      ddlFile: "/proj/resources/SCHEMA/TABLE/FOO.SQL", // 噪声，应丢
-      columns: [{ name: "ID", plsqlType: "NUMBER(18)", nullable: false, isPrimaryKey: true, defaultValue: null }],
-      primaryKey: { columns: ["ID"] },
-      foreignKeys: [],
-    }))
-
-    writeFileSync(join(dir, "tables", "SCHEMA.T_BAR.json"), JSON.stringify({
-      name: "SCHEMA.T_BAR",
-      columns: [{ name: "CODE", plsqlType: "VARCHAR2(40)", nullable: false, isPrimaryKey: false, defaultValue: null }],
-      primaryKey: null,
-      foreignKeys: [{ name: "FK_BAR", columns: ["FOO_ID"], refTable: "T_FOO", refColumns: ["ID"] }],
-    }))
   })
 
-  it("落盘 scaffold-input.json 且结构完整", () => {
+  it("落盘 scaffold-input.json 且 packages-only（无 tables/sequences/views）", () => {
     generateScaffoldInput(dir)
     const out = JSON.parse(readFileSync(join(dir, "scaffold-input.json"), "utf-8"))
     expect(out.packageNames).toEqual(["SCHEMA.PKG_A", "SCHEMA.PKG_B"])
-    expect(out.sequences).toHaveLength(1)
-    expect(out.views).toHaveLength(1)
-    // 噪声字段不进产物
-    expect(out.triggers).toBeUndefined()
+    expect(out.packages).toHaveLength(2)
+    // tables/sequences/views 不再进产物
+    expect(out.tables).toBeUndefined()
+    expect(out.sequences).toBeUndefined()
+    expect(out.views).toBeUndefined()
   })
 
   it("packages 仅保留窄字段 + sourcePath，丢弃 types/exceptions/bodyPath/loc/complexity", () => {
@@ -107,24 +93,6 @@ describe("generateScaffoldInput", () => {
   it("packages 保持 packageNames 稳定顺序", () => {
     const out = JSON.parse(readFileSync(join(dir, "scaffold-input.json"), "utf-8"))
     expect(out.packages.map((p: any) => p.packageName)).toEqual(["SCHEMA.PKG_A", "SCHEMA.PKG_B"])
-  })
-
-  it("tables 保留 columns/primaryKey/foreignKeys，丢弃 ddlFile，保持 tableNames 顺序", () => {
-    const out = JSON.parse(readFileSync(join(dir, "scaffold-input.json"), "utf-8"))
-    expect(out.tables.map((t: any) => t.name)).toEqual(["SCHEMA.T_FOO", "SCHEMA.T_BAR"])
-    expect(out.tables[0].columns).toHaveLength(1)
-    expect(out.tables[0].primaryKey).toEqual({ columns: ["ID"] })
-    expect(out.tables[0].foreignKeys).toEqual([])
-    expect(out.tables[1].foreignKeys).toHaveLength(1)
-    expect(out.tables[0].ddlFile).toBeUndefined()
-  })
-
-  it("不读 subprograms（聚合器根本不碰该目录）", () => {
-    // 放一个 subprograms 文件，确认聚合产物无 subprograms 字段、且不读它
-    mkdirSync(join(dir, "subprograms"), { recursive: true })
-    writeFileSync(join(dir, "subprograms", "SCHEMA.PKG_A.DO_A.json"), JSON.stringify({ directCalls: ["X"] }))
-    const out = generateScaffoldInput(dir)
-    expect((out as any).subprograms).toBeUndefined()
   })
 
   it("inventory.json 缺失时容错返回空结构（不抛）", () => {

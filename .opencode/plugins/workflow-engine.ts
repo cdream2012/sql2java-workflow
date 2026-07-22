@@ -40,6 +40,7 @@ import { buildVerifySummary } from "../workflow/verify-summary-builder"
 import { scanDuplicates, type ScanResult } from "../workflow/dedup-scanner"
 import { scanReviewStatic } from "../workflow/review-scanner"
 import { generateScaffoldInput } from "../workflow/scaffold-input-builder"
+import { generateDoAndH2Schema } from "../workflow/do-schema-builder"
 import { buildReviewFocus } from "../workflow/review-focus"
 import { ensureDeps, findOpencodeDir } from "../workflow/ensure-deps"
 import {
@@ -1976,6 +1977,26 @@ export function validateArtifactOnDisk(run: WorkflowRun, checkStatus = true): st
           }
           if (!pomInProjectRoot) {
             return `scaffold 阶段未在 projectRoot="${expectedRoot}" 下找到 pom.xml。请确保 Java 源文件写入 Runtime Context 中注入的 projectRoot 目录。`
+          }
+          // 兜底确保 scaffold.json.structure.directories 声明的全部目录实际存在（含空目录）。
+          // LLM 只在写文件时隐式建目录，空目录（如无表时的 entity/、无 per-proc 类时的 mapper/service.impl、
+          // resources/mapper）可能漏建；引擎按声明清单 mkdirSync 兜底，保证工程结构完整。
+          const declaredDirs = (scaffoldData.structure?.directories ?? []) as string[]
+          for (const d of declaredDirs) {
+            if (typeof d === "string" && d.trim()) mkdirSync(join(expectedRoot, d), { recursive: true })
+          }
+          // DO 实体 + schema-h2.sql 引擎确定性生成（零 LLM）：scaffold LLM 不再生成 DO/schema-h2。
+          // 仿 inventory 兜底 buildDependencyGraphFromIndex 先例：读 tables/*.json + inventory，
+          // 生成 entity/*DO.java + schema-h2.sql 落盘 expectedRoot，patch 进 scaffold.json.generated。
+          // 失败直接报错（暴露 do-schema-builder 失败原因）。详见 .opencode/workflow/do-schema-builder.ts。
+          try {
+            const manifest = generateDoAndH2Schema(artifactsDir, expectedRoot)
+            scaffoldData.generated = scaffoldData.generated ?? {}
+            scaffoldData.generated.entities = manifest.entities
+            scaffoldData.generated.h2SchemaFile = manifest.h2SchemaFile
+            safeWriteFile(join(artifactsDir, "scaffold.json"), JSON.stringify(scaffoldData, null, 2))
+          } catch (e: any) {
+            return `scaffold DO/schema-h2 生成失败: ${e.message}`
           }
         }
       }

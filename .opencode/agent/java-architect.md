@@ -57,16 +57,18 @@ permission:
 
 ### 目标
 
-根据 `scaffold-input.json` + 注入的 Java 代码规约，**决策 Java 项目配置（targetProject）+ 包映射（packageMappings）**，并生成 Maven 项目骨架：pom.xml、无根包扁平分层目录、数据对象（DO）、基础设施类、**per-package 包级常量类（{Pkg}Constant）与变量 DTO（{Pkg}StateDTO）**、per-proc 去重类名映射（procClassNames）、schema-h2、测试配置。产出 `scaffold.json`。
+根据 `scaffold-input.json` + 注入的 Java 代码规约，**决策 Java 项目配置（targetProject）+ 包映射（packageMappings）**，并生成 Maven 项目骨架：pom.xml、无根包扁平分层目录、基础设施类、**per-package 包级常量类（{Pkg}Constant）与变量 DTO（{Pkg}StateDTO）**、per-proc 去重类名映射（procClassNames）、测试配置。产出 `scaffold.json`。
 
+> **DO 实体 + schema-h2.sql 不由 scaffold LLM 生成**——由引擎在 scaffold 完成后确定性生成（读 `tables/*.json` + `inventory.json`，按 §3.1 类型映射 + §4.1 命名，落 `entity/*DO.java` + `src/test/resources/schema-h2.sql`），并 patch 进 `scaffold.json.generated.entities`/`h2SchemaFile`。scaffold LLM 不读表数据、不生成 DO/schema-h2、不填这两个字段。
+>
 > **per-proc 业务类不在 scaffold 创建**——每个过程/函数的 per-proc 角色类（规约 §一/§3.2 定义的业务接口/业务实现/Mapper 角色）由 translate-skeleton 子阶段按过程独立 write 创建（一文件一类，各分片独占）。scaffold 只建项目级全局件 + per-package 常量类与变量 DTO + procClassNames 去重映射。Mapper 接口空壳、测试类骨架均不由 scaffold 生成（下放 translate）。
 
 ### 输入
 
-- `${artifactsDir}/scaffold-input.json` — **唯一上游 artifact**（dispatch 前引擎聚合自 inventory + packages + tables 的窄字段）：`packageNames`、`packages[]`（`packageName`/`sourcePath`/`constants`/`variables`/`procedures`/`functions`）、`tables[]`（`name`/`columns`/`primaryKey`/`foreignKeys`）、`sequences[]`、`views[]`
+- `${artifactsDir}/scaffold-input.json` — **唯一上游 artifact**（dispatch 前引擎聚合自 inventory + packages，packages-only）：`packageNames`、`packages[]`（`packageName`/`sourcePath`/`constants`/`variables`/`procedures`/`functions`）
 - **注入的 Java 代码规约** — 架构模型/命名/异常/日志/事务/MyBatis 约定、PL/SQL→Java 类型表（§3.1）
 
-> ⛔ **禁止 Read 原始上游文件**——`inventory.json`/`packages/*.json`/`tables/*.json`/`subprograms/*.json` 一律不读（scaffold-input.json 已含所需全部窄字段）。唯一例外：某包 `constants`/`variables` 为空数组时（扫描器按设计留空），可读该包 `packages[].sourcePath` 指向的 source.sql 抽取包级常量/变量兜底。
+> ⛔ **禁止 Read 原始上游文件**——`inventory.json`/`packages/*.json`/`tables/*.json`/`subprograms/*.json` 一律不读。DO/schema-h2 由引擎读 `tables/*.json` 确定性生成，scaffold LLM 不碰表数据。唯一例外：某包 `constants`/`variables` 为空数组时（扫描器按设计留空），可读该包 `packages[].sourcePath` 指向的 source.sql 抽取包级常量/变量兜底。
 
 ### 输出
 
@@ -99,13 +101,15 @@ permission:
 
 使用 `projectRoot` 作项目根。**优先使用自定义 `projectStructure`**（Runtime Context 有则严格按其路径列表创建）。无 `projectStructure` 时按**注入规约 §工程结构**章节创建无根包扁平分层目录：规约列出的全部角色顶层包（main 侧 + 测试侧）+ `src/main/resources/mapper` + `src/test/resources`。
 
-> per-proc 业务类目录（`service/`/`service.impl/`/`mapper/`）由 translate-skeleton 写 per-proc 类时隐式创建，scaffold 不预建业务类文件。scaffold 只创建它自己写文件的目录（全局顶层包目录 + `resources/mapper`）。
+> ⚠️ **必须创建 §工程结构 列出的全部目录并列入 `structure.directories`，含空目录**（如无表时的 `entity/`、无 per-proc 类时的 `mapper/`/`service/`/`service.impl/`、`resources/mapper`）。引擎会按 `structure.directories` 兜底 `mkdirSync` 确保每个声明目录实际存在，但目录清单由 scaffold 在 `structure.directories` 声明——**不得遗漏空目录**。
 
 #### Step 2: 生成 pom.xml
 
-依赖：spring-boot-starter、spring-boot-starter-web、mybatis-spring-boot-starter、lombok、spring-boot-starter-test（含 JUnit 5 + Mockito）、h2。
+依赖：spring-boot-starter、spring-boot-starter-web、**mybatis-plus-boot-starter（3.5.5，MyBatis-Plus 超集，支持 XML mapper + `@TableName`）**、lombok、spring-boot-starter-test（含 JUnit 5 + Mockito）、mybatis-spring-boot-starter-test、h2。
 
 > ⛔ **禁止单独引入 `spring-boot-test-autoconfigure` 或 `spring-boot-test`**——`spring-boot-starter-test` 已传递包含。测试注解只需 `spring-boot-starter-test` + `mybatis-spring-boot-starter-test`。
+>
+> ⚠️ **用 `mybatis-plus-boot-starter` 替代 `mybatis-spring-boot-starter`**——DO 实体用 `@TableName`（MyBatis-Plus 注解），vanilla mybatis 无此注解会编译失败。mybatis-plus 是 mybatis 超集，translate 的 XML mapper + `@MapperScan("mapper")` 仍工作；测试配置键用 `mybatis-plus.*`（见 Step 7）。
 
 > **pom.xml 的 `<java.version>`/`<source>`/`<target>`/Spring Boot parent/MyBatis starter 版本必须与规约"Java 版本与框架配置"段落完全一致**，命名空间（javax/jakarta）也须一致。
 
@@ -137,13 +141,15 @@ permission:
 
 scaffold 生成**确定的、可直接完成**的公共模块（其余由 dedup 按需创建）。按**注入规约 §十四 基础设施类模板**生成基础设施类（最小可编译 stub，真实实现由项目方补充），写入规约定义的项目级公共目录。类名/源码/签名一律以规约 §十四 为唯一来源，逐字按其代码块生成。所有类遵循规约：中文 Javadoc、`@author`/`@version`/`@since`。落 `scaffold.json` 的 `commonModules.classes` + `commonClasses`。
 
-#### Step 4: 生成数据对象
+#### Step 4: 数据对象（DO）— 引擎确定性生成，scaffold LLM 不参与
 
-从 `scaffold-input.json` 的 `tables[]` 数组生成数据对象（项目级共享，写入规约定义的数据对象目录）：
-- 类名：表名转 PascalCase + 规约命名章节定义的后缀
-- 字段：列名转 camelCase，类型按规约 §3.1；POJO 属性用包装类型，不设默认值
-- 注解：`@Data`（Lombok）、`@TableName`（如适用）；布尔属性不加 `is` 前缀
-- 必须写 `toString`；注释格式遵循规约
+DO 实体由引擎在 scaffold 完成后确定性生成（`.opencode/workflow/do-schema-builder.ts`，读 `tables/*.json` + `inventory.json`），scaffold LLM **不生成 DO、不读表数据**：
+- 类名：表名去 schema 前缀 + 去 `T_` 前缀 → PascalCase + `DO`（§4.1，如 `MFG_ERP.T_BOM_LINE` → `BomLineDO`）
+- 字段：列名 snake→camelCase，类型按 §3.1（NUMBER 整数→Long、小数/无精度→BigDecimal、VARCHAR2/CHAR/CLOB→String、DATE→LocalDate、TIMESTAMP→LocalDateTime、BLOB/RAW→byte[]…）；POJO 包装类型、不设默认值；UDT/未识别类型列跳过+注释
+- 注解：`@Data`（Lombok）+ `@TableName("{原表名}")`（MyBatis-Plus，故 pom 用 mybatis-plus-boot-starter）
+- 落 `entity/{Pascal}DO.java`；清单 `generated.entities`（`{file, tableName}`）+ `generated.h2SchemaFile` 由引擎 patch 进 scaffold.json
+
+> scaffold LLM 只需确保 Step 1 创建了 `entity/` 目录（DO 文件由引擎写入）。
 
 #### Step 5: 生成 per-package 包级常量类 {Pkg}Constant 与变量 DTO {Pkg}StateDTO
 
@@ -169,13 +175,15 @@ scaffold 生成**确定的、可直接完成**的公共模块（其余由 dedup 
 >
 > scaffold.json 不再记录 `mapperInterfaces`/`testShells`/`mapperTestShells`。
 
-#### Step 6: 生成 schema-h2.sql
+#### Step 6: schema-h2.sql — 引擎确定性生成，scaffold LLM 不参与
 
-从 `scaffold-input.json` 的 `tables` + `sequences` + `views` 生成 H2 兼容 DDL，写入 `src/test/resources/schema-h2.sql`：
-1. 建表：逐列生成 DDL，PL/SQL→H2 类型按规约 §3.1 推导（H2 PL/SQL 模式可直接用 VARCHAR2/NUMBER/DATE）；PK 加 `PRIMARY KEY`，`nullable=false` 加 `NOT NULL`，有默认值加 `DEFAULT`；PL/SQL UDT 列跳过加注释；移除分区子句
+schema-h2.sql 由引擎在 scaffold 完成后确定性生成（`do-schema-builder.ts`，读 `tables/*.json` + `inventory.json` 的 sequences/views），落 `src/test/resources/schema-h2.sql`，路径记入 `generated.h2SchemaFile`（引擎 patch）：
+1. 建表：列用原 `plsqlType`（H2 MODE=PL/SQL 直收 VARCHAR2/NUMBER/DATE）；PK 加 `PRIMARY KEY`，`!nullable` 加 `NOT NULL`，有 `defaultValue` 加 `DEFAULT`；UDT 列跳过加注释
 2. 序列：`CREATE SEQUENCE IF NOT EXISTS {name} START WITH {startWith} INCREMENT BY {incrementBy}`
-3. 视图：简化视图（跳过 UDT 列加注释）
-4. 外键：保留
+3. 视图：**跳过**（inventory 无 view DDL body）+ 注释
+4. 外键：`ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ...`
+
+> scaffold LLM 只需确保 Step 1 创建了 `src/test/resources/` 目录（schema-h2.sql 由引擎写入）。
 
 #### Step 7: 生成测试配置
 
@@ -190,7 +198,7 @@ spring:
   sql:
     init:
       mode: never   # 使用 @Sql 注解控制 schema 加载
-mybatis:
+mybatis-plus:
   mapper-locations: classpath:mapper/*.xml
   type-aliases-package: entity
   configuration:
@@ -220,8 +228,8 @@ mybatis:
 - `packageMappings`：Step 0 决策（`plsqlSchema`/`plsqlPackage`/`components[]`，**无 `javaPackage`**；`components[]` 为 per-proc 角色集模板 `{role}`，无 className；纯常量包仅常量持有角色）
 - `coverageExcludes`：**规约 §工程结构 中非业务目录的路径子串列表**（无根包下为 `config/`/`entity/`/`exception/`/`util/`/`constant/`/`dto/`）——verify 阶段 excludeReason 读此过滤 jacoco class，pom jacoco excludes 与此同步
 - `projectRoot`：原样使用 Runtime Context 注入值
-- `structure`：目录列表 + pomXml 内容
-- `generated`：scaffold 自身产出清单（entities、procClassNames、constants、stateDtos、h2SchemaFile、testApplicationConfig、commonClasses）。per-proc 业务类/Mapper/测试类由 translate 产出，不在此
+- `structure`：目录列表 + pomXml 内容。`directories` 必须列出 §工程结构 的**全部目录（含空目录）**——引擎据此兜底 mkdirSync 确保目录存在
+- `generated`：scaffold 自身产出清单（procClassNames、constants、stateDtos、testApplicationConfig、commonClasses）。**`entities` 与 `h2SchemaFile` 由引擎在 scaffold 完成后确定性 patch（DO/schema-h2 引擎生成），scaffold LLM 不填这两个字段**。per-proc 业务类/Mapper/测试类由 translate 产出，不在此
 - 编码约定不写入 scaffold.json（`conventions` 字段已移除）——由注入规约提供
 
 示例（角色名/路径仅为占位，实际以规约为准）：

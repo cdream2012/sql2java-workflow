@@ -85,7 +85,7 @@ export const NON_ZOD_VALIDATION_RULES: { phases: string[]; message: string }[] =
   },
   {
     phases: ["scaffold"],
-    message: "scaffold.json 的 h2SchemaFile 指向的文件必须存在于磁盘",
+    message: "scaffold.json 的 generated.entities / h2SchemaFile 由引擎确定性生成并 patch（DO + schema-h2.sql 落盘 projectRoot）——LLM 不填这两个字段",
   },
 ]
 
@@ -165,9 +165,7 @@ export const COMMON_PITFALLS: Record<string, string[]> = {
     'constants 为 per-package {Pkg}Constant 常量类清单、stateDtos 为 per-package {Pkg}StateDTO 变量 DTO 清单（{file, plsqlSchema, plsqlPackage}），scaffold 从 inventory constants / variables 分别生成',
     'procClassNames 为 per-proc 去重类名映射（{plsqlSchema, plsqlPackage, refName, className}），跨包同名碰撞加数字后缀；translate 据此 + 角色后缀派生类名，跨包调用按 service.{className}Service 派生',
     'packageMappings.components 为 per-proc 角色集模板（{role}，无 className），类名由 procClassNames 去重基名 + {RoleSuffix} 派生',
-    'h2SchemaFile 指向的文件必须存在于磁盘（src/test/resources/schema-h2.sql）',
-    'schema-h2.sql 必须覆盖 inventory.json 中所有 tables 和 sequences',
-    'schema-h2.sql 中 UDT 列必须跳过并加注释（-- H2 不支持 PL/SQL UDT），不能生成 H2 不支持的类型',
+    'DO 实体（generated.entities）+ schema-h2.sql（generated.h2SchemaFile）由引擎在 scaffold 完成后确定性生成并 patch——LLM 不生成 DO/schema-h2、不填这两个字段、不读 tables 数据',
     'Schema 允许额外字段（.passthrough()）——可添加不在 schema 中的 optional 字段帮助下游阶段，额外字段会透传不被剥离',
   ],
   translate: [

@@ -280,11 +280,13 @@ export const ScaffoldSchema = z.object({
     pomXml: z.string(),
   }),
   generated: z.object({
-    /** 数据对象 Entity（tableName → DO；后缀按规约命名章节，如 XxxDO）。全局共享，scaffold 生成。 */
+    /** 数据对象 Entity（tableName → DO；后缀按规约命名章节，如 XxxDO）。全局共享。
+     *  引擎确定性生成（do-schema-builder），scaffold LLM 不写——故 optional：zod 校验在引擎 patch 前，
+     *  LLM 提交时 entities 可能缺失，引擎在 validatePhaseArtifact(scaffold) 内 patch 填入。同 h2SchemaFile。 */
     entities: z.array(z.object({
       file: z.string(),
       tableName: z.string(),
-    })),
+    })).optional(),
     /**
      * per-proc 去重类名映射（无根包模型的核心契约，规约 §4.1）。
      * scaffold 枚举 inventory 所有 subprogram，按 PascalCase 基名全局去重：首现保持 {ProcPascal}，
