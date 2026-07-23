@@ -42,7 +42,7 @@ describe("refNamesForPackage", () => {
   })
 
   it("大小写变体视为同名重载（PL/SQL 标识符不区分大小写）", () => {
-    // Oracle 默认大写化未加引号的标识符，get_item 与 GET_ITEM 是同一子程序、互为重载。
+    // PL/SQL 默认大写化未加引号的标识符，get_item 与 GET_ITEM 是同一子程序、互为重载。
     // 须按大写键合并计数，否则 analysis-builder 与 validateCrossSchema 的 validRefNameSet
     // 会对大小写变体产出不相交的 refName 集合（callGraph 误报「未知 refName」）。
     expect(refNamesForPackage(["get_item", "GET_ITEM"])).toEqual(["get_item__1", "GET_ITEM__2"])

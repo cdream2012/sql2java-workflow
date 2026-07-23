@@ -20,7 +20,6 @@ import { join } from "node:path"
 import { safeWriteFile } from "./cross-platform"
 import type { PhaseHistoryEntry, WorkflowRun } from "./engine-core"
 import { getLogger } from "./workflow-logger"
-import { buildDependencyGraph } from "./dependency-graph"
 
 // ── Type Definitions ──────────────────────────────────────────────────────────
 
@@ -85,11 +84,6 @@ interface PhaseBusinessData {
   sequenceCount?: number
   standaloneProcedureCount?: number
   totalProcedureCount?: number
-
-  // analyze
-  subprogramCount?: number
-  sccGroupCount?: number
-  fsdFileCount?: number
 
   // plan
   javaPackageCount?: number
@@ -161,9 +155,9 @@ interface RunMetrics {
 /** 运行级业务汇总 */
 interface RunBusinessData {
   sourcePath?: string
-  oraclePackageCount?: number
-  oracleProcedureCount?: number
-  oracleTableCount?: number
+  plsqlPackageCount?: number
+  plsqlProcedureCount?: number
+  plsqlTableCount?: number
   javaFileCount?: number
   reviewAverageScore?: number
   reviewPassedRate?: number
@@ -215,21 +209,6 @@ function safeNumber(val: unknown): number {
 /** 可选数值转换（非 number 时返回 undefined，用于业务数据提取，避免缺失字段误报为 0） */
 function optionalNumber(val: unknown): number | undefined {
   return typeof val === "number" ? val : undefined
-}
-
-/** 递归统计目录下指定扩展名文件数 */
-function countFilesRecursive(dir: string, ext: string): number {
-  if (!existsSync(dir)) return 0
-  let count = 0
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name)
-    if (entry.isDirectory()) {
-      count += countFilesRecursive(full, ext)
-    } else if (entry.name.endsWith(ext)) {
-      count++
-    }
-  }
-  return count
 }
 
 /** 安全获取数组的 length */
@@ -401,12 +380,6 @@ function extractBusinessData(phase: string, artifactsDir: string): PhaseBusiness
     case "inventory":
       extractInventoryData(data, artifactsDir)
       break
-    case "analyze":
-      extractAnalyzeData(data, artifactsDir)
-      break
-    case "plan":
-      extractPlanData(data, artifactsDir)
-      break
     case "scaffold":
       extractScaffoldData(data, artifactsDir)
       break
@@ -462,59 +435,27 @@ function extractInventoryData(data: PhaseBusinessData, dir: string): void {
   } catch { /* skip */ }
 }
 
-function extractAnalyzeData(data: PhaseBusinessData, dir: string): void {
-  // 全局元数据：依赖图按需从 subprograms.directCalls 推导（dependency-graph.json 已删）
-  try {
-    const graph = buildDependencyGraph(dir)
-    data.sccGroupCount = graph.sccGroups.length
-  } catch { /* skip */ }
-
-  // 逐包子程序聚合
-  try {
-    const pkgDir = join(dir, "analysis-packages")
-    if (existsSync(pkgDir)) {
-      let total = 0
-      for (const f of readdirSync(pkgDir)) {
-        if (!f.endsWith(".json")) continue
-        const pkgJson = readJsonSafe(join(pkgDir, f))
-        if (pkgJson) total += safeArrayLen(pkgJson.subprograms)
-      }
-      data.subprogramCount = total
-    }
-  } catch { /* skip */ }
-
-  // FSD 文件数
-  try {
-    data.fsdFileCount = countFilesRecursive(join(dir, "fsd"), ".md")
-  } catch { /* skip */ }
-}
-
-function extractPlanData(data: PhaseBusinessData, dir: string): void {
-  const json = readJsonSafe(join(dir, "plan.json"))
-  if (!json) return
-
-  try {
-    const count = safeArrayLen(json.packageMappings)
-    data.packageMappingsCount = count
-    data.javaPackageCount = count
-  } catch { /* skip */ }
-}
-
 function extractScaffoldData(data: PhaseBusinessData, dir: string): void {
   const json = readJsonSafe(join(dir, "scaffold.json"))
   if (!json) return
 
   try {
+    // packageMappings（Stage C：原 plan.json 字段合并到 scaffold.json）
+    const count = safeArrayLen(json.packageMappings)
+    data.packageMappingsCount = count
+    data.javaPackageCount = count
     const gen = json.generated as Record<string, unknown> | undefined
     if (gen) {
       // commonClasses 与 commonModules.classes 结构重叠（TODO F8），同一批文件可能两处都落——
       // 优先计 commonModules.classes（带 category 的超集），缺失时回退 commonClasses，避免双计。
       const infraClasses = (gen.commonModules as { classes?: unknown[] } | undefined)?.classes
       const commonCount = safeArrayLen(infraClasses) > 0 ? safeArrayLen(infraClasses) : safeArrayLen(gen.commonClasses)
+      // 注：constants = per-package {Pkg}Constant、stateDtos = per-package {Pkg}StateDTO（scaffold 产出）；
+      // per-proc 业务类壳由 translate-skeleton 创建，不在 scaffold 产出，故 generatedFiles 仅反映 scaffold 自身产出。
       data.generatedFiles =
         safeArrayLen(gen.entities) +
-        safeArrayLen(gen.mapperInterfaces) +
-        safeArrayLen(gen.serviceShells) +
+        safeArrayLen(gen.constants) +
+        safeArrayLen(gen.stateDtos) +
         commonCount
     }
   } catch { /* skip */ }
@@ -753,9 +694,9 @@ function buildRunBusinessData(phases: PhaseMetrics[], run: WorkflowRun): RunBusi
   const verify = phases.find(p => p.phase === "verify" && !p.fixIndex)
 
   if (inventory?.business) {
-    biz.oraclePackageCount = inventory.business.packageCount
-    biz.oracleProcedureCount = inventory.business.totalProcedureCount
-    biz.oracleTableCount = inventory.business.tableCount
+    biz.plsqlPackageCount = inventory.business.packageCount
+    biz.plsqlProcedureCount = inventory.business.totalProcedureCount
+    biz.plsqlTableCount = inventory.business.tableCount
   }
   if (translate?.business) {
     biz.javaFileCount = translate.business.generatedJavaFileCount
@@ -863,7 +804,7 @@ function formatBusinessLines(phase: string, biz: PhaseBusinessData): string[] {
 
   switch (phase) {
     case "inventory":
-      fmt("Oracle 包:", biz.packageCount)
+      fmt("PL/SQL 包:", biz.packageCount)
       fmt("表:", biz.tableCount)
       fmt("触发器:", biz.triggerCount)
       fmt("视图:", biz.viewCount)
@@ -871,16 +812,9 @@ function formatBusinessLines(phase: string, biz: PhaseBusinessData): string[] {
       fmt("独立子程序:", biz.standaloneProcedureCount)
       fmt("子程序总数:", biz.totalProcedureCount)
       break
-    case "analyze":
-      fmt("子程序:", biz.subprogramCount)
-      fmt("SCC 分组:", biz.sccGroupCount)
-      fmt("FSD 文件:", biz.fsdFileCount)
-      break
-    case "plan":
+    case "scaffold":
       fmt("Java 包:", biz.javaPackageCount)
       fmt("包映射:", biz.packageMappingsCount)
-      break
-    case "scaffold":
       fmt("生成文件:", biz.generatedFiles)
       break
     case "translate":
@@ -991,9 +925,9 @@ function formatFinalReport(rm: RunMetrics): string {
     const d = typeof v === "boolean" ? (v ? "PASS" : "FAIL") : String(v)
     lines.push(`  ${l.padEnd(14)} ${d}`)
   }
-  if (b.oraclePackageCount != null) bizLine("Oracle 包:", b.oraclePackageCount)
-  if (b.oracleProcedureCount != null) bizLine("子程序:", b.oracleProcedureCount)
-  if (b.oracleTableCount != null) bizLine("表:", b.oracleTableCount)
+  if (b.plsqlPackageCount != null) bizLine("PL/SQL 包:", b.plsqlPackageCount)
+  if (b.plsqlProcedureCount != null) bizLine("子程序:", b.plsqlProcedureCount)
+  if (b.plsqlTableCount != null) bizLine("表:", b.plsqlTableCount)
   if (b.javaFileCount != null) bizLine("Java 文件:", b.javaFileCount)
   if (b.reviewAverageScore != null) bizLine("Review 均分:", b.reviewAverageScore)
   if (b.reviewPassedRate != null) bizLine("通过率:", b.reviewPassedRate + "%")

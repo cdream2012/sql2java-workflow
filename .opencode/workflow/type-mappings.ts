@@ -1,11 +1,11 @@
 /**
- * Oracle → Java / JDBC 类型映射表
+ * PL/SQL → Java / JDBC 类型映射表
  *
- * ORACLE_TO_JAVA: Oracle PL/SQL 类型 → Java 类型
- * ORACLE_TO_JDBC: Oracle 类型 → MyBatis jdbcType（用于 Mapper XML）
+ * PLSQL_TO_JAVA: PL/SQL 类型 → Java 类型
+ * PLSQL_TO_JDBC: PL/SQL 类型 → MyBatis jdbcType（用于 Mapper XML）
  */
 
-export const ORACLE_TO_JAVA: Record<string, string> = {
+export const PLSQL_TO_JAVA: Record<string, string> = {
   // ── 字符 ──
   VARCHAR2: "String",
   NVARCHAR2: "String",
@@ -50,7 +50,7 @@ export const ORACLE_TO_JAVA: Record<string, string> = {
   UROWID: "String",
 }
 
-export const ORACLE_TO_JDBC: Record<string, string> = {
+export const PLSQL_TO_JDBC: Record<string, string> = {
   // ── 字符 ──
   VARCHAR2: "VARCHAR",
   NVARCHAR2: "NVARCHAR",

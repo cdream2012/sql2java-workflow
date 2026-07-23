@@ -84,6 +84,16 @@ export class WorkflowEngineError extends Error {
 
 // ── 核心类型 ──────────────────────────────────────────────────────────────────
 
+/** sub-stage 配置 — phase 内子阶段（A-2：translate 拆多子 agent 串行） */
+export interface SubStageConfig {
+  name: string                                  // sub-stage 名称（如 "skeleton"、"translate-core"）
+  agentFile: string                             // 对应的 agent .md 文件路径
+  temperature?: number                          // 覆盖 phase 默认温度（可选）
+  /** 二期预留：translate-core 超长过程按 TODO 批次切多分片时为 true。
+   *  首期固定 5 sub-stage、totalBatches 恒 1，此字段不触发。 */
+  repeatable?: boolean
+}
+
 /** 单阶段配置 */
 export interface PhaseConfig {
   name: string
@@ -97,6 +107,12 @@ export interface PhaseConfig {
   tools: string[]                               // 允许的工具列表
   description?: string                          // 阶段中文描述，用于输出 banner
   watchdog?: { workerTimeoutMs?: number }       // watchdog worker 超时覆盖（重型阶段如 verify 放宽）
+  /** phase 内子阶段序列（translate 主从架构）。配置后：
+   *   - getSubagentNames 展平 subStages，使 slave agent 被识别为 worker（禁调 workflow 编排 action）；
+   *   - translator master 经 workflow `subdispatch` action 按 subStage 名渲染对应 slave workOrder，
+   *     再用 Task 工具派 slave（引擎不再逐 sub-stage 推进，advance 直走校验 + shard advance）。
+   *   未配置则 phase 仍为单 agent 一次性执行。 */
+  subStages?: SubStageConfig[]
 }
 
 /** 条件转移规则 */
@@ -135,10 +151,15 @@ export interface PhaseHistoryEntry {
   retryCount: number                            // 每次 retry 递增，与 PhaseConfig.maxRetries 比较
   branchedFrom?: string                         // fix 记录触发阶段；fix 回来的 entry 记录 "fix"
   incrementalContext?: {
-    targetPackages?: string[]                   // 增量模式：只处理这些包（analyze/review 包级分片）
-    targetUnits?: string[]                      // translate/analyze PROCEDURE 级分片：只处理这些 unit id（PKG.refName）
+    targetPackages?: string[]                   // 增量模式：只处理这些包（review 包级分片）
+    targetUnits?: string[]                      // translate PROCEDURE 级分片：只处理这些 unit id（PKG.refName）
     shardIndex?: number                         // 分片模式：当前分片序号（0-based）
     totalShards?: number                        // 分片模式：总分片数
+    /** 旧 A-2 字段（sub-stage 由引擎推进时使用）。现 sub-stage 改由 translator master 子 agent
+     *  内部经 Task 工具调度，引擎不再写入；保留 optional 仅为旧 run.json resume 兼容。 */
+    currentSubStage?: string
+    currentBatch?: number
+    totalBatches?: number
     previousFindings?: Array<{                  // 增量 review：上次 review 的 mustFix，供 reviewer 核对是否已修复
       packageName: string
       file: string
@@ -154,7 +175,7 @@ export interface ShardPlan {
   shards: string[][]                            // shards[0] = ["CONST_PKG"]（包级）或 ["PKG.p1"]（translate unit 级）
   completedShards: number[]                     // 已完成的分片序号
   /** true = translate PROCEDURE 级分片（shards 元素是 unit id `PKG.refName`，dispatch 注入 targetUnits）；
-   *  false/缺省 = 包级分片（analyze/review，或无 procedureOrder 回退的 translate，注入 targetPackages）。 */
+   *  false/缺省 = 包级分片（review，或无 procedureOrder 回退的 translate，注入 targetPackages）。 */
   unitMode?: boolean
 }
 
@@ -196,7 +217,7 @@ const PhaseHistoryEntrySchema = z.object({
   retryCount: z.number(),
   branchedFrom: z.string().optional(),
   incrementalContext: z.object({
-    // 包级分片（review/包级回退）用 targetPackages；PROCEDURE 级分片（analyze/translate unit 模式）
+    // 包级分片（review/包级回退）用 targetPackages；PROCEDURE 级分片（translate unit 模式）
     // 用 targetUnits。二者择一，均 optional——unit 模式 entry 只含 targetUnits，包级只含 targetPackages。
     // 此前 targetPackages 误设为必填且无 targetUnits 字段，导致 unit 模式分片 run resume 时
     // loadFromDisk 校验失败（"targetPackages 字段缺失"）+ targetUnits 被当未知键剥离。feat/proc-entry-scope 暴露。
@@ -204,6 +225,9 @@ const PhaseHistoryEntrySchema = z.object({
     targetUnits: z.array(z.string()).optional(),
     shardIndex: z.number().optional(),
     totalShards: z.number().optional(),
+    currentSubStage: z.string().optional(),
+    currentBatch: z.number().optional(),
+    totalBatches: z.number().optional(),
     previousFindings: z.array(z.object({
       packageName: z.string(),
       file: z.string(),
@@ -308,6 +332,10 @@ export class WorkflowEngine {
     // ── Step 2: 查找当前阶段配置 ──
     const currentPhaseConfig = def.phases.find(p => p.name === run.currentPhase)
 
+    // 注：translate sub-stage（skeleton→…→fsd）现由 translator master 子 agent 内部经 Task 工具
+    // 串行调度 6 个 slave，引擎不再逐 sub-stage 推进。advance 直走下方 Step 3a 起的全套校验 + shard advance。
+    // currentSubStage/currentBatch/totalBatches 字段保留 optional 仅为旧 run.json resume 兼容，不再写入。
+
     // ── Step 3a: 确定性数值质量门控 (L3) — 所有阶段 ──
     const qualityFindings = this.validateQualityGates(run, run.currentPhase!)
     for (const f of qualityFindings) {
@@ -398,9 +426,10 @@ export class WorkflowEngine {
         run.updatedAt = now
 
         const nextShard = shardPlan.shards[nextShardIndex]
-        // unit 模式（analyze/translate PROCEDURE 级）shard 元素是 unit id `PKG.ref`，须写入 targetUnits
+        // unit 模式（translate PROCEDURE 级）shard 元素是 unit id `PKG.ref`，须写入 targetUnits
         // 而非 targetPackages——否则下游 narrowUpstreamForShard / generateUnitSlices / 写入边界因 targetUnits
         // 为空全部跳过，shard 1+ 退化为整包处理（硬隔离失效）。包级模式才用 targetPackages。
+        // translate 的 sub-stage 由 translator master 子 agent 内部调度，新 entry 不再带 currentSubStage。
         const newEntry: PhaseHistoryEntry = {
           phase: run.currentPhase!,
           status: "in_progress",
@@ -838,16 +867,16 @@ export class WorkflowEngine {
       }
     }
 
-    // plan 映射覆盖（仅 plan 完成后校验）
-    if (completedPhase === "plan") {
-      const plan = this.loadArtifactJson(artifactsDir, "plan")
-      if (!plan) {
-        findings.push({ message: "plan 映射校验跳过：plan artifact 不存在", severity: "warning" })
+    // packageMappings 覆盖校验（Stage C：原 plan 阶段校验合并到 scaffold 完成后）
+    if (completedPhase === "scaffold") {
+      const scaffold = this.loadArtifactJson(artifactsDir, "scaffold")
+      if (!scaffold) {
+        findings.push({ message: "packageMappings 校验跳过：scaffold artifact 不存在", severity: "warning" })
         return findings
       }
       const mappedNames = new Set(
-        (plan.packageMappings as Array<{ oraclePackage: string }>)
-          .map((m) => m.oraclePackage)
+        (scaffold.packageMappings as Array<{ plsqlPackage: string }>)
+          .map((m) => m.plsqlPackage)
           .filter((n): n is string => typeof n === "string" && n.length > 0)
       )
       // scope 激活（mainEntry 过程级闭包）时期望集 = scopePackages（闭包内包）；
@@ -858,21 +887,21 @@ export class WorkflowEngine {
         : null
       for (const name of invNames) {
         if (scopeUpper && !scopeUpper.has(name.toUpperCase())) continue // out-of-scope，不该映射
-        if (!mappedNames.has(name)) findings.push({ message: `plan 未映射包: ${name}`, severity: "warning" })
+        if (!mappedNames.has(name)) findings.push({ message: `scaffold.packageMappings 未映射包: ${name}`, severity: "warning" })
       }
       // scope 激活时补"越界映射"检查：packageMappings 含 scopePackages 之外的包 → warning
-      // （防架构师读全量上游后把 out-of-scope 包写进 plan，导致 scaffold 过量生成壳）
+      // （防 scaffold 读全量上游后把 out-of-scope 包写进 packageMappings，导致过量生成壳）
       if (scopeUpper) {
         for (const name of mappedNames) {
           if (!scopeUpper.has(name.toUpperCase())) {
-            findings.push({ message: `plan 越界映射包: ${name}（不在 scopePackages 闭包内，scope 模式下不应规划）`, severity: "warning" })
+            findings.push({ message: `scaffold.packageMappings 越界映射包: ${name}（不在 scopePackages 闭包内，scope 模式下不应规划）`, severity: "warning" })
           }
         }
       }
     }
 
     // translation.json.subprogramMethods refName + 唯一性校验
-    // oracleName 须唯一、且落在该包合法 refName 集合内（重载带 {name}__序号）。
+    // plsqlName 须唯一、且落在该包合法 refName 集合内（重载带 {name}__序号）。
     // translate 完成时所有包 translation.json 已齐 → 即时校验给 translator 反馈；dedup 再校验一次（幂等）。
     if (completedPhase === "translate" || completedPhase === "dedup") {
       const refNameByPkg = this.buildRefNameIndex(artifactsDir, anaNames)
@@ -883,19 +912,19 @@ export class WorkflowEngine {
           continue
         }
         const valid = refNameByPkg.get(pkg.toUpperCase())
-        const methods = Array.isArray(trans.subprogramMethods) ? (trans.subprogramMethods as Array<{ oracleName: string }>) : []
+        const methods = Array.isArray(trans.subprogramMethods) ? (trans.subprogramMethods as Array<{ plsqlName: string }>) : []
         const seen = new Set<string>()
         for (const m of methods) {
-          const key = (m.oracleName ?? "").toUpperCase()
+          const key = (m.plsqlName ?? "").toUpperCase()
           if (!key) {
-            findings.push({ message: `${pkg}: subprogramMethods 存在空 oracleName`, severity: "warning" })
+            findings.push({ message: `${pkg}: subprogramMethods 存在空 plsqlName`, severity: "warning" })
             continue
           }
-          if (seen.has(key)) findings.push({ message: `${pkg}: subprogramMethods 重复 oracleName: ${m.oracleName}`, severity: "warning" })
+          if (seen.has(key)) findings.push({ message: `${pkg}: subprogramMethods 重复 plsqlName: ${m.plsqlName}`, severity: "warning" })
           seen.add(key)
           if (valid && !valid.has(key)) {
             findings.push({
-              message: `${pkg}: subprogramMethods.oracleName "${m.oracleName}" 不在合法 refName 集合内（重载子程序应为 {name}__序号）`,
+              message: `${pkg}: subprogramMethods.plsqlName "${m.plsqlName}" 不在合法 refName 集合内（重载子程序应为 {name}__序号）`,
               severity: "warning",
             })
           }
@@ -972,6 +1001,21 @@ export class WorkflowEngine {
             if (methods.length < completed.length) {
               findings.push({
                 message: `${pkg}.${ref}: subprogramMethods 数量 (${methods.length}) 少于 completedSubprograms (${completed.length})，可能缺少跨包调用映射`,
+                severity: "warning",
+              })
+            }
+            // sub-stage 产物完整性（warning，不阻断）：master 主从架构下 6 sub-stage 靠 master 自觉派 slave，
+            // 此处仅观测是否漏跑——lint.json（static-check）/ fsd {ref}.md（fsd sub-stage）缺失记 warning 放行。
+            // 不设 blocking：避免 advance 验收时因 master 偷懒跳过而反复重派卡死（lint 下游有 review 静态扫描兜底，fsd 是文档非正确性关键）。
+            if (!existsSync(join(artifactsDir, "translations", pkg, `${ref}.lint.json`))) {
+              findings.push({
+                message: `${pkg}.${ref}: translations/${pkg}/${ref}.lint.json 缺失——static-check sub-stage 可能未跑（master 漏派 slave）。lint 下游由 review 静态扫描兜底，已放行`,
+                severity: "warning",
+              })
+            }
+            if (!existsSync(join(artifactsDir, "fsd", pkg, `${ref}.md`))) {
+              findings.push({
+                message: `${pkg}.${ref}: fsd/${pkg}/${ref}.md 缺失——fsd sub-stage 可能未跑（master 漏派 slave）。FSD 为文档产物非正确性关键，已放行`,
                 severity: "warning",
               })
             }
@@ -1233,17 +1277,14 @@ export class WorkflowEngine {
 
   /**
    * 按阶段决定分片所用的序列：review 拍平 SCC 组（每元素一层，真正一元素一分片）；
-   * analyze/translate 保留入参原貌（SCC 互依赖组共处同一分片）。
+   * translate 保留入参原貌（SCC 互依赖组共处同一分片）。
    *
-   * 入参语义随阶段而异：analyze/translate 传单元级 procedureOrder（`PKG.refName`，每 subprogram 独立成 unit）；
-   * review 传包级 translationOrder。三者都是 string[][] 拓扑层，本函数仅按阶段决定是否拍平，
+   * 入参语义随阶段而异：translate 传单元级 procedureOrder（`PKG.refName`，每 subprogram 独立成 unit）；
+   * review 传包级 translationOrder。两者都是 string[][] 拓扑层，本函数仅按阶段决定是否拍平，
    * 不关心元素是包名还是 unit id。
    *
-   * 为什么 analyze 与 translate **同策略**（保留 SCC）：analyze 的 per-unit FSD/结构虽独立产出、
-   * 原本可拆 SCC 换并行度，但让两阶段分片**完全一致**（同一 unit 在 analyze/translate 落到同一分片）
-   * 便于追踪、摊销小 unit 的 dispatch 开销；SCC 合并对 analyze 同样安全（只是少几路并行），translate
-   * 本就被迫合且更重，analyze 扛得住。分片只决定"一个 session 处理哪些 unit"，artifact 仍 per-unit
-   *（fsd/{pkg}/{ref}.md、analysis-packages/{pkg}/{ref}.json）。
+   * 为什么 translate 保留 SCC：SCC 互依赖组共处同一分片，分片只决定"一个 session 处理哪些 unit"，
+   * artifact 仍 per-unit（translations/{pkg}/{ref}.json、fsd/{pkg}/{ref}.md）。
    *
    * 为什么 review 仍拍平：review 是包级、每包审查独立，拆 SCC 包无副作用且并行度更高。
    */
@@ -1301,7 +1342,7 @@ export class WorkflowEngine {
     const shards: string[][] = []
     for (const lv of [...byLevel.keys()].sort((a, b) => a - b)) {
       const items = byLevel.get(lv)!
-      // 同包优先排序（软聚拢，同包共享 DDD 组件文件编辑更连贯）
+      // 同包优先排序（软聚拢，同包共享业务组件文件编辑更连贯）
       items.sort((a, b) => {
         const pa = pkgKey(a.key), pb = pkgKey(b.key)
         return pa === pb ? a.key.localeCompare(b.key) : pa.localeCompare(pb)

@@ -29,7 +29,7 @@ describe("REFINE_CONSTRAINTS 一致性", () => {
       "有子程序的包应有 bodyPath",
     ],
     translate: [
-      "subprogramMethods.oracleName 必须唯一",
+      "subprogramMethods.plsqlName 必须唯一",
     ],
     review: [
       "passed 与 mustFix 必须一致",
@@ -145,7 +145,6 @@ describe("NON_ZOD_VALIDATION_RULES 覆盖性", () => {
     }
     // 应包含有额外校验的阶段
     expect(coveredPhases).toContain("inventory")
-    expect(coveredPhases).toContain("analyze")
     expect(coveredPhases).toContain("scaffold")
     expect(coveredPhases).toContain("translate")
     expect(coveredPhases).toContain("verify")
@@ -163,9 +162,9 @@ describe("NON_ZOD_VALIDATION_RULES 覆盖性", () => {
 // ═══════════════════════════════════════════════════════════════
 
 describe("COMMON_PITFALLS 一致性", () => {
-  /** 所有有 Zod schema 的 phase（应有 pitfall 提示） */
+  /** 所有有 Zod schema 的 phase（应有 pitfall 提示；Stage C：plan 已合并入 scaffold） */
   const ALL_SCHEMA_PHASES = [
-    "inventory", "analyze", "plan", "scaffold",
+    "inventory", "scaffold",
     "translate", "review", "verify", "dedup", "fix",
   ]
 
@@ -212,13 +211,6 @@ describe("COMMON_PITFALLS 一致性", () => {
     expect(hasTrigger, "inventory pitfall 应包含 trigger 枚举提示").toBe(true)
   })
 
-  it("analyze 阶段包含 translationNotes 类型提示", () => {
-    const pitfalls = COMMON_PITFALLS["analyze"]
-    expect(pitfalls).toBeDefined()
-    const hasTranslationNotes = pitfalls!.some(p => p.includes("translationNotes") && p.includes("string[]"))
-    expect(hasTranslationNotes, "analyze pitfall 应包含 translationNotes string[] 类型提示").toBe(true)
-  })
-
   it("review 阶段包含 passed/mustFix 一致性提示", () => {
     const pitfalls = COMMON_PITFALLS["review"]
     expect(pitfalls).toBeDefined()
@@ -226,17 +218,17 @@ describe("COMMON_PITFALLS 一致性", () => {
     expect(hasPassedMustFix, "review pitfall 应包含 passed/mustFix 一致性提示").toBe(true)
   })
 
-  it("translate 阶段包含 oracleName 重载提示", () => {
+  it("translate 阶段包含 plsqlName 重载提示", () => {
     const pitfalls = COMMON_PITFALLS["translate"]
     expect(pitfalls).toBeDefined()
-    const hasOracleName = pitfalls!.some(p => p.includes("oracleName") && p.includes("__"))
-    expect(hasOracleName, "translate pitfall 应包含 oracleName 重载序号提示").toBe(true)
+    const hasPlsqlName = pitfalls!.some(p => p.includes("plsqlName") && p.includes("__"))
+    expect(hasPlsqlName, "translate pitfall 应包含 plsqlName 重载序号提示").toBe(true)
   })
 
-  it("plan 阶段包含枚举推荐值提示", () => {
-    const pitfalls = COMMON_PITFALLS["plan"]
+  it("scaffold 阶段包含 packageMappings 提示（Stage C 合并 plan）", () => {
+    const pitfalls = COMMON_PITFALLS["scaffold"]
     expect(pitfalls).toBeDefined()
-    const hasRecommendation = pitfalls!.some(p => p.includes("推荐值"))
-    expect(hasRecommendation, "plan pitfall 应包含枚举推荐值提示").toBe(true)
+    const hasMapping = pitfalls!.some(p => p.includes("packageMappings") || p.includes("Mapping"))
+    expect(hasMapping, "scaffold pitfall 应包含 packageMappings 相关提示").toBe(true)
   })
 })

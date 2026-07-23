@@ -49,7 +49,8 @@ function writePkg(art: string, pkg: string, bodyPath: string, subs: SubSpec[]) {
   }
 }
 
-describe("generateUnitSlices — analyze", () => {
+// analyze 阶段已砍（generateUnitSlices 只 translate），analyze 用例 skip，后续清理删。
+describe.skip("generateUnitSlices — analyze", () => {
   it("根 only：source.sql 按 bodyLocation.lineRange 抽片段（FUNCTION 独立成 unit，不再作 cargo）", () => {
     const art = join(dir, "a")
     mkdirSync(art, { recursive: true })
@@ -142,7 +143,7 @@ describe("generateUnitSlices — analyze", () => {
 })
 
 describe("generateUnitSlices — translate", () => {
-  it("analysis-slice.json 从 analysis-packages 聚合按 name 过滤", () => {
+  it.skip("analysis-slice.json 从 analysis-packages 聚合按 name 过滤（analyze 砍后不再产 analysis-slice）", () => {
     const art = join(dir, "t1")
     mkdirSync(art, { recursive: true })
     const src = join(art, "BODY.sql")
@@ -172,7 +173,7 @@ describe("generateUnitSlices — translate", () => {
     expect(ana.subprograms[0].name).toBe("proc1")
   })
 
-  it("analysis-packages 聚合缺失：analysis-slice.json 写空 + meta.analysisMissing=true", () => {
+  it.skip("analysis-packages 聚合缺失：analysis-slice.json 写空 + meta.analysisMissing=true（analyze 砍后不再产）", () => {
     const art = join(dir, "t2")
     mkdirSync(art, { recursive: true })
     const src = join(art, "BODY.sql")

@@ -13,9 +13,16 @@ describe("unitWriteBoundaryViolation", () => {
   const allowed = new Set(["PROC1", "CALC_TOTAL"])
 
   it("本 unit 根 per-unit 产物：放行", () => {
-    expect(unitWriteBoundaryViolation("analysis-packages/PKG_A/proc1.json", allowed)).toBeNull()
     expect(unitWriteBoundaryViolation("fsd/PKG_A/proc1.md", allowed)).toBeNull()
     expect(unitWriteBoundaryViolation("translations/PKG_A/proc1.json", allowed)).toBeNull()
+  })
+
+  it(".lint.json 双后缀：按主 ref 判定（static-check 产物不误拦）", () => {
+    // ref 是 proc1，不是 proc1.lint
+    expect(unitWriteBoundaryViolation("translations/PKG_A/proc1.lint.json", allowed)).toBeNull()
+    expect(unitWriteBoundaryViolation("translations/PKG_A/calc_total.lint.json", allowed)).toBeNull()
+    // 其他 unit 的 lint 产物仍拦截
+    expect(unitWriteBoundaryViolation("translations/PKG_A/other.lint.json", allowed)).not.toBeNull()
   })
 
   it("allowed 集合内的其它 ref 产物：放行", () => {
@@ -23,7 +30,6 @@ describe("unitWriteBoundaryViolation", () => {
   })
 
   it("其他 unit 的 per-unit 产物：拦截", () => {
-    expect(unitWriteBoundaryViolation("analysis-packages/PKG_A/proc2.json", allowed)).not.toBeNull()
     expect(unitWriteBoundaryViolation("fsd/PKG_A/other.md", allowed)).not.toBeNull()
     expect(unitWriteBoundaryViolation("translations/PKG_A/proc2.json", allowed)).not.toBeNull()
   })
@@ -32,7 +38,6 @@ describe("unitWriteBoundaryViolation", () => {
     expect(unitWriteBoundaryViolation("translations/PKG_A/translation.json", allowed)).toBeNull()
     expect(unitWriteBoundaryViolation("translations/PKG_A/review.json", allowed)).toBeNull()
     expect(unitWriteBoundaryViolation("translations/PKG_A/verify.json", allowed)).toBeNull()
-    expect(unitWriteBoundaryViolation("analysis-packages/PKG_A.json", allowed)).toBeNull()
   })
 
   it("非 per-unit 路径（项目文件 / 其他 artifact）放行", () => {
@@ -49,8 +54,8 @@ describe("unitWriteBoundaryViolation", () => {
   })
 
   it("allowedRefs 为空/undefined → 不启用边界（包级阶段放行）", () => {
-    expect(unitWriteBoundaryViolation("analysis-packages/PKG_A/anyref.json", undefined)).toBeNull()
-    expect(unitWriteBoundaryViolation("analysis-packages/PKG_A/anyref.json", new Set())).toBeNull()
+    expect(unitWriteBoundaryViolation("translations/PKG_A/anyref.json", undefined)).toBeNull()
+    expect(unitWriteBoundaryViolation("translations/PKG_A/anyref.json", new Set())).toBeNull()
   })
 
   it("反斜杠路径兼容（Windows）", () => {

@@ -40,7 +40,8 @@ function writeSub(
 }
 
 describe("buildUnitScopeBlock", () => {
-  it("analyze：切片目录 + FSD 输出路径（FUNCTION 独立成 unit，不再作 cargo）", () => {
+  it.skip("analyze：切片目录 + FSD 输出路径（FUNCTION 独立成 unit，不再作 cargo）", () => {
+    // analyze phase 已砍，buildUnitScopeBlock 仅 translate；用例待成套删。
     const art = join(dir, "a")
     mkdirSync(art, { recursive: true })
     // proc1 调 calc_total（FUNCTION）→ calc_total 独立成 unit（不再归属 proc1 作 cargo）
@@ -52,7 +53,7 @@ describe("buildUnitScopeBlock", () => {
     expect(out).toContain("PKG_A.proc1")
     // 切片目录引用（取代 sed -n）
     expect(out).toContain("shard-inputs/PKG_A/proc1/")
-    expect(out).toContain("source.sql + inventory-slice.json + meta.json")
+    expect(out).toContain("source.sql + meta.json")
     // 输出路径仅 proc1 自身（calc_total 独立成 unit，不再作 cargo 出现在此 block）
     expect(out).toContain("analysis-packages/PKG_A/proc1.json")
     expect(out).toContain("fsd/PKG_A/proc1.md")
@@ -68,7 +69,8 @@ describe("buildUnitScopeBlock", () => {
     expect(calcOut).toContain("fsd/PKG_A/calc_total.md")
   })
 
-  it("重载子程序：refName __序号 切片目录对齐", () => {
+  it.skip("重载子程序：refName __序号 切片目录对齐", () => {
+    // analyze phase 已砍；translate 路径的重载对齐由其它用例覆盖。
     const art = join(dir, "b")
     mkdirSync(art, { recursive: true })
     // 两个同名 get → refNamesForPackage 推导 get__1 / get__2
@@ -82,7 +84,7 @@ describe("buildUnitScopeBlock", () => {
     expect(out2).toContain("shard-inputs/PKG_A/get__2/")
   })
 
-  it("translate：切片目录 + FSD 输入 + 输出 + 依赖签名引用（Phase 2 切片模式）", () => {
+  it("translate：切片目录 + 输出 + 依赖签名引用（Phase 2 切片模式；FSD 已移出 upstream）", () => {
     const art = join(dir, "c")
     mkdirSync(art, { recursive: true })
     writeSub(art, "PKG_A", "proc1", "proc1", "PROCEDURE", [{ package: "PKG_B", name: "other", line: 1, kind: "procedure" }])
@@ -91,9 +93,10 @@ describe("buildUnitScopeBlock", () => {
     const out = buildUnitScopeBlock(art, ["PKG_A.proc1"], "translate", ["PKG_B.other"])
     // 切片目录（取代 sed -n / 整包）
     expect(out).toContain("shard-inputs/PKG_A/proc1/")
-    expect(out).toContain("analysis-slice.json")
-    expect(out).toContain("FSD 输入")
-    expect(out).toContain("fsd/PKG_A/proc1.md")
+    expect(out).toContain("source.sql + meta.json")
+    // FSD 已移出 upstream（末端产物不作输入），清单不再列 FSD 输入
+    expect(out).not.toContain("FSD 输入")
+    expect(out).not.toContain("fsd/")
     // per-unit 输出
     expect(out).toContain("translations/PKG_A/proc1.json")
     // 依赖签名引用预注入块（不再列 translation.json 路径）
@@ -133,7 +136,8 @@ describe("buildUnitScopeBlock", () => {
     expect(out).not.toContain("translations/PKG_B/translation.json")
   })
 
-  it("analyze 切片模式：清单引用切片目录，不泄漏相对 bodyPath 路径", () => {
+  it.skip("analyze 切片模式：清单引用切片目录，不泄漏相对 bodyPath 路径", () => {
+    // analyze phase 已砍，buildUnitScopeBlock 仅 translate；用例待成套删。
     const art = join(dir, "g")
     mkdirSync(art, { recursive: true })
     writeSub(art, "PKG_A", "proc1", "proc1", "PROCEDURE")

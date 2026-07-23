@@ -12,7 +12,7 @@
  * - 动态 import，不使用时不加载 pg
  * - 通过 pg 驱动（libpq wire protocol）连接，兼容 PostgreSQL 与 GaussDB(openGauss)
  * - 生成的 DDL 为 PostgreSQL 语法；视图/触发器用 pg_get_*def 原样返回
- *   （GaussDB Oracle 兼容模式下天然为 PL/SQL 语法）
+ *   （GaussDB PL/SQL 兼容模式下天然为 PL/SQL 语法）
  * - 配置文件使用 properties 格式（db.properties）
  */
 

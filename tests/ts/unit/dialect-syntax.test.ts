@@ -1,7 +1,7 @@
 /**
  * dialect-syntax.test.ts — GaussDB/openGauss 方言构造 grammar 支持回归基线
  *
- * 语料：resources/MFG_ERP/PACKAGE_BODY/F_DIALECT.sql，集中放 Oracle grammar 原本不支持
+ * 语料：resources/MFG_ERP/PACKAGE_BODY/F_DIALECT.sql，集中放 PL/SQL grammar 原本不支持
  * 的 GaussDB 方言构造：:: 类型转换、LIMIT/LIMIT OFFSET 分页、GET DIAGNOSTICS、缺 FROM DUAL。
  *
  * 验证目标（grammar 增强后应全绿）：

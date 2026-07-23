@@ -63,7 +63,7 @@ date -u +%Y%m%d-%H%M%S
 执行流程：
 
 1. **插件层**（`plugins/workflow-engine.ts`）：
-   - **Schema 预获取**（D18）：如果 `dbConf` 存在或 `{sourcePath}/db.xml` 存在 → 调用 `fetchSchemaIfNeeded()` 连接 Oracle 拉取 DDL 到 `{sourcePath}/ddl-output/`
+   - **Schema 预获取**（D18）：如果 `dbConf` 存在或 `{sourcePath}/db.xml` 存在 → 调用 `fetchSchemaIfNeeded()` 连接 PL/SQL 拉取 DDL 到 `{sourcePath}/ddl-output/`
    - 尝试 `engine.loadFromDisk(runId)` — 如果磁盘上已有同 runId 的 `run.json` 则恢复
    - 没有已存在的 → 调用 `engine.start("sql2java", runId, { sourcePath })`
 
@@ -100,7 +100,7 @@ date -u +%Y%m%d-%H%M%S
 引擎启动后，opencode 框架在构建下一次 LLM 请求时触发 `experimental.chat.system.transform` hook：
 
 1. **读取 agent 文件**：`.opencode/agent/sql-analyst.md`
-2. **提取通用部分**（`extractCommonPart`）：文件开头到第一个 `## Phase:` 之前的内容 — 包含角色定义、绝对规则、Runtime Context 说明、Artifact 写入规则、Oracle 构造识别参考等
+2. **提取通用部分**（`extractCommonPart`）：文件开头到第一个 `## Phase:` 之前的内容 — 包含角色定义、绝对规则、Runtime Context 说明、Artifact 写入规则、PL/SQL 构造识别参考等
 3. **提取当前阶段内容**（`extractPhaseSection`）：`## Phase: inventory` 整个 section — 包含目标、输入输出、工作步骤、质量检查
 4. **Java 代码规约注入**（D19）：如果当前 agent 是 java-architect / translator / reviewer，读取 `docs/java-code-spec.md`，替换 agent .md 中的 `<!-- Java 代码规约由引擎从 docs/java-code-spec.md 自动注入 -->` 注释位置
 5. **构建 Runtime Context**（`buildRuntimeContext`）：
@@ -207,7 +207,7 @@ LLM **以 java-architect 身份执行 plan 阶段**的工作：
 
 1. 读取 `inventory-index.json` + `inventory-packages/*.json` + `dependency-graph.json` + `analysis-packages/*.json` + FSD 文档（可选）
 2. 确定 Java 项目配置（groupId, artifactId, packageBase...）
-3. 设计包映射：每个 Oracle Package → Mapper + Service + ServiceImpl
+3. 设计包映射：每个 PL/SQL Package → Mapper + Service + ServiceImpl
 4. 确定规则（命名约定、空值处理、异常策略、日志框架）
 5. 生成类型映射
 6. 标记需人工审查的子程序
@@ -232,8 +232,8 @@ LLM **以 java-architect 身份执行 plan 阶段**的工作：
 2. 生成 `pom.xml`（Spring Boot + MyBatis 依赖）
 3. 生成公共模块（异常体系、配置类）
 4. 从 inventory 的 tables 生成 Entity 类
-5. 为每个 Oracle Package 生成 Mapper 接口 + XML 空壳
-6. 为每个 Oracle Package 生成 Service 接口 + ServiceImpl 空壳
+5. 为每个 PL/SQL Package 生成 Mapper 接口 + XML 空壳
+6. 为每个 PL/SQL Package 生成 Service 接口 + ServiceImpl 空壳
 7. 写入 `scaffold.json`
 
 完成后调用 `workflow({ action: "advance", runId, result: "passed" })`
@@ -381,7 +381,7 @@ LLM **以 java-architect 身份执行 plan 阶段**的工作：
 命令解析 → 分支 4（默认全流程）
   │
   ├─ 校验路径存在
-  ├─ Schema 预获取（D18）：检测 db.xml → 有则连接 Oracle 拉取 DDL 到 ddl-output/
+  ├─ Schema 预获取（D18）：检测 db.xml → 有则连接 PL/SQL 拉取 DDL 到 ddl-output/
   ├─ 生成 runId: run-YYYYMMDD-HHmmss
   │
   ▼
@@ -472,7 +472,7 @@ workflow({ action: "start", runId, sourcePath, dbConf })
 | D15 | OR 前置 | PHASE_PREREQUISITES 支持 string[] 组内二选一（如 fix 的 summary 文件） |
 | D16 | fix retry 清理 | retry 时清理残留 fix.json，重置 entry status + completedAt |
 | D17 | artifact 缓存 | loadArtifactJson 单次 advance 内缓存，advance 结束后清除 |
-| D18 | Schema 预获取 | 有 db.xml 时自动连接 Oracle 拉取 DDL，纯 JS thin mode，不侵入 phase 链 |
+| D18 | Schema 预获取 | 有 db.xml 时自动连接 PL/SQL 拉取 DDL，纯 JS thin mode，不侵入 phase 链 |
 | D19 | Java 代码规约注入 | docs/java-code-spec.md 自动注入 java-architect / translator / reviewer |
 | D20 | refName 重载规范 | 重载子程序用 `{name}__{序号}` 唯一标识，统一 callGraph/FSD/subprogramMethods |
 | D21 | L3 质量门控 | 确定性数值门控：G1 翻译完成率≥0.8 / G3 review 分数≥70 / G6 测试通过率≥0.7 |

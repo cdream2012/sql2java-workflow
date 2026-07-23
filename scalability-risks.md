@@ -2,7 +2,7 @@
 
 > 审查时间：2026-06-08（2026-06-15 更新）
 > 范围：`.opencode` 工作流引擎（inventory → analyze → plan → scaffold → translate → dedup → review → verify → fix）
-> 假设规模：500+ Oracle Package、数千个子程序、百万行级 PL/SQL
+> 假设规模：500+ PL/SQL Package、数千个子程序、百万行级 PL/SQL
 
 ---
 
@@ -177,7 +177,7 @@ tables: z.array(z.object({
   ddlFile: z.string().optional(),
   columns: z.array(z.object({
     name: z.string(),
-    oracleType: z.string(),
+    plsqlType: z.string(),
     nullable: z.boolean(),
     isPrimaryKey: z.boolean(),
     defaultValue: z.string().optional(),

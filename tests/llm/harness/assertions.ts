@@ -40,7 +40,7 @@ interface ReviewArtifact {
   procedureReviews?: Array<{ procedure?: string; checks?: ReviewCheck[] }>
 }
 interface TranslationArtifact {
-  decisions?: Array<{ oracleConstruct?: string; javaConstruct?: string }>
+  decisions?: Array<{ plsqlConstruct?: string; javaConstruct?: string }>
 }
 
 // ── glob（自实现，避免新增依赖） ─────────────────────────────
@@ -175,12 +175,12 @@ export function assertJavaMatches(ctx: CaseContext, globPattern: string, regex: 
 // ── translator 产出断言（translation.json.decisions） ────────
 
 /**
- * 断言 translation.json.decisions 含某映射（oracleConstruct 必含，javaConstruct 可选，模糊匹配）。
+ * 断言 translation.json.decisions 含某映射（plsqlConstruct 必含，javaConstruct 可选，模糊匹配）。
  * 跨所有包的 translation.json 聚合判定。
  */
 export function assertDecision(
   ctx: CaseContext,
-  oracleConstruct: string,
+  plsqlConstruct: string,
   javaConstruct?: string,
 ): AssertionResult {
   const found: string[] = []
@@ -188,17 +188,17 @@ export function assertDecision(
     if (!key.endsWith("/translation.json") && key !== "translation.json") continue
     const decisions = (val as TranslationArtifact).decisions ?? []
     for (const d of decisions) {
-      const oc = d.oracleConstruct ?? ""
+      const oc = d.plsqlConstruct ?? ""
       const jc = d.javaConstruct ?? ""
-      if (oc.includes(oracleConstruct) && (!javaConstruct || jc.includes(javaConstruct))) {
+      if (oc.includes(plsqlConstruct) && (!javaConstruct || jc.includes(javaConstruct))) {
         found.push(`${key}: ${oc} → ${jc}`)
       }
     }
   }
   return {
-    name: `decision:${oracleConstruct}`,
+    name: `decision:${plsqlConstruct}`,
     passed: found.length > 0,
-    message: found.length > 0 ? `命中 ${found.length} 处: ${found[0]}` : `decisions 未含 oracleConstruct~${oracleConstruct}${javaConstruct ? ` → ${javaConstruct}` : ""}`,
+    message: found.length > 0 ? `命中 ${found.length} 处: ${found[0]}` : `decisions 未含 plsqlConstruct~${plsqlConstruct}${javaConstruct ? ` → ${javaConstruct}` : ""}`,
   }
 }
 

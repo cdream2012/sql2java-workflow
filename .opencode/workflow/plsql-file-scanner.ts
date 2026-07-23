@@ -89,7 +89,7 @@ export interface PackageInfo {
 
 export interface ColumnIndex {
   name: string
-  oracleType: string
+  plsqlType: string
   nullable: boolean
   isPrimaryKey: boolean
   defaultValue?: string | null
@@ -279,7 +279,7 @@ export function cleanName(name: string): string {
 }
 
 /**
- * 按 Oracle 名字解析语义把限定名拆为 {pkg, member}，锚定到 caller 所属 schema：
+ * 按 PL/SQL 名字解析语义把限定名拆为 {pkg, member}，锚定到 caller 所属 schema：
  *   1 段 proc             → pkg = callerPkg（同包裸名）
  *   2 段 pkg.proc         → pkg = callerSchema.pkg（补当前 schema；caller 无 schema 则原样）
  *   3+ 段 schema.pkg.proc → pkg = schema.pkg（完整路径精确）
@@ -309,7 +309,7 @@ export function resolveQualifiedName(qualified: string, callerPkg: string): { pk
 }
 
 /** 从源码文本提取声明的包名（大写、保留点）。
- *  先剥块注释（slash-star ... star-slash）——Oracle 12c+ 导出 PACKAGE BODY 时在
+ *  先剥块注释（slash-star ... star-slash）——PL/SQL 12c+ 导出 PACKAGE BODY 时在
  *  `CREATE OR REPLACE` 与 `PACKAGE` 间插 EDITIONABLE 内联注释，裸正则不匹配 → 包被当无包文件
  *  → partition/Phase0 把 spec 与 body 分到不同 file-set → 跨文件 spec↔body 合并断裂。
  *  antlr grammar 本就容忍该注释，此处对齐 grammar 行为。供 partitionFilesByPackage 与
@@ -325,7 +325,7 @@ export function extractPackageNames(code: string): string[] {
   // 剥块注释 + 行注释：CREATE 语句里的 -- 行注释会让正则失配 → body 抽不到包名 → body 与 spec
   // 被分到不同 file-set → 不共享 Map → 产出 header-only / body-only 两个分裂槽位 → header 槽位
   // bodyLocation=null（且被误判为重载）。容忍 EDITIONABLE/NONEDITIONABLE literal 关键字
-  //（Oracle 12c+ DBMS_METADATA 导出 PACKAGE 常见，非 /*EDITIONABLE*/ 注释形式）。
+  //（PL/SQL 12c+ DBMS_METADATA 导出 PACKAGE 常见，非 /*EDITIONABLE*/ 注释形式）。
   const clean = code.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ")
   // 段 = 引号串 "..." 或裸标识符；qualified = 段（可选 .段 重复）。后随空白/;/词界 IS/AS，
   // 避免吞掉 PACKAGE BODY 后紧跟的 AS/IS 修饰。引号段与裸段都经 cleanName 去引号+大写+保留点。
@@ -789,7 +789,7 @@ export class PlSqlStructListener implements PlSqlParserListener {
     // general_element 是递归规则（general_element ('.' general_element_part)+），
     // ctx.general_element_part() 只返回最末段，dotted 限定符在嵌套子节点——故用整体文本解析。
     // 拆分与 schema 归一化统一走 resolveQualified（与 recordCall/recordPackageRef 单一真相源），
-    // 按 Oracle 名字解析语义按段数锚定到 caller schema，正确处理 dotted 包名与 schema 限定。
+    // 按 PL/SQL 名字解析语义按段数锚定到 caller schema，正确处理 dotted 包名与 schema 限定。
     const parenIdx = text.indexOf("(")
     if (parenIdx < 0) {
       // 非调用限定引用：pkg.const / pkg.type / pkg.var（表达式中的常量/类型/变量引用）。
@@ -1033,7 +1033,7 @@ export function locateSubprogramRange(
  *
  * 触发场景：AST 语法错误恢复漏抽调用节点 / 漏抽 caller body 节点 → directCalls 为空
  *（不像 bodyLocation 有 locateSubprogramRange 兜底，directCalls 原本无 regex 兜底）。
- * GaussDB 项目用 Oracle 改编 grammar 解析错误率较高，故对 directCalls 为空的子程序
+ * GaussDB 项目用 PL/SQL 改编 grammar 解析错误率较高，故对 directCalls 为空的子程序
  * 用正则从 body 区间文本抽调用，三段调用形式（schema.pkg.proc / pkg.proc / proc）全兼容。
  *
  * 语义对齐 AST 路径（recordCall + finalizeInventoryIndex 后过滤）：
@@ -1433,7 +1433,7 @@ export function extractTableFromText(code: string, tables: TableIndex[], relPath
       const defMatch = rest.match(/DEFAULT\s+([^,]*?)(?:\s+NOT\s+NULL\b|\s*$)/i)
       columns.push({
         name: colName,
-        oracleType: type,
+        plsqlType: type,
         nullable: !(notNull || inlinePk),
         isPrimaryKey: inlinePk,
         defaultValue: defMatch ? normalizeTypeText(defMatch[1]) : null,

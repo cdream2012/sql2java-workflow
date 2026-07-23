@@ -13,10 +13,10 @@ import type { WorkflowRun } from "@workflow/engine-core"
 function makeRun(ic: Record<string, unknown> | undefined): WorkflowRun {
   return {
     runId: "test-banner",
-    currentPhase: "analyze",
+    currentPhase: "translate",
     status: "running",
     phaseHistory: [{
-      phase: "analyze",
+      phase: "translate",
       status: "in_progress",
       startedAt: "t",
       retryCount: 0,

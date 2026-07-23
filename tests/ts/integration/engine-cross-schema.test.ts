@@ -6,6 +6,8 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest"
+import { mkdirSync } from "node:fs"
+import { join } from "node:path"
 import { type CrossSchemaFinding } from "@workflow/engine-core"
 import { createEngineWithTempDir, writeArtifact } from "../helpers/engine-factory"
 
@@ -15,15 +17,15 @@ function writeInv(dir: string, packageNames: string[]) {
   writeArtifact(dir, RUN_ID, "inventory.json", {
     sourcePath: "src", packageNames, tableNames: [], triggers: [], views: [], sequences: [],
   })
+  // inventory advance 校验要求 subprograms/ + tables/ 目录存在（空包可为空目录）
+  mkdirSync(join(dir, RUN_ID, "subprograms"), { recursive: true })
+  mkdirSync(join(dir, RUN_ID, "tables"), { recursive: true })
 }
 function writePkg(dir: string, pkg: string) {
   writeArtifact(dir, RUN_ID, `packages/${pkg}.json`, {
     packageName: pkg, absolutePaths: [], headerPath: null, bodyPath: null,
     constants: [], variables: [], exceptions: [], types: [], functions: [], procedures: [], estimatedLoc: 0,
   })
-}
-function writeAnaPkg(dir: string, pkg: string) {
-  writeArtifact(dir, RUN_ID, `analysis-packages/${pkg}.json`, { packageName: pkg, subprograms: [] })
 }
 
 /** 基础 setup：inventory 含 CORE_PKG + EXTRA_PKG，packages/ 也含两包 */
@@ -94,92 +96,83 @@ describe("validateCrossSchema — 包名一致性", () => {
   })
 })
 
-describe("validateCrossSchema — plan 映射覆盖", () => {
+describe("validateCrossSchema — scaffold packageMappings 覆盖（Stage C：原 plan 校验合并到 scaffold）", () => {
   let ctx: ReturnType<typeof createEngineWithTempDir>
   afterEach(() => ctx?.cleanup())
 
-  it("plan 未映射包 → warning", () => {
+  it("scaffold.packageMappings 未映射包 → warning", () => {
     ctx = createEngineWithTempDir()
     setupBaseline(ctx.dir)
-    writeArtifact(ctx.dir, RUN_ID, "plan.json", {
+    writeArtifact(ctx.dir, RUN_ID, "scaffold.json", {
       targetProject: {
-        groupId: "com.example", artifactId: "myapp",
-        packageBase: "com.example", javaVersion: "1.8", springBootVersion: "2.7.x",
+        groupId: "com.example",
+        javaVersion: "1.8", springBootVersion: "2.7.x",
       },
       packageMappings: [
-        { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
-          mapperInterface: "CoreMapper", accessIntf: "CoreAccessIntf", accessImpl: "CoreAccessImpl", aggregate: "CoreAggregate" },
+        { plsqlPackage: "CORE_PKG",
+          components: [{role:"service"},{role:"service-impl"},{role:"mapper"}] },
         // 缺少 EXTRA_PKG 映射
       ],
-      rules: {
-        namingConvention: "camelCase", nullHandling: "optional",
-        exceptionStrategy: "custom-business", logFramework: "common-log",
-      },
-      typeMappings: {}, manualReviewList: [], conventions: "",
     })
 
     const findings: CrossSchemaFinding[] = ctx.engine.validateCrossSchema(
-      { runId: RUN_ID, currentPhase: "plan", status: "running", phaseHistory: [], metadata: {}, createdAt: "", updatedAt: "" },
-      "plan",
+      { runId: RUN_ID, currentPhase: "scaffold", status: "running", phaseHistory: [], metadata: {}, createdAt: "", updatedAt: "" },
+      "scaffold",
     )
-    const missing = findings.find(f => f.message.includes("plan 未映射包: EXTRA_PKG"))
+    const missing = findings.find(f => f.message.includes("scaffold.packageMappings 未映射包: EXTRA_PKG"))
     expect(missing).toBeTruthy()
     expect(missing!.severity).toBe("warning")
   })
 
-  it("scope 激活时越界映射包（out-of-scope 包写进 plan）→ warning", () => {
+  it("scope 激活时越界映射包（out-of-scope 包写进 packageMappings）→ warning", () => {
     ctx = createEngineWithTempDir()
     setupBaseline(ctx.dir)
-    writeArtifact(ctx.dir, RUN_ID, "plan.json", {
+    writeArtifact(ctx.dir, RUN_ID, "scaffold.json", {
       targetProject: {
-        groupId: "com.example", artifactId: "myapp",
-        packageBase: "com.example", javaVersion: "1.8", springBootVersion: "2.7.x",
+        groupId: "com.example",
+        javaVersion: "1.8", springBootVersion: "2.7.x",
       },
-      // scope 只覆盖 CORE_PKG，但 plan 把 out-of-scope 的 EXTRA_PKG 也映射了
+      // scope 只覆盖 CORE_PKG，但 packageMappings 把 out-of-scope 的 EXTRA_PKG 也映射了
       packageMappings: [
-        { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
-          mapperInterface: "CoreMapper", accessIntf: "CoreAccessIntf", accessImpl: "CoreAccessImpl", aggregate: "CoreAggregate" },
-        { oraclePackage: "EXTRA_PKG", javaPackage: "com.example.extra",
-          mapperInterface: "ExtraMapper", accessIntf: "ExtraAccessIntf", accessImpl: "ExtraAccessImpl", aggregate: "ExtraAggregate" },
+        { plsqlPackage: "CORE_PKG",
+          components: [{role:"service"},{role:"service-impl"},{role:"mapper"}] },
+        { plsqlPackage: "EXTRA_PKG",
+          components: [{role:"service"},{role:"service-impl"},{role:"mapper"}] },
       ],
-      rules: { namingConvention: "camelCase", nullHandling: "optional", exceptionStrategy: "spring-data", logFramework: "slf4j" },
-      typeMappings: {}, manualReviewList: [], conventions: "",
     })
 
     const findings: CrossSchemaFinding[] = ctx.engine.validateCrossSchema(
-      { runId: RUN_ID, currentPhase: "plan", status: "running", phaseHistory: [], metadata: { scopePackages: ["CORE_PKG"] }, createdAt: "", updatedAt: "" },
-      "plan",
+      { runId: RUN_ID, currentPhase: "scaffold", status: "running", phaseHistory: [], metadata: { scopePackages: ["CORE_PKG"] }, createdAt: "", updatedAt: "" },
+      "scaffold",
     )
-    const overflow = findings.find(f => f.message.includes("plan 越界映射包: EXTRA_PKG"))
+    const overflow = findings.find(f => f.message.includes("scaffold.packageMappings 越界映射包: EXTRA_PKG"))
     expect(overflow).toBeTruthy()
     expect(overflow!.severity).toBe("warning")
-    const falseMissing = findings.find(f => f.message.includes("plan 未映射包: EXTRA_PKG"))
+    const falseMissing = findings.find(f => f.message.includes("scaffold.packageMappings 未映射包: EXTRA_PKG"))
     expect(falseMissing).toBeFalsy()
   })
 
   it("scope 激活时 out-of-scope 包未映射不误报", () => {
     ctx = createEngineWithTempDir()
     setupBaseline(ctx.dir)
-    writeArtifact(ctx.dir, RUN_ID, "plan.json", {
+    writeArtifact(ctx.dir, RUN_ID, "scaffold.json", {
       targetProject: {
-        groupId: "com.example", artifactId: "myapp",
-        packageBase: "com.example", javaVersion: "1.8", springBootVersion: "2.7.x",
+        groupId: "com.example",
+        javaVersion: "1.8", springBootVersion: "2.7.x",
       },
       packageMappings: [
-        { oraclePackage: "CORE_PKG", javaPackage: "com.example.core",
-          mapperInterface: "CoreMapper", accessIntf: "CoreAccessIntf", accessImpl: "CoreAccessImpl", aggregate: "CoreAggregate" },
+        { plsqlPackage: "CORE_PKG",
+          components: [{role:"service"},{role:"service-impl"},{role:"mapper"}] },
       ],
-      rules: { namingConvention: "camelCase", nullHandling: "optional", exceptionStrategy: "spring-data", logFramework: "slf4j" },
-      typeMappings: {}, manualReviewList: [], conventions: "",
     })
 
     const findings: CrossSchemaFinding[] = ctx.engine.validateCrossSchema(
-      { runId: RUN_ID, currentPhase: "plan", status: "running", phaseHistory: [], metadata: { scopePackages: ["CORE_PKG"] }, createdAt: "", updatedAt: "" },
-      "plan",
+      { runId: RUN_ID, currentPhase: "scaffold", status: "running", phaseHistory: [], metadata: { scopePackages: ["CORE_PKG"] }, createdAt: "", updatedAt: "" },
+      "scaffold",
     )
-    const falseMissing = findings.find(f => f.message.includes("plan 未映射包: EXTRA_PKG"))
+    const falseMissing = findings.find(f => f.message.includes("scaffold.packageMappings 未映射包: EXTRA_PKG"))
     expect(falseMissing).toBeFalsy()
-    const overflow = findings.find(f => f.message.includes("plan 越界映射包"))
+    const overflow = findings.find(f => f.message.includes("scaffold.packageMappings 越界映射包"))
     expect(overflow).toBeFalsy()
   })
 })
@@ -196,14 +189,11 @@ describe("advance() — warning 自动放行", () => {
     ctx = createEngineWithTempDir()
     const engine = ctx.engine
     engine.start("sql2java", RUN_ID)
-    pushToPhase(engine, "analyze")
+    pushToPhase(engine, "inventory")
 
     // inventory 两包，packages/ 只 CORE_PKG（graph 缺 EXTRA_PKG）
     writeInv(ctx.dir, ["CORE_PKG", "EXTRA_PKG"])
     writePkg(ctx.dir, "CORE_PKG")
-    // analysis-packages 覆盖 inventory 全部包（analyze 边界校验需要）
-    writeAnaPkg(ctx.dir, "CORE_PKG")
-    writeAnaPkg(ctx.dir, "EXTRA_PKG")
 
     const result = engine.advance(RUN_ID)
     expect(result.rejected).toBe(false)
@@ -215,13 +205,12 @@ describe("advance() — warning 自动放行", () => {
     ctx = createEngineWithTempDir()
     const engine = ctx.engine
     engine.start("sql2java", RUN_ID)
-    pushToPhase(engine, "analyze")
+    pushToPhase(engine, "inventory")
 
     // inventory 只 CORE_PKG，packages/ 有 CORE_PKG + GHOST_PKG（graph 多 GHOST_PKG）
     writeInv(ctx.dir, ["CORE_PKG"])
     writePkg(ctx.dir, "CORE_PKG")
     writePkg(ctx.dir, "GHOST_PKG")
-    writeAnaPkg(ctx.dir, "CORE_PKG")
 
     const result = engine.advance(RUN_ID)
     expect(result.rejected).toBe(false)
@@ -233,12 +222,11 @@ describe("advance() — warning 自动放行", () => {
     ctx = createEngineWithTempDir()
     const engine = ctx.engine
     engine.start("sql2java", RUN_ID)
-    pushToPhase(engine, "analyze")
+    pushToPhase(engine, "inventory")
 
     writeInv(ctx.dir, ["CORE_PKG"])
     writePkg(ctx.dir, "CORE_PKG")
     writePkg(ctx.dir, "GHOST_PKG")
-    writeAnaPkg(ctx.dir, "CORE_PKG")
 
     const result = engine.advance(RUN_ID, { acceptWarnings: true })
     expect(result.rejected).toBe(false)
@@ -255,7 +243,7 @@ describe("advance() — 混合场景", () => {
     ctx = createEngineWithTempDir()
     const engine = ctx.engine
     engine.start("sql2java", RUN_ID)
-    pushToPhase(engine, "analyze")
+    pushToPhase(engine, "inventory")
 
     // inventory 有 CORE_PKG + EXTRA_PKG，packages/ 有 CORE_PKG + GHOST_PKG
     // → EXTRA_PKG: 依赖图缺少包 = warning
@@ -263,8 +251,6 @@ describe("advance() — 混合场景", () => {
     writeInv(ctx.dir, ["CORE_PKG", "EXTRA_PKG"])
     writePkg(ctx.dir, "CORE_PKG")
     writePkg(ctx.dir, "GHOST_PKG")
-    writeAnaPkg(ctx.dir, "CORE_PKG")
-    writeAnaPkg(ctx.dir, "EXTRA_PKG")
 
     const result = engine.advance(RUN_ID)
     expect(result.rejected).toBe(false)

@@ -3,7 +3,7 @@
  *
  * 覆盖 buildVerifySummary 的覆盖率链路：
  *   - jacoco.xml 解析（class 级 counter + sourcefile 行级 gap）
- *   - 归因到 Oracle 包
+ *   - 归因到 PL/SQL 包
  *   - coverage.passed 判定（行 90% / 分支 75%）+ 纳入 allPassed
  *   - coverage-gaps.md 三段内容（未覆盖明细 / 未纳入统计范围 / 汇总）
  *   - 无 jacoco.xml 时跳过（不阻断）
@@ -28,11 +28,10 @@ afterEach(() => {
   rmSync(projectRoot, { recursive: true, force: true })
 })
 
-/** 造 scaffold/inventory/plan/translation + projectRoot 指向真实临时目录 */
+/** 造 scaffold/inventory/translation + projectRoot 指向真实临时目录（Stage C：packageMappings 在 scaffold.json） */
 function setup(packages: string[], files: Record<string, string[]>) {
-  writeFileSync(join(dir, "scaffold.json"), JSON.stringify({ projectRoot }), "utf-8")
+  writeFileSync(join(dir, "scaffold.json"), JSON.stringify({ projectRoot, packageMappings: [], coverageExcludes: ["exception/", "entity/", "config/", "util/"] }), "utf-8")
   writeFileSync(join(dir, "inventory.json"), JSON.stringify({ packageNames: packages }), "utf-8")
-  writeFileSync(join(dir, "plan.json"), JSON.stringify({ packageMappings: [] }), "utf-8")
   for (const pkg of packages) {
     mkdirSync(join(dir, "translations", pkg), { recursive: true })
     writeFileSync(
@@ -57,11 +56,12 @@ function writeJacocoXml(xml: string) {
 /** 造一个被 jacoco excludes 排除的类文件，验证 coverage-gaps.md 第 2 段 */
 function writeExcludedClasses() {
   const base = join(projectRoot, "src", "main", "java", "com", "example")
-  mkdirSync(join(base, "common", "infrastructure"), { recursive: true })
-  writeFileSync(join(base, "common", "infrastructure", "TranFailException.java"), "package com.example.common.infrastructure;", "utf-8")
-  mkdirSync(join(base, "beans"), { recursive: true })
-  writeFileSync(join(base, "beans", "OrderBean.java"), "package com.example.beans;", "utf-8")
-  writeFileSync(join(base, "AppConfig.java"), "package com.example;", "utf-8")
+  mkdirSync(join(base, "exception"), { recursive: true })
+  writeFileSync(join(base, "exception", "BusinessException.java"), "package com.example.exception;", "utf-8")
+  mkdirSync(join(base, "entity"), { recursive: true })
+  writeFileSync(join(base, "entity", "OrderDO.java"), "package com.example.entity;", "utf-8")
+  mkdirSync(join(base, "config"), { recursive: true })
+  writeFileSync(join(base, "config", "AppConfig.java"), "package com.example.config;", "utf-8")
   writeFileSync(join(base, "OrderSystemApplication.java"), "package com.example;", "utf-8")
 }
 
@@ -140,8 +140,8 @@ describe("buildVerifySummary — JaCoCo 覆盖率", () => {
     expect(md).toContain("分支未覆盖") // branch gap
     // 段 2：未纳入统计的范围
     expect(md).toContain("## 2. 未纳入统计的范围")
-    expect(md).toContain("TranFailException.java")
-    expect(md).toContain("OrderBean.java")
+    expect(md).toContain("BusinessException.java")
+    expect(md).toContain("OrderDO.java")
     expect(md).toContain("AppConfig.java")
     expect(md).toContain("OrderSystemApplication.java")
     // 段 3：汇总
@@ -200,11 +200,11 @@ describe("buildVerifySummary — JaCoCo 覆盖率", () => {
     expect(md).toContain("com.example.orphan.Orphan")
   })
 
-  it("beans/Application/Config 等排除类不计入覆盖率门控，不产生 GLOBAL 不拉低 allPassed", () => {
+  it("exception/entity/config/Application 等排除类不计入覆盖率门控，不产生 GLOBAL 不拉低 allPassed", () => {
     setup(["PKG_A"], { PKG_A: ["src/main/java/com/example/a/AAggregate.java"] })
     writeCompileLog("BUILD SUCCESS")
     writeTestLog("Tests run: 2, Failures: 0, Errors: 0, Skipped: 0")
-    // aggregate 全覆盖 + 一批 0 覆盖的排除类（bean / Application / Config / infrastructure）
+    // aggregate 全覆盖 + 一批 0 覆盖的排除类（entity / Application / config / exception）
     const xml = `<?xml version="1.0"?>
 <report name="proj">
   <package name="com/example/a">
@@ -217,22 +217,24 @@ describe("buildVerifySummary — JaCoCo 覆盖率", () => {
       <line nr="20" mi="0" ci="3" mb="0" cb="2"/>
     </sourcefile>
   </package>
-  <package name="com/example/beans">
-    <class name="com/example/beans/OrderBean" sourcefilename="OrderBean.java">
+  <package name="com/example/entity">
+    <class name="com/example/entity/OrderDO" sourcefilename="OrderDO.java">
       <counter type="LINE" missed="3" covered="0"/>
       <counter type="BRANCH" missed="0" covered="0"/>
     </class>
-    <sourcefile name="OrderBean.java">
+    <sourcefile name="OrderDO.java">
       <line nr="5" mi="3" ci="0" mb="0" cb="0"/>
     </sourcefile>
   </package>
-  <package name="com/example">
-    <class name="com/example/AppConfig" sourcefilename="AppConfig.java">
+  <package name="com/example/config">
+    <class name="com/example/config/AppConfig" sourcefilename="AppConfig.java">
       <counter type="LINE" missed="2" covered="0"/>
     </class>
     <sourcefile name="AppConfig.java">
       <line nr="3" mi="2" ci="0" mb="0" cb="0"/>
     </sourcefile>
+  </package>
+  <package name="com/example">
     <class name="com/example/AppApplication" sourcefilename="AppApplication.java">
       <counter type="LINE" missed="4" covered="0"/>
     </class>
@@ -240,11 +242,11 @@ describe("buildVerifySummary — JaCoCo 覆盖率", () => {
       <line nr="5" mi="4" ci="0" mb="0" cb="0"/>
     </sourcefile>
   </package>
-  <package name="com/example/common/infrastructure">
-    <class name="com/example/common/infrastructure/TranFailException" sourcefilename="TranFailException.java">
+  <package name="com/example/exception">
+    <class name="com/example/exception/BusinessException" sourcefilename="BusinessException.java">
       <counter type="LINE" missed="2" covered="0"/>
     </class>
-    <sourcefile name="TranFailException.java">
+    <sourcefile name="BusinessException.java">
       <line nr="7" mi="2" ci="0" mb="0" cb="0"/>
     </sourcefile>
   </package>

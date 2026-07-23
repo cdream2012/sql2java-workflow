@@ -51,7 +51,7 @@ describe("buildDependencySignaturesBlock", () => {
     writeSub(art, "PKG_A", "proc1", [{ package: "PKG_B", name: "other", line: 1, kind: "procedure" }])
     writeSub(art, "PKG_B", "other")
     writeAggregatedTranslation(art, "PKG_B", [
-      { oracleName: "other", javaClass: "com.x.BService", javaMethod: "other", javaFile: "src/BService.java" },
+      { plsqlName: "other", javaClass: "com.x.BService", javaMethod: "other", javaFile: "src/BService.java" },
     ])
 
     const block = buildDependencySignaturesBlock(art, ["PKG_A.proc1"], ["PKG_B.other"])
@@ -69,7 +69,7 @@ describe("buildDependencySignaturesBlock", () => {
     writeSub(art, "PKG_A", "proc2", [{ package: "PKG_A", name: "proc1", line: 1, kind: "procedure" }])
     writeSub(art, "PKG_A", "proc1")
     writeAggregatedTranslation(art, "PKG_A", [
-      { oracleName: "proc1", javaClass: "com.x.AService", javaMethod: "proc1", javaFile: null },
+      { plsqlName: "proc1", javaClass: "com.x.AService", javaMethod: "proc1", javaFile: null },
     ])
 
     const block = buildDependencySignaturesBlock(art, ["PKG_A.proc2"], ["PKG_A.proc1"])
@@ -95,7 +95,7 @@ describe("buildDependencySignaturesBlock", () => {
     writeSub(art, "PKG_A", "proc1", [{ package: "PKG_B", name: "missing_method", line: 1, kind: "procedure" }])
     writeSub(art, "PKG_B", "missing_method")
     writeAggregatedTranslation(art, "PKG_B", [
-      { oracleName: "other", javaClass: "com.x.BService", javaMethod: "other" },
+      { plsqlName: "other", javaClass: "com.x.BService", javaMethod: "other" },
     ])
 
     const block = buildDependencySignaturesBlock(art, ["PKG_A.proc1"], ["PKG_B.someunit"])
@@ -124,7 +124,7 @@ describe("buildDependencySignaturesBlock", () => {
     writeSub(art, "PKG_A", "proc1", [{ package: "PKG_B", name: "other", line: 1, kind: "procedure" }])
     writeSub(art, "PKG_B", "other")
     writeAggregatedTranslation(art, "PKG_B", [
-      { oracleName: "other", javaClass: "com.x.BService", javaMethod: "other" },
+      { plsqlName: "other", javaClass: "com.x.BService", javaMethod: "other" },
     ])
     // completedUnitIds 用小写 pkg_b.other（scanner 大小写变体）——大小写不敏感应仍命中
     const block = buildDependencySignaturesBlock(art, ["PKG_A.proc1"], ["pkg_b.other"])

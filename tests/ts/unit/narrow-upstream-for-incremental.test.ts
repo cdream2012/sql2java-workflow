@@ -11,33 +11,29 @@ import { narrowUpstreamForIncremental } from "@plugins/workflow-engine"
 import { UPSTREAM_ARTIFACTS } from "@workflow/workflow-definitions"
 
 describe("narrowUpstreamForIncremental", () => {
-  it("fix(review 触发): analysis-packages + translations + verify.json 收窄到 fixedPackages，全局 artifact 保留", () => {
+  it("fix(review 触发): translations + verify.json 收窄到 fixedPackages，全局 artifact 保留", () => {
     // 本函数只负责 per-package glob 收窄；review/verify-summary 的二选一过滤由 dispatch 层在
     // 调用前完成（见 workflow-engine.ts fix 阶段 branchedFrom 过滤）。此处用原始 fix upstream 验证
     // per-package glob 行为，两个 summary 都在原样保留之列。
+    // analysis-packages 已从 review/fix upstream 移除（review 改源码 grep、translate 读 source.sql）。
     const upstream = UPSTREAM_ARTIFACTS.fix
     const result = narrowUpstreamForIncremental(upstream, ["COSTING", "INVENTORY"])
 
     // per-package glob 展开为 fixedPackages 各包
-    expect(result).toContain("analysis-packages/COSTING.json")
-    expect(result).toContain("analysis-packages/INVENTORY.json")
     expect(result).toContain("translations/COSTING/translation.json")
     expect(result).toContain("translations/INVENTORY/translation.json")
     expect(result).toContain("translations/COSTING/verify.json")
     expect(result).toContain("translations/INVENTORY/verify.json")
 
     // glob 已消除
-    expect(result).not.toContain("analysis-packages/*.json")
     expect(result).not.toContain("translations/*/translation.json")
     expect(result).not.toContain("translations/*/verify.json")
 
     // 不含其他包
-    expect(result).not.toContain("analysis-packages/PRICING.json")
     expect(result).not.toContain("translations/PRICING/translation.json")
     expect(result).not.toContain("translations/PRICING/verify.json")
 
     // 全局只读 artifact 原样保留
-    expect(result).toContain("plan.json")
     expect(result).toContain("scaffold.json")
     expect(result).toContain("dedup.json")
     expect(result).toContain("review-static.json")
@@ -52,23 +48,19 @@ describe("narrowUpstreamForIncremental", () => {
 
     expect(result).toContain("verify-summary.json")
     expect(result).toContain("translations/COSTING/verify.json")
-    expect(result).toContain("analysis-packages/COSTING.json")
     expect(result).not.toContain("translations/*/verify.json")
     expect(result).not.toContain("review-summary.json")
   })
 
-  it("review 增量: analysis-packages + translations 收窄，review-static.json 保留（项目级单文件）", () => {
+  it("review 增量: translations 收窄，review-static.json 保留（项目级单文件）", () => {
     const upstream = UPSTREAM_ARTIFACTS.review
     const result = narrowUpstreamForIncremental(upstream, ["COSTING"])
 
-    expect(result).toContain("analysis-packages/COSTING.json")
     expect(result).toContain("translations/COSTING/translation.json")
-    expect(result).not.toContain("analysis-packages/*.json")
     expect(result).not.toContain("translations/*/translation.json")
-    expect(result).not.toContain("analysis-packages/PRICING.json")
+    expect(result).not.toContain("translations/PRICING/translation.json")
     // 项目级单文件不动
     expect(result).toContain("review-static.json")
-    expect(result).toContain("plan.json")
     expect(result).toContain("dedup.json")
   })
 
@@ -81,7 +73,6 @@ describe("narrowUpstreamForIncremental", () => {
     expect(result).not.toContain("translations/*/translation.json")
     expect(result).not.toContain("translations/PRICING/translation.json")
     // 全局 artifact 保留
-    expect(result).toContain("plan.json")
     expect(result).toContain("scaffold.json")
     expect(result).toContain("dedup.json")
   })
@@ -95,7 +86,6 @@ describe("narrowUpstreamForIncremental", () => {
   it("多个 per-package glob 共存时各自独立展开", () => {
     const upstream = [
       "plan.json",
-      "analysis-packages/*.json",
       "translations/*/translation.json",
       "translations/*/verify.json",
       "dedup.json",
@@ -103,8 +93,6 @@ describe("narrowUpstreamForIncremental", () => {
     const result = narrowUpstreamForIncremental(upstream, ["A", "B"])
     expect(result).toEqual([
       "plan.json",
-      "analysis-packages/A.json",
-      "analysis-packages/B.json",
       "translations/A/translation.json",
       "translations/B/translation.json",
       "translations/A/verify.json",

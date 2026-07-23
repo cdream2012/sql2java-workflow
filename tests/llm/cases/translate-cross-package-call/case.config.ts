@@ -21,7 +21,7 @@ import type { CaseConfig } from "../../harness"
 import { assertGeneratedFileExists, assertJavaMatches } from "../../harness"
 import {
   makeInventory,
-  makePlan, makeScaffold, makePackageArtifact, makeSubprogramArtifact, makeAnalysisPackage,
+  makeScaffold, makePackageArtifact, makeSubprogramArtifact, makeAnalysisPackage,
   makeTranslation, writeArtifactJson,
 } from "../../../ts/helpers/artifact-factory"
 
@@ -40,7 +40,7 @@ const config: CaseConfig = {
 
   prepareArtifacts: dir => {
     writeArtifactJson(dir, "inventory.json", {
-      sourcePath: SOURCE_DIR_REL, packageNames: [PKG_B, PKG_A], tables: [{ name: "T_ORDER", columns: [{ name: "CUST_ID", oracleType: "NUMBER", nullable: true, isPrimaryKey: false }] }], standaloneProcedures: [], triggers: [], views: [], sequences: [],
+      sourcePath: SOURCE_DIR_REL, packageNames: [PKG_B, PKG_A], tables: [{ name: "T_ORDER", columns: [{ name: "CUST_ID", plsqlType: "NUMBER", nullable: true, isPrimaryKey: false }] }], standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
 
     // packages（新形状：packages/{PKG}.json，PackageArtifactSchema；取代旧 inventory-packages/）
@@ -81,22 +81,22 @@ const config: CaseConfig = {
       returnType: "VARCHAR2", loc: 10, directCalls: [],
     }))
 
-    // plan（两包映射）
-    writeArtifactJson(dir, "plan.json", makePlan({
-      packageMappings: [
-        { oraclePackage: PKG_B, javaPackage: "com.example.util", mapperInterface: "UtilMapper", serviceClass: "UtilService", serviceImplClass: "UtilServiceImpl" },
-        { oraclePackage: PKG_A, javaPackage: "com.example.order", mapperInterface: "OrderMapper", serviceClass: "OrderService", serviceImplClass: "OrderServiceImpl" },
-      ],
-    }))
-
-    // scaffold（A 的骨架）
+    // scaffold（A 的骨架；Stage C：含 targetProject + 两包 packageMappings，原 plan.json 合并）
     writeArtifactJson(dir, "scaffold.json", makeScaffold({
+      packageMappings: [
+        { plsqlPackage: PKG_B, components: [{ role: "service" }, { role: "service-impl" }, { role: "mapper" }] },
+        { plsqlPackage: PKG_A, components: [{ role: "service" }, { role: "service-impl" }, { role: "mapper" }] },
+      ],
       projectRoot: PROJECT_ROOT_REL,
-      structure: { directories: ["src/main/java/com/example/order/service/impl"], pomXml: "pom.xml" },
+      structure: { directories: ["src/main/java/service/impl", "src/main/java/mapper"], pomXml: "pom.xml" },
       generated: {
         entities: [],
-        mapperInterfaces: [{ file: "src/main/java/com/example/order/mapper/OrderMapper.java", oraclePackage: PKG_A }],
-        serviceShells: [{ file: "src/main/java/com/example/order/service/impl/OrderServiceImpl.java", oraclePackage: PKG_A }],
+        procClassNames: [
+          { plsqlSchema: "", plsqlPackage: PKG_A, refName: "CREATE_ORDER", className: "CreateOrder" },
+          { plsqlSchema: "", plsqlPackage: PKG_B, refName: "GET_BY_ID", className: "GetById" },
+        ],
+        constants: [],
+        stateDtos: [],
         commonClasses: [],
       },
     }))
@@ -104,13 +104,13 @@ const config: CaseConfig = {
     // analysis（拓扑序：B 叶子先、A 后；callGraph 由 buildDependencyGraph 从 subprograms.directCalls 按需推导）
     writeArtifactJson(join(dir, "analysis-packages"), `${PKG_B}.json`, makeAnalysisPackage({
       packageName: PKG_B,
-      subprograms: [{ name: "get_by_id", blocks: [{ type: "sql-statement", oracleLine: 3, description: "SELECT INTO 查询", dependencies: [] }], variables: [], cursors: [], exceptionHandlers: [], translationNotes: ["按 id 查询"] }],
+      subprograms: [{ name: "get_by_id", blocks: [{ type: "sql-statement", plsqlLine: 3, description: "SELECT INTO 查询", dependencies: [] }], variables: [], cursors: [], exceptionHandlers: [], translationNotes: ["按 id 查询"] }],
     }))
     writeArtifactJson(join(dir, "analysis-packages"), `${PKG_A}.json`, makeAnalysisPackage({
       packageName: PKG_A,
       subprograms: [{
         name: "create_order",
-        blocks: [{ type: "call", oracleLine: 5, description: "调用 UTIL_PKG.get_by_id", dependencies: ["UTIL_PKG.get_by_id"] }],
+        blocks: [{ type: "call", plsqlLine: 5, description: "调用 UTIL_PKG.get_by_id", dependencies: ["UTIL_PKG.get_by_id"] }],
         variables: [], cursors: [], exceptionHandlers: [],
         translationNotes: ["调用 util 包查询后建单（跨包调用）"],
       }],
@@ -124,9 +124,9 @@ const config: CaseConfig = {
         { path: `${PROJECT_ROOT_REL}/src/main/java/com/example/util/service/UtilService.java`, role: "service" },
         { path: `${PROJECT_ROOT_REL}/src/main/java/com/example/util/service/impl/UtilServiceImpl.java`, role: "service-impl" },
       ],
-      decisions: [{ line: 3, oracleConstruct: "SELECT INTO", javaConstruct: "UtilMapper.selectById", reason: "查询映射", confidence: "high" }],
+      decisions: [{ line: 3, plsqlConstruct: "SELECT INTO", javaConstruct: "UtilMapper.selectById", reason: "查询映射", confidence: "high" }],
       subprogramMethods: [
-        { oracleName: "get_by_id", javaClass: "com.example.util.UtilService", javaMethod: B_METHOD, javaFile: `${PROJECT_ROOT_REL}/src/main/java/com/example/util/service/UtilService.java` },
+        { plsqlName: "get_by_id", javaClass: "com.example.util.UtilService", javaMethod: B_METHOD, javaFile: `${PROJECT_ROOT_REL}/src/main/java/com/example/util/service/UtilService.java` },
       ],
     }))
 

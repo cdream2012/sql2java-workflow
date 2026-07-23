@@ -18,7 +18,7 @@ import { scanSource } from "@workflow/plsql-scanner"
 import { buildInventoryFromIndex } from "@workflow/inventory-builder"
 import { buildDependencyGraphFromIndex } from "@workflow/analysis-builder"
 
-const FIXTURE_TINY = resolve(import.meta.dirname, "../fixtures/sql/tiny")
+const FIXTURE_MFG = resolve(import.meta.dirname, "../../../resources/MFG_ERP")
 let engine: WorkflowEngine
 let dir: string
 const runId = "test-shard-advance-unit"
@@ -31,48 +31,12 @@ beforeAll(async () => {
 
   const artifactsDir = join(dir, runId)
   mkdirSync(artifactsDir, { recursive: true })
-  const index = await scanSource(FIXTURE_TINY)
+  const index = await scanSource(FIXTURE_MFG)
   buildInventoryFromIndex(artifactsDir, index)
   buildDependencyGraphFromIndex(artifactsDir) // 产出 dependency-graph.json（含 procedureOrder）
 }, 60000)
 
 describe("engine.advance 分片推进 — unitMode 字段", () => {
-  it("analyze：unitMode shardPlan 推进下一分片时写 targetUnits（非 targetPackages）", () => {
-    engine.start("sql2java", runId, { sourcePath: FIXTURE_TINY })
-    // inventory → analyze
-    let adv = engine.advance(runId, { result: "passed" })
-    if (adv.rejected && (adv as any).warningPending) {
-      adv = engine.advance(runId, { result: "passed", acceptWarnings: true } as any)
-    }
-    expect(adv.rejected).toBe(false)
-    expect(adv.run.currentPhase).toBe("analyze")
-
-    // 注入 unitMode shardPlan（模拟 dispatch 阶段计算的分片计划）+ shard 0 的 incrementalContext
-    const run = engine.status(runId)!
-    run.metadata.shardPlan = {
-      phase: "analyze",
-      unitMode: true,
-      shards: [["CORE_PKG.get_item"], ["CORE_PKG.get_item_obj"]],
-      completedShards: [],
-    }
-    const entry = engine.findCurrentEntry(run)!
-    entry.incrementalContext = { targetUnits: ["CORE_PKG.get_item"], shardIndex: 0, totalShards: 2 }
-    engine.persist(run)
-
-    // 推进 shard 0 → shard 1
-    const adv2 = engine.advance(runId, { result: "passed" })
-    expect(adv2.rejected).toBe(false)
-    expect(adv2.run.currentPhase).toBe("analyze") // 同阶段分片推进，不切阶段
-
-    const run2 = engine.status(runId)!
-    const nextEntry = engine.findCurrentEntry(run2)!
-    expect(nextEntry.incrementalContext?.shardIndex).toBe(1)
-    expect(nextEntry.incrementalContext?.totalShards).toBe(2)
-    // ★ 核心断言：unitMode 下用 targetUnits，不是 targetPackages
-    expect(nextEntry.incrementalContext?.targetUnits).toEqual(["CORE_PKG.get_item_obj"])
-    expect(nextEntry.incrementalContext?.targetPackages).toBeUndefined()
-  })
-
   it("translate：unitMode shardPlan 推进下一分片时写 targetUnits（非 targetPackages）", () => {
     const txRunId = "test-shard-advance-translate"
     // 复制 analyze 测试的产物到 translate run（inventory + analysis）
@@ -81,9 +45,9 @@ describe("engine.advance 分片推进 — unitMode 字段", () => {
     const srcArtifactsDir = join(dir, runId)
     cpSync(srcArtifactsDir, txArtifactsDir, { recursive: true })
 
-    engine.start("sql2java", txRunId, { sourcePath: FIXTURE_TINY })
-    // 推进到 translate（inventory→analyze→plan→scaffold→translate），acceptWarnings 绕过 engine-core 的轻量校验
-    const phases = ["inventory", "analyze", "plan", "scaffold"]
+    engine.start("sql2java", txRunId, { sourcePath: FIXTURE_MFG })
+    // 推进到 translate（inventory→scaffold→translate；Stage C：plan 合并入 scaffold），acceptWarnings 绕过 engine-core 的轻量校验
+    const phases = ["inventory", "scaffold"]
     for (const _ of phases) {
       let r = engine.advance(txRunId, { result: "passed" })
       if (r.rejected && (r as any).warningPending) {
@@ -94,23 +58,24 @@ describe("engine.advance 分片推进 — unitMode 字段", () => {
     const runAtTranslate = engine.status(txRunId)!
     expect(runAtTranslate.currentPhase).toBe("translate")
 
-    // 注入 unitMode shardPlan + shard 0 的 incrementalContext
+    // 注入 unitMode shardPlan + shard 0 的 incrementalContext（不带 currentSubStage——
+    // translate 主从架构下 sub-stage 由 translator master 内部调度，引擎 advance 直走 shard 推进）。
     runAtTranslate.metadata.shardPlan = {
       phase: "translate",
       unitMode: true,
-      shards: [["CORE_PKG.get_item"], ["CORE_PKG.get_item_obj"]],
+      shards: [["MFG_ERP.F_ITEM.get_item"], ["MFG_ERP.F_ITEM.get_item_obj"]],
       completedShards: [],
     }
     const entry = engine.findCurrentEntry(runAtTranslate)!
-    entry.incrementalContext = { targetUnits: ["CORE_PKG.get_item"], shardIndex: 0, totalShards: 2 }
+    entry.incrementalContext = { targetUnits: ["MFG_ERP.F_ITEM.get_item"], shardIndex: 0, totalShards: 2 }
     engine.persist(runAtTranslate)
 
     // 写 shard 0 的 per-unit translation（G1-unit 要求 status=completed）
-    mkdirSync(join(txArtifactsDir, "translations", "CORE_PKG"), { recursive: true })
-    writeFileSync(join(txArtifactsDir, "translations", "CORE_PKG", "get_item.json"), JSON.stringify({
-      unitRefName: "get_item", packageName: "CORE_PKG", status: "completed",
+    mkdirSync(join(txArtifactsDir, "translations", "MFG_ERP.F_ITEM"), { recursive: true })
+    writeFileSync(join(txArtifactsDir, "translations", "MFG_ERP.F_ITEM", "get_item.json"), JSON.stringify({
+      unitRefName: "get_item", packageName: "MFG_ERP.F_ITEM", status: "completed",
       completedSubprograms: ["get_item"], files: [], decisions: [], todos: [],
-      subprogramMethods: [{ oracleName: "get_item", javaClass: "com.x.ItemAccessIntf", javaMethod: "getItem" }],
+      subprogramMethods: [{ plsqlName: "get_item", javaClass: "com.x.ItemAccessIntf", javaMethod: "getItem" }],
     }), "utf-8")
 
     // 推进 shard 0 → shard 1（G1-unit 校验 + 跨 schema warning 自动接受）
@@ -125,7 +90,9 @@ describe("engine.advance 分片推进 — unitMode 字段", () => {
     const nextEntry = engine.findCurrentEntry(run2)!
     expect(nextEntry.incrementalContext?.shardIndex).toBe(1)
     // ★ 核心断言：translate unitMode 下用 targetUnits，不是 targetPackages
-    expect(nextEntry.incrementalContext?.targetUnits).toEqual(["CORE_PKG.get_item_obj"])
+    expect(nextEntry.incrementalContext?.targetUnits).toEqual(["MFG_ERP.F_ITEM.get_item_obj"])
     expect(nextEntry.incrementalContext?.targetPackages).toBeUndefined()
+    // 主从架构：新 shard entry 不带 currentSubStage（sub-stage 由 master 内部管）
+    expect(nextEntry.incrementalContext?.currentSubStage).toBeUndefined()
   })
 })

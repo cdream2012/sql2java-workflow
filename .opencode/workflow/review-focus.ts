@@ -2,15 +2,16 @@
  * review-focus — Step B 聚焦语义审查的「信号选点 + 圈片段」（零 LLM，确定性）
  *
  * review dispatch 时由 engine 调用：对本分片 targetPackages 的每个 PROCEDURE，按各类信号
- * （complexity.high / manualReviewList / 游标 / 异常块 / 出参 / NVL·COALESCE / AUTONOMOUS_TRANSACTION）
+ * （complexity.high / 游标 / 异常块 / 出参 / NVL·COALESCE / AUTONOMOUS_TRANSACTION）
  * 筛出需 LLM 语义审的过程，并用 translation.subprogramMethods 圈定 Java 方法锚点（软约束）+
  * inventory.lineRange 给 PL/SQL sed -n（硬约束）。产出 workOrder 注入的文本块。
  *
  * 设计见 [[review-static-redesign]] Stage 2 + [[translate-procedure-level]] 邻接讨论：
- *   - 信号归属最自然的阶段产物：#8 参数方向→inventory.params[].direction；#5/#7→analysis SubprogramSchema
- *     （exceptionHandlers/cursors）；#1→analysis.complexity + plan.manualReviewList；#3/#6→源码 grep
- *     （#6 未来可下沉 analyze SubprogramSchema.isAutonomous，现 grep）
- *   - 锚点 = 翻译单元（PROCEDURE），subprogramMethods.oracleName=refName 给 Java 方法定位
+ *   - analyze 砍后信号全归源码/inventory：#8 参数方向→inventory.params[].direction；
+ *     #1→packages/{pkg}.json.complexity；#3/#5/#6/#7→源码 grep（NVL/EXCEPTION/AUTONOMOUS/CURSOR）。
+ *     原 #5/#7 读 analysis SubprogramSchema（exceptionHandlers/cursors）、#1 读 plan.manualReviewList
+ *     （来自 analysis.translationNotes）已废弃。
+ *   - 锚点 = 翻译单元（PROCEDURE），subprogramMethods.plsqlName=refName 给 Java 方法定位
  *   - 无信号的纯 CRUD/低复杂度过程跳过语义审——靠 Step A 静态扫描兜底（省 LLM）
  *   - 复用 refname.ts 的 refNamesForPackage/pkgOf/refOf 解决重载 refName join
  *
@@ -20,13 +21,12 @@
 
 import { existsSync, readFileSync } from "node:fs"
 import { join, isAbsolute } from "node:path"
-import { parseInventoryPackage, parseAnalysisPackage } from "./package-parser"
+import { parseInventoryPackage } from "./package-parser"
 import { getLogger } from "./workflow-logger"
 
 const MAX_FOCUS_POINTS = 30
 
 interface ProcMeta { lineRange: [number, number]; bodyPath: string | null | undefined; hasOutParam: boolean }
-interface SubprogMeta { hasCursors: boolean; hasExceptionHandlers: boolean }
 interface JavaAnchor { javaClass: string; javaMethod: string; javaFile: string | null | undefined }
 interface FocusPoint {
   unitRef: string
@@ -38,7 +38,7 @@ interface FocusPoint {
   plsqlStart: number | null
   plsqlEnd: number | null
 }
-interface TestFocus { kind: "service" | "mapper"; absFile: string; testClass: string; pkg: string }
+interface TestFocus { kind: "unit" | "integration"; absFile: string; testClass: string; pkg: string }
 
 function readJson(p: string): any | null {
   if (!existsSync(p)) return null
@@ -73,31 +73,14 @@ function buildInvRefMap(artifactsDir: string, pkg: string): {
   return { refMap: m, complexity: (pkgInfo.complexity ?? {}) as { riskLevel?: string } }
 }
 
-/** analysis-packages/{pkg}.json → refName → {hasCursors, hasExceptionHandlers}（解析复用 parseAnalysisPackage） */
-function buildAnaRefMap(artifactsDir: string, pkg: string): Map<string, SubprogMeta> {
-  const m = new Map<string, SubprogMeta>()
-  const parsed = parseAnalysisPackage(artifactsDir, pkg)
-  if (!parsed) return m
-  const { refNames, subprograms } = parsed
-  subprograms.forEach((s: any, i: number) => {
-    const ref = refNames[i]
-    if (!ref) return
-    m.set(ref, {
-      hasCursors: Array.isArray(s.cursors) && s.cursors.length > 0,
-      hasExceptionHandlers: Array.isArray(s.exceptionHandlers) && s.exceptionHandlers.length > 0,
-    })
-  })
-  return m
-}
-
-/** translations/{pkg}/translation.json → refName → Java 锚点（subprogramMethods.oracleName=refName） */
+/** translations/{pkg}/translation.json → refName → Java 锚点（subprogramMethods.plsqlName=refName） */
 function buildMethodMap(artifactsDir: string, pkg: string): Map<string, JavaAnchor> {
   const m = new Map<string, JavaAnchor>()
   const tr = readJson(join(artifactsDir, "translations", pkg, "translation.json"))
   if (!tr || !Array.isArray(tr.subprogramMethods)) return m
   for (const sm of tr.subprogramMethods) {
-    if (!sm?.oracleName || !sm?.javaMethod) continue
-    m.set(String(sm.oracleName), {
+    if (!sm?.plsqlName || !sm?.javaMethod) continue
+    m.set(String(sm.plsqlName), {
       javaClass: String(sm.javaClass ?? ""),
       javaMethod: String(sm.javaMethod),
       javaFile: sm.javaFile ?? null,
@@ -108,6 +91,10 @@ function buildMethodMap(artifactsDir: string, pkg: string): Map<string, JavaAnch
 
 const RE_NULL = /\bNVL\s*\(|\bCOALESCE\s*\(|\bIS\s+NOT\s+NULL\b|\bIS\s+NULL\b/i
 const RE_AUTONOMOUS = /AUTONOMOUS_TRANSACTION/i
+// #5/#7 改源码 grep（analyze 砍后不再读 analysis-packages，同 #3/#6 模式）：
+// CURSOR 标志游标声明；EXCEPTION 标志异常处理段（PL/SQL EXCEPTION 段关键字）。
+const RE_CURSOR = /\bCURSOR\b/i
+const RE_EXCEPTION = /\bEXCEPTION\b/i
 
 /** 读 body 文件一次，返回按行切片的源码文本查找器（闭包缓存） */
 function makeSourceSlice(bodyFileAbs: string | null | undefined): (s: number, e: number, re: RegExp) => boolean {
@@ -134,8 +121,6 @@ export function buildReviewFocus(
 ): string {
   if (!targetPackages || targetPackages.length === 0) return ""
 
-  const plan = readJson(join(artifactsDir, "plan.json")) ?? {}
-  const manualReview = Array.isArray(plan.manualReviewList) ? plan.manualReviewList as Array<{ procedure?: string }> : []
   const scaffold = readJson(join(artifactsDir, "scaffold.json")) ?? {}
 
   const absSrc = (rel: string | null | undefined): string | null => {
@@ -153,7 +138,6 @@ export function buildReviewFocus(
 
   for (const pkg of targetPackages) {
     const { refMap: invMap, complexity } = buildInvRefMap(artifactsDir, pkg)
-    const anaMap = buildAnaRefMap(artifactsDir, pkg)
     const methodMap = buildMethodMap(artifactsDir, pkg)
 
     // body 文件路径在 invMap 各过程一致（同包同 body），取首个非空
@@ -164,15 +148,11 @@ export function buildReviewFocus(
       const signals: string[] = []
       // complexity 现为包级（packages/{pkg}.json.complexity），整包同 riskLevel
       const isHigh = String(complexity?.riskLevel ?? "").toLowerCase() === "high"
-      const refU = ref.toUpperCase()
-      const inManual = manualReview.some(mr => {
-        const mp = String(mr?.procedure ?? "").toUpperCase()
-        return mp === refU || (mp && refU.startsWith(mp + "__"))
-      })
-      if (isHigh || inManual) signals.push("#1 logic-equivalence")
-      const ana = anaMap.get(ref)
-      if (ana?.hasExceptionHandlers) signals.push("#5 exception-mapping")
-      if (ana?.hasCursors) signals.push("#7 cursor-mapping")
+      // analyze 砍后 manualReviewList（原来自 translationNotes）已去，#1 只靠 complexity.high
+      if (isHigh) signals.push("#1 logic-equivalence")
+      // #5/#7 改源码 grep（原读 analysis-packages.cursors/exceptionHandlers，analyze 砍后 grep）
+      if (slice(meta.lineRange[0], meta.lineRange[1], RE_EXCEPTION)) signals.push("#5 exception-mapping")
+      if (slice(meta.lineRange[0], meta.lineRange[1], RE_CURSOR)) signals.push("#7 cursor-mapping")
       if (meta.hasOutParam) signals.push("#8 parameter-direction")
       if (slice(meta.lineRange[0], meta.lineRange[1], RE_NULL)) signals.push("#3 null-handling")
       if (slice(meta.lineRange[0], meta.lineRange[1], RE_AUTONOMOUS)) signals.push("#6 transaction-boundary")
@@ -188,16 +168,19 @@ export function buildReviewFocus(
       })
     }
 
-    // 测试审查（#18/#20）：本包 testShells / mapperTestShells
+    // 测试审查（#18/#20）：per-proc 模型下 scaffold 不再产 testShells/mapperTestShells
+    // （已下放 translate-test-gen 直接 write per-proc 测试类）。此处 ?? [] 优雅降级——
+    // real per-proc run 暂无测试聚焦点；阶段 4 review 重构改为扫 src/test/java/service/impl/ 与 mapper/ 下
+    // per-proc 测试文件。单测 mock 仍直供 testShells 走旧路径（passthrough 保留）。
     const testShells = (scaffold?.generated?.testShells ?? []) as any[]
     const mapperShells = (scaffold?.generated?.mapperTestShells ?? []) as any[]
     for (const sh of testShells) {
-      if (String(sh?.oraclePackage ?? "").toUpperCase() !== pkg.toUpperCase()) continue
-      testFocus.push({ kind: "service", absFile: absProj(sh.file) ?? String(sh.file), testClass: String(sh.testClass ?? ""), pkg })
+      if (String(sh?.plsqlPackage ?? "").toUpperCase() !== pkg.toUpperCase()) continue
+      testFocus.push({ kind: "unit", absFile: absProj(sh.file) ?? String(sh.file), testClass: String(sh.testClass ?? ""), pkg })
     }
     for (const sh of mapperShells) {
-      if (String(sh?.oraclePackage ?? "").toUpperCase() !== pkg.toUpperCase()) continue
-      testFocus.push({ kind: "mapper", absFile: absProj(sh.file) ?? String(sh.file), testClass: String(sh.testClass ?? ""), pkg })
+      if (String(sh?.plsqlPackage ?? "").toUpperCase() !== pkg.toUpperCase()) continue
+      testFocus.push({ kind: "integration", absFile: absProj(sh.file) ?? String(sh.file), testClass: String(sh.testClass ?? ""), pkg })
     }
   }
 
@@ -237,12 +220,10 @@ export function buildReviewFocus(
   if (testFocus.length > 0) {
     lines.push(``, `### 测试审查（test-correctness #18 / mapper-test-correctness #20）`)
     for (const tf of testFocus) {
-      const cat = tf.kind === "service" ? "test-correctness(#18)" : "mapper-test-correctness(#20)"
-      // 标签按 testClass 实际命名派生，避免对遗留 ServiceImplTest 误标「Aggregate」
-      const unitLabel = /AggregateTest$/.test(tf.testClass) ? "单元测试（Aggregate）"
-        : /ServiceImplTest$/.test(tf.testClass) ? "单元测试（ServiceImpl）"
-        : "单元测试"
-      lines.push(`- ${tf.kind === "service" ? unitLabel : "Mapper 集成测试"}: \`${tf.absFile}\` 类 \`${tf.testClass}\` → 审 ${cat}`)
+      const cat = tf.kind === "unit" ? "test-correctness(#18)" : "mapper-test-correctness(#20)"
+      // 标签按测试种类通用化（架构无关）：unit = 单元测试，integration = 集成测试
+      const label = tf.kind === "unit" ? "单元测试" : "集成测试"
+      lines.push(`- ${label}: \`${tf.absFile}\` 类 \`${tf.testClass}\` → 审 ${cat}`)
     }
   }
 

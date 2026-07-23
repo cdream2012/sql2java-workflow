@@ -1,20 +1,19 @@
 /**
- * Analysis Builder — analyze map-reduce 的 **reduce**（代码，零 LLM），归入 inventory 阶段：
+ * Analysis Builder — inventory 阶段的 complexity reduce（代码，零 LLM）：
  *   - complexity：启发式（LOC + 子程序数 + 出边数 + 模式 grep）→ score/riskLevel/patterns，
  *     写入 packages/{PKG}.json（取代旧 dependency-graph.json.complexity，已删）。
- *   - 无子程序包的空 analysis-packages/{PKG}.json 兜底（有子程序的包由 analyze map 阶段填充）。
  *
  * callGraph / packageDependency / translationOrder / sccGroups / procedureOrder
  * 不再落盘（dependency-graph.json 已删），由 dependency-graph.ts 从 subprograms/*.json 的 directCalls
  * 按需推导（进程内缓存）。本模块仅保留 complexity——它读源码做 grep 启发式，非纯图算法，
  * 不适合放进纯 artifact→图的 dependency-graph.ts。出边数复用 dependency-graph.ts 推导的 callGraph。
  *
- * 产出过 PackageArtifactSchema / AnalysisPackageSchema Zod 校验。
+ * analyze 砍后不再写空 analysis-packages 兜底（artifact 整体废弃，下游不读）。
  */
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from "node:fs"
+import { readFileSync, existsSync, writeFileSync, readdirSync } from "node:fs"
 import { join, isAbsolute } from "node:path"
-import { PackageArtifactSchema, AnalysisPackageSchema } from "./artifact-schemas"
+import { PackageArtifactSchema } from "./artifact-schemas"
 import { formatZodIssues } from "./engine-core"
 import { buildDependencyGraph } from "./dependency-graph"
 import { pkgOf } from "./refname"
@@ -98,8 +97,8 @@ function readPackages(artifactsDir: string): PackageArtifact[] {
 }
 
 /**
- * 读 inventory.json + packages/*.json，把启发式 complexity 写回 packages/{PKG}.json，
- * 并为无子程序包写空 analysis-packages/{PKG}.json 兜底。任一产物 Zod 校验失败即抛错。
+ * 读 inventory.json + packages/*.json，把启发式 complexity 写回 packages/{PKG}.json。
+ * 任一 Zod 校验失败即抛错。
  *
  * callGraph/SCC/ordering 不再在此产出——由 dependency-graph.ts 按需推导（见该模块）。
  */
@@ -131,19 +130,6 @@ export function buildDependencyGraphFromIndex(artifactsDir: string): {
       throw new Error(`packages/${pkg.packageName}.json 合并 complexity 后校验失败:\n${formatZodIssues(r.error)}`)
     }
     writeFileSync(join(artifactsDir, "packages", `${pkg.packageName}.json`), JSON.stringify(r.data, null, 2), "utf-8")
-  }
-
-  // 无子程序包写空 analysis-packages/{PKG}.json（有子程序的包由 analyze map 阶段填充）
-  const analysisPkgDir = join(artifactsDir, "analysis-packages")
-  mkdirSync(analysisPkgDir, { recursive: true })
-  for (const pkg of packages) {
-    if (pkg.procedures.length > 0 || pkg.functions.length > 0) continue
-    const empty = { packageName: pkg.packageName, subprograms: [] }
-    const r = AnalysisPackageSchema.safeParse(empty)
-    if (!r.success) {
-      throw new Error(`analysis-packages/${pkg.packageName}.json 空文件校验失败:\n${formatZodIssues(r.error)}`)
-    }
-    writeFileSync(join(analysisPkgDir, `${pkg.packageName}.json`), JSON.stringify(r.data, null, 2), "utf-8")
   }
 
   getLogger().info("[analysis-builder]", `complexity 写入 ${packages.length} 个 packages/*.json; 依赖图按需推导: ${graph.sccGroups.length} SCC 组, ${graph.procedureOrder.flat().length} 子程序单元`)

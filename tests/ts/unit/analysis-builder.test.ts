@@ -5,83 +5,21 @@
  * analysis-packages 兜底；调用图（callGraph/packageDependency/translationOrder/sccGroups/procedureOrder）
  * 由 dependency-graph.ts 从 subprograms.directCalls 按需推导（buildDependencyGraph）。
  *
- * 覆盖：① tiny fixture 上 complexity/backstop 产出 + buildDependencyGraph 推导；② Tarjan SCC（含环）；
- * ③ 单元级 procedureOrder（subprogram 独立成 unit，含合成环消除）；④ 合成 fixture 跨包调用。
+ * 覆盖：① Tarjan SCC（含环）；② 单元级 procedureOrder（subprogram 独立成 unit，含合成环消除）；
+ * ③ 拓扑层级 computeUnitLevels；④ 合成 fixture 跨包调用。
  */
 
-import { describe, it, expect, beforeAll } from "vitest"
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs"
+import { describe, it, expect } from "vitest"
+import { mkdtempSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { resolve } from "node:path"
 import { scanSource } from "@workflow/plsql-scanner"
 import { buildInventoryFromIndex } from "@workflow/inventory-builder"
-import { buildDependencyGraphFromIndex } from "@workflow/analysis-builder"
 import {
   buildDependencyGraph, tarjanSCC, buildProcedureOrder, computeUnitLevels,
   type RefIndexEntry,
 } from "@workflow/dependency-graph"
-import { AnalysisPackageSchema } from "@workflow/artifact-schemas"
 import { refNamesForPackage } from "@workflow/refname"
-
-const FIXTURE_TINY = resolve(import.meta.dirname, "../fixtures/sql/tiny")
-let dir: string
-
-beforeAll(async () => {
-  dir = mkdtempSync(join(tmpdir(), "analysis-build-"))
-  const index = await scanSource(FIXTURE_TINY)
-  mkdirSync(dir, { recursive: true })
-  buildInventoryFromIndex(dir, index)
-  buildDependencyGraphFromIndex(dir)
-}, 60000)
-
-describe("buildDependencyGraphFromIndex (tiny fixture)", () => {
-  it("complexity 写入 packages/{PKG}.json：CORE_PKG high + 模式，BASE_PKG low", () => {
-    const core = JSON.parse(readFileSync(join(dir, "packages", "CORE_PKG.json"), "utf-8"))
-    expect(core.complexity.riskLevel).toBe("high")
-    expect(core.complexity.score).toBe(10) // clamp 上限
-    const pats = core.complexity.patterns
-    expect(pats).toContain("dynamic-sql")
-    expect(pats).toContain("bulk-collect")
-    expect(pats).toContain("connect-by")
-    expect(pats).toContain("pipelined")
-
-    const base = JSON.parse(readFileSync(join(dir, "packages", "BASE_PKG.json"), "utf-8"))
-    expect(base.complexity.riskLevel).toBe("low")
-    expect(base.complexity.score).toBeLessThanOrEqual(3)
-  })
-
-  it("无子程序包写空 analysis-packages/{PKG}.json（过 AnalysisPackageSchema）", () => {
-    const base = JSON.parse(readFileSync(join(dir, "analysis-packages", "BASE_PKG.json"), "utf-8"))
-    expect(base).toEqual({ packageName: "BASE_PKG", subprograms: [] })
-    expect(AnalysisPackageSchema.safeParse(base).success).toBe(true)
-    // 有子程序的包此处不写（由 analyze map 阶段填充）
-    expect(existsSync(join(dir, "analysis-packages", "CORE_PKG.json"))).toBe(false)
-  })
-})
-
-describe("buildDependencyGraph (tiny fixture)", () => {
-  it("packageNames 覆盖全部包", () => {
-    const g = buildDependencyGraph(dir)
-    // 含独立函数 fn_abc_class 注入的虚拟包
-    expect(g.packageNames.sort()).toEqual(["BASE_PKG", "CORE_PKG", "__STANDALONE_FN_ABC_CLASS__"])
-  })
-
-  it("callGraph 捕获同包函数调用 GET_ITEM_OBJ→GET_ITEM（自递归 bom_cost 排除）", () => {
-    const g = buildDependencyGraph(dir)
-    // get_item_obj 调 get_item（同包裸名函数调用，经 general_element 捕获）
-    expect(g.callGraph["CORE_PKG.GET_ITEM_OBJ"]).toContain("CORE_PKG.GET_ITEM")
-    // bom_cost 自递归按 plan「调用方自身（递归）排除」不进 callGraph
-    expect(g.callGraph["CORE_PKG.BOM_COST"]).toBeUndefined()
-  })
-
-  it("translationOrder 含所有包；sccGroups 无环时为空", () => {
-    const g = buildDependencyGraph(dir)
-    const order = g.translationOrder.flat()
-    expect(order).toEqual(expect.arrayContaining(["BASE_PKG", "CORE_PKG", "__STANDALONE_FN_ABC_CLASS__"]))
-    expect(g.sccGroups).toEqual([])
-  })
-})
 
 // ── Tarjan SCC ──────────────────────────────────────────────────────────────
 

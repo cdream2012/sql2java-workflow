@@ -1,7 +1,7 @@
 /**
  * 回归测试：stripSqlPlusCommands 的 unitStart 不再依赖单元边界正则。
  *
- * 背景：Oracle 12c+ 导出 PACKAGE BODY 时会在 CREATE OR REPLACE 与 PACKAGE 之间加
+ * 背景：PL/SQL 12c+ 导出 PACKAGE BODY 时会在 CREATE OR REPLACE 与 PACKAGE 之间加
  * /*EDITIONABLE* / 注释。旧 unitStart 正则不匹配 → inUnit 全程 false → 单元内
  * EXIT WHEN / UPDATE SET 被当 SQL*Plus 命令误剥 → 语法断裂 → 文件后半段子程序
  * bodyLocation=null → source.sql 切空 → translator 凭空生成 → Aggregate 逻辑对不上。
@@ -16,7 +16,7 @@ import { scanWithAST, scanSource } from "@workflow/plsql-scanner"
 
 const SRC = resolve(import.meta.dirname, "../../../resources/MFG_ERP")
 
-describe("plsql-scanner: Oracle EDITIONABLE 内联注释", () => {
+describe("plsql-scanner: PL/SQL EDITIONABLE 内联注释", () => {
   let dir: string
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), "editionable-"))

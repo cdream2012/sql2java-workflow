@@ -6,8 +6,6 @@ import { describe, it, expect } from "vitest"
 import {
   InventoryIndexSchema,
   InventorySchema,
-  AnalysisPackageSchema,
-  PlanSchema,
   ScaffoldSchema,
   TranslationSchema,
   ReviewSchema,
@@ -24,11 +22,10 @@ import {
   getPerPackageSchema,
   getSummarySchema,
   getArtifactFilename,
-  getAnalysisPackageSchema,
 } from "@workflow/artifact-schemas"
 import {
   makeInventoryIndex, makeInventory,
-  makePlan, makeScaffold, makeAnalysisPackage, makeTranslation,
+  makeScaffold, makeTranslation,
   makeReviewSummary, makeVerifySummary, makeDedup, makeFixArtifact,
 } from "../helpers/artifact-factory"
 
@@ -53,36 +50,26 @@ describe("Schema 有效数据通过校验", () => {
     expect(InventorySchema.safeParse(data).success).toBe(true)
   })
 
-  it("AnalysisPackageSchema 通过", () => {
+  it("ScaffoldSchema 通过（含 targetProject + packageMappings，Stage C 合并 plan）", () => {
     const data = {
-      packageName: "CORE_PKG",
-      subprograms: [{
-        name: "GET_ITEM",
-        blocks: [],
-        variables: [],
-        cursors: [],
-        exceptionHandlers: [],
-        translationNotes: ["Simple getter"],
-      }],
-    }
-    expect(AnalysisPackageSchema.safeParse(data).success).toBe(true)
-  })
-
-  it("PlanSchema 通过", () => {
-    expect(PlanSchema.safeParse(makePlan()).success).toBe(true)
-  })
-
-  it("ScaffoldSchema 通过", () => {
-    const data = {
+      targetProject: {
+        groupId: "com.example",
+        javaVersion: "1.8",
+        springBootVersion: "2.7.x",
+      },
+      packageMappings: [
+        { plsqlSchema: "MFG", plsqlPackage: "PKG_A", components: [{ role: "service-impl" }, { role: "mapper" }] },
+      ],
       projectRoot: "/abs/path/generated/item-service",
       structure: {
-        directories: ["src/main/java/com/example"],
+        directories: ["src/main/java/mapper", "src/main/java/service"],
         pomXml: "pom.xml",
       },
       generated: {
         entities: [],
-        mapperInterfaces: [],
-        serviceShells: [],
+        procClassNames: [{ plsqlSchema: "MFG", plsqlPackage: "PKG_A", refName: "CREATE_A", className: "CreateA" }],
+        constants: [{ file: "src/main/java/constant/PkgAConstant.java", plsqlSchema: "MFG", plsqlPackage: "PKG_A" }],
+        stateDtos: [{ file: "src/main/java/dto/PkgAStateDTO.java", plsqlSchema: "MFG", plsqlPackage: "PKG_A" }],
         commonClasses: [],
       },
       conventions: "Standard Spring Boot conventions",
@@ -96,7 +83,7 @@ describe("Schema 有效数据通过校验", () => {
       status: "completed",
       completedSubprograms: ["GET_ITEM"],
       totalSubprograms: 1,
-      files: [{ path: "core/domain/aggregate/ItemAggregate.java", role: "aggregate" }],
+      files: [{ path: "service/impl/ItemServiceImpl.java", role: "service" }],
       decisions: [],
       todos: [],
     }
@@ -109,17 +96,17 @@ describe("Schema 有效数据通过校验", () => {
       status: "completed",
       completedSubprograms: ["GET_ITEM"],
       totalSubprograms: 1,
-      files: [{ path: "core/domain/aggregate/ItemAggregate.java", role: "aggregate" }],
+      files: [{ path: "service/impl/ItemServiceImpl.java", role: "service" }],
       decisions: [],
       todos: [],
       subprogramMethods: [
-        { oracleName: "get_item", javaClass: "com.example.item.core.access.ItemAccessIntf", javaMethod: "getItem", javaFile: "core/access/ItemAccessIntf.java" },
+        { plsqlName: "get_item", javaClass: "com.example.item.service.ItemService", javaMethod: "getItem", javaFile: "service/ItemService.java" },
       ],
     }
     expect(TranslationSchema.safeParse(data).success).toBe(true)
   })
 
-  it("TranslationSchema 重载子程序 refName 唯一（__序号区分，重复 oracleName 被拒）", () => {
+  it("TranslationSchema 重载子程序 refName 唯一（__序号区分，重复 plsqlName 被拒）", () => {
     const data = {
       packageName: "CORE_PKG",
       status: "completed",
@@ -129,17 +116,17 @@ describe("Schema 有效数据通过校验", () => {
       decisions: [],
       todos: [],
       subprogramMethods: [
-        { oracleName: "get_param__1", javaClass: "com.example.item.core.access.ItemAccessIntf", javaMethod: "getParamById" },
-        { oracleName: "get_param__2", javaClass: "com.example.item.core.access.ItemAccessIntf", javaMethod: "getParamByName" },
+        { plsqlName: "get_param__1", javaClass: "com.example.item.service.ItemService", javaMethod: "getParamById" },
+        { plsqlName: "get_param__2", javaClass: "com.example.item.service.ItemService", javaMethod: "getParamByName" },
       ],
     }
     // 合法：两个不同 refName → 通过
     expect(TranslationSchema.safeParse(data).success).toBe(true)
 
-    // 非法：重复 oracleName（裸名撞重载的典型错误）→ 被拒
+    // 非法：重复 plsqlName（裸名撞重载的典型错误）→ 被拒
     const dup = { ...data, subprogramMethods: [
-      { oracleName: "get_param", javaClass: "X", javaMethod: "a" },
-      { oracleName: "get_param", javaClass: "X", javaMethod: "b" },
+      { plsqlName: "get_param", javaClass: "X", javaMethod: "a" },
+      { plsqlName: "get_param", javaClass: "X", javaMethod: "b" },
     ] }
     const parsed = TranslationSchema.safeParse(dup)
     expect(parsed.success).toBe(false)
@@ -264,9 +251,6 @@ describe("工厂默认产出符合 Schema", () => {
   it("makeTranslation 默认值通过 TranslationSchema", () => {
     expect(TranslationSchema.safeParse(makeTranslation()).success).toBe(true)
   })
-  it("makeAnalysisPackage 默认值通过 AnalysisPackageSchema", () => {
-    expect(AnalysisPackageSchema.safeParse(makeAnalysisPackage()).success).toBe(true)
-  })
 })
 
 // ═══════════════════════════════════════════════════════════════
@@ -356,60 +340,37 @@ describe("Schema 无效数据被拒绝", () => {
     expect(result.success).toBe(false)
   })
 
-  it("PlanSchema 无效 namingConvention 现在也能通过（已放开为 string）", () => {
-    const planData = {
-      targetProject: {
-        groupId: "com.example", artifactId: "item-service",
-        packageBase: "com.example.item", javaVersion: "17", springBootVersion: "3.2.0",
-      },
-      packageMappings: [],
-      rules: {
-        namingConvention: "snake_case",
-        nullHandling: "optional",
-        exceptionStrategy: "spring-data",
-        logFramework: "slf4j",
-      },
-      typeMappings: {},
-      manualReviewList: [],
-      conventions: "",
-    }
-    const result = PlanSchema.safeParse(planData)
-    expect(result.success).toBe(true)
+  it("ScaffoldSchema 不含 rules/typeMappings/conventions（Stage B/C 移至注入的 Java 代码规约；passthrough 容忍旧残留）", () => {
+    const base = makeScaffold()
+    expect(ScaffoldSchema.safeParse(base).success).toBe(true)
+    // 旧 plan/scaffold 残留 rules/typeMappings/conventions 时由 passthrough 容忍
+    const legacy = { ...base, rules: { namingConvention: "snake_case" }, typeMappings: {}, conventions: "" }
+    expect(ScaffoldSchema.safeParse(legacy).success).toBe(true)
+    // targetProject 不含 artifactId（Stage A/C：artifactId 来自 run-context）
+    expect(base.targetProject).not.toHaveProperty("artifactId")
   })
 
-  it("PlanSchema 拒绝无任何组件类名的 packageMapping（accessImpl/aggregate/serviceImplClass 全空）", () => {
-    const planData = {
-      targetProject: {
-        groupId: "com.example", artifactId: "item-service",
-        packageBase: "com.example.item", javaVersion: "1.8", springBootVersion: "2.7.x",
-      },
+  it("ScaffoldSchema 拒绝无 components 的 packageMapping（components 空数组）", () => {
+    const data = makeScaffold({
       packageMappings: [
-        // 仅 oraclePackage/javaPackage/mapperInterface，无任何对外暴露组件类名
-        { oraclePackage: "PKG_A", javaPackage: "com.example.item.a", mapperInterface: "AMapper" },
+        // 仅 plsqlPackage，无任何组件（无 javaPackage）
+        { plsqlPackage: "PKG_A", components: [] },
       ],
-      rules: { namingConvention: "camelCase", nullHandling: "optional", exceptionStrategy: "custom-business", logFramework: "common-log" },
-      typeMappings: {}, manualReviewList: [], conventions: "",
-    }
-    const result = PlanSchema.safeParse(planData)
+    })
+    const result = ScaffoldSchema.safeParse(data)
     expect(result.success).toBe(false)
   })
 
-  it("PlanSchema 接受纯常量包映射（仅 aggregate 常量持有类，无 mapperInterface/行为层）", () => {
-    const planData = {
-      targetProject: {
-        groupId: "com.example", artifactId: "item-service",
-        packageBase: "com.example.item", javaVersion: "17", springBootVersion: "3.2.0",
-      },
+  it("ScaffoldSchema 接受纯常量包映射（仅常量持有角色组件，无业务角色/mapper）", () => {
+    const data = makeScaffold({
       packageMappings: [
-        // 纯常量包：无子程序，只映射常量持有类，省略 mapperInterface/access/processor/builder/validator
-        { oraclePackage: "PKG_CONST", javaPackage: "com.example.item.consts", aggregate: "MfgConst" },
+        // 纯常量包：无子程序，只映射常量持有角色
+        { plsqlSchema: "", plsqlPackage: "PKG_CONST", components: [{ role: "constant" }] },
       ],
-      rules: { namingConvention: "camelCase", nullHandling: "optional", exceptionStrategy: "custom-business", logFramework: "common-log" },
-      typeMappings: {}, manualReviewList: [], conventions: "",
-    }
-    const result = PlanSchema.safeParse(planData)
+    })
+    const result = ScaffoldSchema.safeParse(data)
     expect(result.success).toBe(true)
-    expect(result.success && result.data.packageMappings[0].mapperInterface).toBeUndefined()
+    expect(result.success && result.data.packageMappings[0].components[0].role).toBe("constant")
   })
 })
 
@@ -430,7 +391,8 @@ describe("getArtifactFilename", () => {
     expect(getArtifactFilename("inventory")).toBe("inventory")
   })
 
-  it("plan → plan", () => {
+  it("plan 阶段已移除（Stage C），回退 phase 名", () => {
+    // plan 不再在 PHASE_FILENAME_MAP，回退返回 phase 名本身
     expect(getArtifactFilename("plan")).toBe("plan")
   })
 
@@ -440,12 +402,16 @@ describe("getArtifactFilename", () => {
 })
 
 describe("getSchemaForPhase", () => {
-  const knownPhases = ["inventory", "plan", "scaffold", "dedup", "review", "fix"]
+  const knownPhases = ["inventory", "scaffold", "dedup", "review", "fix"]
 
   it("已知阶段都返回非 null schema", () => {
     for (const phase of knownPhases) {
       expect(getSchemaForPhase(phase), `getSchemaForPhase("${phase}") should not be null`).not.toBeNull()
     }
+  })
+
+  it("plan 阶段已移除（Stage C）→ 返回 null", () => {
+    expect(getSchemaForPhase("plan")).toBeNull()
   })
 
   it("review 返回 ProjectReviewSchema（项目级单文件）", () => {
@@ -494,12 +460,6 @@ describe("getSummarySchema", () => {
   })
 })
 
-describe("getAnalysisPackageSchema", () => {
-  it("返回非 null schema", () => {
-    expect(getAnalysisPackageSchema()).not.toBeNull()
-  })
-})
-
 // ═══════════════════════════════════════════════════════════════
 // 类型放松：Zod 不再因合理变体拒绝 LLM 产出
 // ═══════════════════════════════════════════════════════════════
@@ -509,7 +469,7 @@ describe("类型放松 — 合理 LLM 变体不再被拒", () => {
     const data = {
       name: "T",
       ddlFile: "t.sql",
-      columns: [{ name: "C", oracleType: "NUM", nullable: true, isPrimaryKey: false, defaultValue: null }],
+      columns: [{ name: "C", plsqlType: "NUM", nullable: true, isPrimaryKey: false, defaultValue: null }],
     }
     expect(TableArtifactSchema.safeParse(data).success).toBe(true)
   })
