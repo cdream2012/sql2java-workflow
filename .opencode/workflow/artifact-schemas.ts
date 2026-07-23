@@ -4,7 +4,7 @@
  * 跨 Schema 约定：
  *   - Zod 只做结构校验，语义校验留给 review 阶段
  *   - 引擎层 validateCrossSchema() 负责跨 Schema 语义校验
- *   - 引擎对 Oracle 类型做大小写 normalize
+ *   - 引擎对 PL/SQL 类型做大小写 normalize
  */
 
 import { z } from "zod"
@@ -167,7 +167,7 @@ export const TableArtifactSchema = z.object({
   ddlFile: z.string().nullable().optional(),
   columns: z.array(z.object({
     name: z.string(),
-    oracleType: z.string(),
+    plsqlType: z.string(),
     nullable: z.boolean(),
     isPrimaryKey: z.boolean(),
     defaultValue: z.string().nullable().optional(),
@@ -229,157 +229,96 @@ export const InventoryIndexSchema = z.object({
 }).passthrough()
 
 // ============================================================================
-// Analysis Schema（拆分为 Meta + Per-Package）
-// ============================================================================
-
-/** 子程序结构 — analyze 和 downstream agents 共用 */
-const SubprogramSchema = z.object({
-  name: z.string(),
-  blocks: z.array(z.object({
-    type: z.string(),
-    oracleLine: z.number(),
-    description: z.string(),
-    dependencies: z.array(z.string()),
-  })),
-  variables: z.array(z.object({
-    name: z.string(),
-    type: z.string(),
-    scope: z.string(),
-  })),
-  cursors: z.array(z.object({
-    name: z.string(),
-    query: z.string(),
-    fetchMode: z.string(),
-  })),
-  exceptionHandlers: z.array(z.object({
-    name: z.string(),
-    actions: z.array(z.string()),
-  })),
-  translationNotes: z.array(z.string()),
-})
-
-/** analysis-packages/{pkg}.json — 逐包子程序结构（聚合，由 engine mergeUnitAnalysis 产出） */
-export const AnalysisPackageSchema = z.object({
-  packageName: z.string(),
-  subprograms: z.array(SubprogramSchema),
-}).passthrough()
-
-/**
- * analysis-packages/{pkg}/{unitRef}.json — PROCEDURE 级 analyze 产物（per-unit）。
- *
- * analyze 下沉到 PROCEDURE 级后，一个 unit = 一个 PROCEDURE（或孤儿 FUNCTION）+ 其 cargo FUNCTION。
- * agent 只写本 unit 的 per-procedure 文件（根 + cargo 的 subprogram 结构）；engine 在每个 analyze
- * 分片 advance 后 merge 同包所有 per-unit 文件 → 聚合 `analysis-packages/{pkg}.json`
- * （AnalysisPackageSchema），下游 plan/review/translator 读聚合，形状不变。
- *
- * 与 [[translate-procedure-level]] 的 UnitTranslationSchema 同模式（per-unit + engine merge）。
- */
-export const UnitAnalysisSchema = z.object({
-  /** unit 根子程序的 refName（PROCEDURE 或孤儿 FUNCTION），与文件名 {unitRef}.json 一致 */
-  unitRefName: z.string(),
-  packageName: z.string(),
-  /** 本单元子程序结构（根 + cargo FUNCTION），merge 后并入聚合 subprograms */
-  subprograms: z.array(SubprogramSchema),
-}).passthrough()
-
-//（旧 AnalysisSchema 已删：dependency-graph.json 落盘移除后无活跃消费者，仅残留旧字段定义。
-//  调用图/complexity 等改由 dependency-graph.ts 按需推导 + packages/{PKG}.json.complexity 承载。）
-
-// ============================================================================
 // Plan Schema
 // ============================================================================
 
-export const PlanSchema = z.object({
-  targetProject: z.object({
-    groupId: z.string(),
-    artifactId: z.string(),
-    packageBase: z.string(),
-    javaVersion: z.string(),
-    springBootVersion: z.string(),
-  }),
+// ============================================================================
+// 共享子 schema：原 plan.json 的 targetProject + packageMappings（Stage C 合并入 scaffold.json）
+// ============================================================================
 
-  packageMappings: z.array(z.object({
-    oraclePackage: z.string(),
-    javaPackage: z.string(),
-    mapperInterface: z.string(),
-    /** @deprecated 三层架构遗留字段；DDD 改用 accessImpl。保留以兼容历史 run resume。 */
-    serviceClass: z.string().optional(),
-    /** @deprecated 三层架构遗留字段；DDD 改用 accessImpl。保留以兼容历史 run resume。 */
-    serviceImplClass: z.string().optional(),
-    /** DDD 接入层接口——对外暴露入口，跨包调用索引（subprogramMethods.javaClass）指向此类。 */
-    accessIntf: z.string().optional(),
-    /** DDD 接入层实现（@Component）。 */
-    accessImpl: z.string().optional(),
-    /** DDD 处理器（流程编排，不标 @Transactional）。 */
-    processor: z.string().optional(),
-    /** DDD 聚合根（业务逻辑编排，标 @Transactional）。 */
-    aggregate: z.string().optional(),
-    /** DDD 构建器（参数/数据构建、OUT 参数预定义）。 */
-    builder: z.string().optional(),
-    /** DDD 验证器（业务规则校验）。 */
-    validator: z.string().optional(),
-  })).refine(
-    (mappings) => mappings.every(m =>
-      [m.accessIntf, m.accessImpl, m.processor, m.aggregate, m.builder, m.validator, m.serviceClass, m.serviceImplClass]
-        .some(v => typeof v === "string" && v.trim().length > 0)
-    ),
-    { message: "每个 packageMapping 至少需要一个组件类名（DDD: accessImpl/accessIntf/aggregate/processor/builder/validator；遗留: serviceImplClass/serviceClass）——下游 verify 归因 / translate 跨包索引 / 测试骨架生成均依赖此锚点" },
-  ),
+/** targetProject（artifactId 不在此——由 run-context.json 提供，引擎据此算 projectRoot）。
+ *  无根包模型：不设 packageBase，分层目录即顶层 package（规约 §工程结构）。 */
+export const TargetProjectSchema = z.object({
+  groupId: z.string(),
+  javaVersion: z.string(),
+  springBootVersion: z.string(),
+})
 
-  rules: z.object({
-    namingConvention: z.string(),
-    nullHandling: z.string(),
-    exceptionStrategy: z.string(),
-    logFramework: z.string(),
-  }),
-
-  typeMappings: z.record(z.string(), z.string()),
-  manualReviewList: z.array(z.object({
-    procedure: z.string(),
-    reason: z.string(),
-  })),
-
-  conventions: z.string(),
-}).passthrough()
+/** PL/SQL Package → per-proc 角色集映射（架构无关：components[] 由注入的 Java 代码规约
+ *  分层架构/工程结构章节定义的角色决定，4 文件/DDD/自定义模型通用）。
+ *  per-proc 模型：components[] 为角色集模板（role），每个 PL/SQL 过程/函数按此角色集生成一组
+ *  per-proc 类，类名 {ResolvedBase}{RoleSuffix}（ResolvedBase 由 scaffold 全局去重决定，见
+ *  generated.procClassNames；无碰撞时 = {ProcPascal}），角色→顶层包由规约固定（无 javaPackage 字段）。 */
+export const PackageMappingSchema = z.object({
+  /** PL/SQL schema（大写；inventory packageName 拆点首段）。无 schema 前缀的包为空串。 */
+  plsqlSchema: z.string().default(""),
+  plsqlPackage: z.string(),
+  /** per-proc 角色集模板（规约定义，如 service/service-impl/mapper）。每个过程按此集生成 per-proc 类，
+   *  类名由 procClassNames 的去重基名 + 角色后缀派生。至少 1 个——下游 verify 归因 / translate 跨包索引 /
+   *  测试生成据此 + 过程名派生类名。纯常量包（无子程序）仅含 constant（+ state-dto）角色。 */
+  components: z.array(z.object({
+    role: z.string(),
+  })).min(1),
+})
 
 // ============================================================================
-// Scaffold Schema
+// Scaffold Schema（Stage C：吸收原 plan.json 的 targetProject + packageMappings）
 // ============================================================================
 
 export const ScaffoldSchema = z.object({
+  /** Java 项目配置（原 plan.targetProject；artifactId 不在此，来自 run-context.json） */
+  targetProject: TargetProjectSchema,
+  /** PL/SQL Package → Java 包 + 组件类名映射（架构无关，原 plan.packageMappings） */
+  packageMappings: z.array(PackageMappingSchema),
   /** Java 项目输出根目录（绝对路径，由引擎注入，指向 cwd/generated/{artifactId}） */
   projectRoot: z.string(),
+  /** 覆盖率排除路径子串列表（scaffold 按规约工程结构章节的非业务目录填，如 "exception/"/"entity/"；
+   *  verify 阶段 excludeReason 读此列表过滤 jacoco class，避免非业务类拉低 allPassed。与 pom jacoco excludes 同源。 */
+  coverageExcludes: z.array(z.string()).optional(),
   structure: z.object({
     directories: z.array(z.string()),
     pomXml: z.string(),
   }),
   generated: z.object({
-    /** 数据对象 Bean（XxxBean，tableName → Bean；DDD 下数据对象统一用 XxxBean 后缀）。 */
+    /** 数据对象 Entity（tableName → DO；后缀按规约命名章节，如 XxxDO）。全局共享。
+     *  引擎确定性生成（do-schema-builder），scaffold LLM 不写——故 optional：zod 校验在引擎 patch 前，
+     *  LLM 提交时 entities 可能缺失，引擎在 validatePhaseArtifact(scaffold) 内 patch 填入。同 h2SchemaFile。 */
     entities: z.array(z.object({
       file: z.string(),
       tableName: z.string(),
-    })),
-    mapperInterfaces: z.array(z.object({
-      file: z.string(),
-      oraclePackage: z.string(),
-    })),
-    /** DDD 组件壳（AccessIntf/AccessImpl/Processor/Aggregate/Builder/Validator 等，每包可多条）。 */
-    serviceShells: z.array(z.object({
-      file: z.string(),
-      oraclePackage: z.string(),
-    })),
-    testShells: z.array(z.object({
-      file: z.string(),
-      oraclePackage: z.string(),
-      testClass: z.string(),
     })).optional(),
-    /** Mapper 集成测试骨架（@MybatisTest + H2） */
-    mapperTestShells: z.array(z.object({
+    /**
+     * per-proc 去重类名映射（无根包模型的核心契约，规约 §4.1）。
+     * scaffold 枚举 inventory 所有 subprogram，按 PascalCase 基名全局去重：首现保持 {ProcPascal}，
+     * 跨包同名碰撞者按 inventory 稳定顺序加数字后缀（CreateOrder2/CreateOrder3）。
+     * className = 去重后基名（不含角色后缀）。translate-core/skeleton 据此 + 角色后缀派生类名与文件名，
+     * 跨包调用按 service.{className}Service 派生；verify testBelongsToPkg 据此归因测试类→包。
+     */
+    procClassNames: z.array(z.object({
+      plsqlSchema: z.string(),
+      plsqlPackage: z.string(),
+      refName: z.string(),
+      className: z.string(),
+    })),
+    /**
+     * per-package 包级常量持有类 {Pkg}Constant（规约 §3.4，放 constant/ 目录，纯 static final）。
+     * scaffold 从 inventory packages/{pkg}.json 的 constants 一次性生成完整字段，translate 只读引用。
+     * 每个有包级常量的包均生成一个。
+     */
+    constants: z.array(z.object({
       file: z.string(),
-      oraclePackage: z.string(),
-      testClass: z.string(),
-      mapperInterface: z.string(),
-    })).optional(),
+      plsqlSchema: z.string(),
+      plsqlPackage: z.string(),
+    })),
+    /**
+     * per-package 包级变量 DTO {Pkg}StateDTO（规约 §3.5，放 dto/ 目录，可变实例字段 + getter/setter）。
+     * scaffold 从 inventory packages/{pkg}.json 的 variables 生成，仅有变量的包才生成。translate 只读引用。
+     */
+    stateDtos: z.array(z.object({
+      file: z.string(),
+      plsqlSchema: z.string(),
+      plsqlPackage: z.string(),
+    })),
     /** H2 兼容建表脚本路径（相对于 projectRoot） */
     h2SchemaFile: z.string().optional(),
     /** 测试用 application 配置路径（相对于 projectRoot） */
@@ -400,7 +339,9 @@ export const ScaffoldSchema = z.object({
       directories: z.array(z.string()),
     }).optional(),
   }),
-  conventions: z.string(),
+  // conventions 已移除（Stage B）——编码约定由注入的 Java 代码规约提供，scaffold 不再复制。
+  // 保留 optional 容忍旧 scaffold.json 残留。
+  conventions: z.string().optional(),
 }).passthrough()
 
 // ============================================================================
@@ -430,7 +371,7 @@ export const TranslationSchema = z.object({
 
   decisions: z.array(z.object({
     line: z.coerce.number(),
-    oracleConstruct: z.string(),
+    plsqlConstruct: z.string(),
     javaConstruct: z.string(),
     reason: z.string(),
     confidence: z.string(),
@@ -439,7 +380,7 @@ export const TranslationSchema = z.object({
   todos: z.array(z.object({
     file: z.string(),
     issue: z.string(),
-    oracleLine: z.coerce.number(),
+    plsqlLine: z.coerce.number(),
     suggestion: z.string(),
   })),
 
@@ -447,25 +388,25 @@ export const TranslationSchema = z.object({
    * 本包子程序 → Java 调用入口索引，供「依赖本包的后续翻译包」对接跨包调用。
    *
    * translate 按拓扑序逐包翻译：后翻译的包 A 调用本包子程序 y 时，read 本文件、在此按
-   * oracleName 查到 y 的真实 javaClass/javaMethod，避免靠 FSD 预估或命名猜测。
+   * plsqlName 查到 y 的真实 javaClass/javaMethod，避免靠 FSD 预估或命名猜测。
    *
-   * - oracleName：唯一引用名（refName）。非重载=Oracle 原始名；重载=`{name}__{序号}`（1-based，全部带序号），
+   * - plsqlName：唯一引用名（refName）。非重载=PL/SQL 原始名；重载=`{name}__{序号}`（1-based，全部带序号），
    *   与 callGraph key 的 refName、FSD 文件名一致。**唯一性由 refine 强制**（大小写不敏感去重），
    *   避免重载裸名重复导致跨包查找歧义。
-   * - javaClass：调用入口的**全限定名**，即对外暴露的 AccessIntf（DDD 接入层接口；调用方经 Spring DI
-   *   注入它），如 "com.example.app.deal.access.BAccessIntf"。全限定以便调用方直接 import，无需再查 plan。
-   *   （三层架构遗留 run 中此字段为 Service 接口全限定名，向后兼容。）
-   * - javaMethod：Java 方法名（AccessIntf 上的方法名）。
-   * - javaFile：AccessIntf 文件相对路径（可选，便于定位）。
+   * - javaClass：调用入口的**全限定名**，即规约分层架构章节定义的对外入口角色类（调用方经
+     *   Spring DI 注入它）。无根包模型下 = `service.{className}Service`（className 查 scaffold
+     *   `generated.procClassNames`，跨包去重后基名）。全限定以便调用方直接 import。
+   * - javaMethod：Java 方法名（入口角色类上的方法名）。
+   * - javaFile：入口角色类文件相对路径（可选，便于定位）。
    */
   subprogramMethods: z.array(z.object({
-    oracleName: z.string(),
+    plsqlName: z.string(),
     javaClass: z.string(),
     javaMethod: z.string(),
     javaFile: z.string().nullable().optional(),
   })).refine(
-    (methods) => new Set(methods.map((m) => m.oracleName.toUpperCase())).size === methods.length,
-    { message: "subprogramMethods.oracleName 必须唯一（重载子程序用 {name}__序号 区分，禁用裸名重复）" },
+    (methods) => new Set(methods.map((m) => m.plsqlName.toUpperCase())).size === methods.length,
+    { message: "subprogramMethods.plsqlName 必须唯一（重载子程序用 {name}__序号 区分，禁用裸名重复）" },
   ).default([]),
 }).passthrough()
 
@@ -476,19 +417,19 @@ export const TranslationSchema = z.object({
 /**
  * per-unit 翻译产物：`translations/{pkg}/{unitRef}.json`。
  *
- * unit = 一个 PROCEDURE（主）或孤儿 FUNCTION；被 owner 拥有的 FUNCTION 是 owner 单元的
- * cargo，随 owner 在同一分片翻译，其方法登记在本单元的 subprogramMethods。
+ * unit = 一个 subprogram（PROCEDURE 或 FUNCTION，各自独立成 unit）；本单元的 subprogramMethods
+ * 登记该 subprogram 的 Java 调用入口。
  *
  * engine 在每个 translate 分片 advance 后 merge 同包所有 per-unit 文件 → 聚合
  * `translations/{pkg}/translation.json`（TranslationSchema），后者是跨包调用对接的稳定契约。
  * agent 只写本 per-unit 文件，不直接写聚合 translation.json。
  */
 export const UnitTranslationSchema = z.object({
-  /** unit 根子程序的 refName（PROCEDURE 或孤儿 FUNCTION），与文件名 {unitRef}.json 一致 */
+  /** unit 根子程序的 refName（本 unit 唯一 subprogram），与文件名 {unitRef}.json 一致 */
   unitRefName: z.string(),
   packageName: z.string(),
   status: z.string(),
-  /** 本单元已完成的子程序 refName（根 + cargo FUNCTION） */
+  /** 本单元已完成的子程序 refName（本 unit 根） */
   completedSubprograms: z.array(z.string()),
   files: z.array(z.object({
     path: z.string(),
@@ -496,7 +437,7 @@ export const UnitTranslationSchema = z.object({
   })),
   decisions: z.array(z.object({
     line: z.coerce.number(),
-    oracleConstruct: z.string(),
+    plsqlConstruct: z.string(),
     javaConstruct: z.string(),
     reason: z.string(),
     confidence: z.string(),
@@ -504,18 +445,18 @@ export const UnitTranslationSchema = z.object({
   todos: z.array(z.object({
     file: z.string(),
     issue: z.string(),
-    oracleLine: z.coerce.number(),
+    plsqlLine: z.coerce.number(),
     suggestion: z.string(),
   })),
-  /** 本单元子程序（根 + cargo FUNCTION）→ Java 调用入口索引；merge 后并入聚合 translation.json */
+  /** 本单元子程序（本 unit 根）→ Java 调用入口索引；merge 后并入聚合 translation.json */
   subprogramMethods: z.array(z.object({
-    oracleName: z.string(),
+    plsqlName: z.string(),
     javaClass: z.string(),
     javaMethod: z.string(),
     javaFile: z.string().nullable().optional(),
   })).refine(
-    (methods) => new Set(methods.map((m) => m.oracleName.toUpperCase())).size === methods.length,
-    { message: "subprogramMethods.oracleName 必须唯一（重载子程序用 {name}__序号 区分，禁用裸名重复）" },
+    (methods) => new Set(methods.map((m) => m.plsqlName.toUpperCase())).size === methods.length,
+    { message: "subprogramMethods.plsqlName 必须唯一（重载子程序用 {name}__序号 区分，禁用裸名重复）" },
   ).default([]),
 }).passthrough()
 
@@ -621,7 +562,7 @@ export const ReviewStaticFindingSchema = z.object({
   category: z.string(),
   /** 来源工具：checkstyle/pmd/todo/comment/java9api/mybatis/type-mapping/naming/test-completeness */
   tool: z.string(),
-  /** 归因到的 Oracle 包名；归因失败为 "UNKNOWN"（进 __unattributed__ 桶，仍注入 fix） */
+  /** 归因到的 PL/SQL 包名；归因失败为 "UNKNOWN"（进 __unattributed__ 桶，仍注入 fix） */
   packageName: z.string(),
   message: z.string(),
 }).passthrough()
@@ -704,7 +645,7 @@ export const VerifySummarySchema = z.object({
       testClass: z.string(),
       testMethod: z.string(),
       message: z.string(),
-      /** 测试类型：unit = ServiceImpl 单元测试，integration = Mapper 集成测试 */
+      /** 测试类型：unit = 单元测试（业务实现类），integration = Mapper 集成测试 */
       testType: z.enum(["unit", "integration"]).optional(),
     })).optional(),
     testFiles: z.array(z.string()),
@@ -878,7 +819,6 @@ import type { ZodType } from "zod"
 /** 阶段名 → 磁盘文件名映射（phase 名与文件名不一致时使用） */
 const PHASE_FILENAME_MAP: Record<string, string> = {
   inventory: "inventory",
-  plan: "plan",
   scaffold: "scaffold",
   translate: "translation",  // phase="translate" → 文件名 translation.json
   dedup: "dedup",
@@ -894,7 +834,6 @@ export function getArtifactFilename(phase: string): string {
 export function getSchemaForPhase(phase: string): ZodType | null {
   const schemaMap: Record<string, ZodType> = {
     inventory: InventorySchema,
-    plan: PlanSchema,
     scaffold: ScaffoldSchema,
     dedup: DedupSchema,
     // review 改项目级单文件：review.json 顶层产物（packages[] 覆盖全部包）
@@ -921,15 +860,9 @@ export function getPerPackageSchema(phase: string): ZodType | null {
  */
 export function getPerUnitSchema(phase: string): ZodType | null {
   const schemaMap: Record<string, ZodType> = {
-    analyze: UnitAnalysisSchema,
     translate: UnitTranslationSchema,
   }
   return schemaMap[phase] ?? null
-}
-
-/** 查找 analysis per-package schema（analyze 阶段拆分校验用） */
-export function getAnalysisPackageSchema(): ZodType {
-  return AnalysisPackageSchema
 }
 
 /** 根据 summary 文件名查找 summary schema */

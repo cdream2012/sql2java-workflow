@@ -105,7 +105,7 @@ workflow start 返回后，输出中包含：
 --todo-update--
 [
   {"content": "inventory — 源码扫描编目", "status": "in_progress", "priority": "high"},
-  {"content": "analyze — 依赖分析 + 子程序结构解析", "status": "pending", "priority": "high"},
+  {"content": "plan — Java 架构规划", "status": "pending", "priority": "high"},
   ...
 ]
 --end-todo-update--

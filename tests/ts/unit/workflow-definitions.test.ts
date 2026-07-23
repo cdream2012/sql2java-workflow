@@ -16,14 +16,14 @@ import {
 describe("SQL2JAVA_WORKFLOW phases", () => {
   const phases = SQL2JAVA_WORKFLOW.phases
 
-  it("有且仅有 9 个阶段（8 main + fix）", () => {
-    expect(phases).toHaveLength(9)
+  it("有且仅有 7 个阶段（6 main + fix；Stage C 合并 plan 入 scaffold）", () => {
+    expect(phases).toHaveLength(7)
   })
 
   it("阶段名称列表正确", () => {
     const names = phases.map(p => p.name)
     expect(names).toEqual([
-      "inventory", "analyze", "plan", "scaffold",
+      "inventory", "scaffold",
       "translate", "dedup", "review", "verify", "fix",
     ])
   })
@@ -64,7 +64,7 @@ describe("SQL2JAVA_WORKFLOW phases", () => {
     const crossSchemaPhases = phases.filter(p => p.needsCrossSchemaValidation).map(p => p.name)
     // inventory：dependency-graph.json（含 callGraph）由 inventory 阶段代码产出，需校验 refName 合法性 + 包名一致
     // translate 完成时所有包 translation.json 已齐，即时校验 subprogramMethods 给 translator 反馈
-    expect(crossSchemaPhases.sort()).toEqual(["analyze", "dedup", "inventory", "plan", "translate"])
+    expect(crossSchemaPhases.sort()).toEqual(["dedup", "inventory", "scaffold", "translate"])
   })
 })
 
@@ -83,11 +83,9 @@ describe("SQL2JAVA_WORKFLOW transitions", () => {
     }
   })
 
-  it("主线无条件前进：inventory → analyze → plan → scaffold → translate → dedup → review", () => {
+  it("主线无条件前进：inventory → scaffold → translate → dedup → review（Stage C：plan 合并入 scaffold）", () => {
     const mainChain = [
-      { from: "inventory", to: "analyze" },
-      { from: "analyze", to: "plan" },
-      { from: "plan", to: "scaffold" },
+      { from: "inventory", to: "scaffold" },
       { from: "scaffold", to: "translate" },
       { from: "translate", to: "dedup" },
       { from: "dedup", to: "review" },
@@ -163,26 +161,20 @@ describe("UPSTREAM_ARTIFACTS", () => {
     }
   })
 
-  it("analyze 不注入 inventory-index.json（避免分片 worker 拿到全量包源码路径）", () => {
-    // inventory-index.json 含全部包结构；analyze 分片 worker 只该从本包 packages/{PKG}.json +
-    // subprograms/{PKG}.*.json 取源码路径，否则会读其他包源码、写出其他包的 FSD。
-    expect(UPSTREAM_ARTIFACTS.analyze).not.toContain("inventory-index.json")
-    // 本包源码路径来源仍在（packages + subprograms 按实体落盘）
-    expect(UPSTREAM_ARTIFACTS.analyze).toContain("packages/*.json")
-    expect(UPSTREAM_ARTIFACTS.analyze).toContain("subprograms/*.json")
-  })
-
-  it("translate 不注入 inventory-index.json（同 analyze 理由）", () => {
+  it("translate 不注入 inventory-index.json（避免分片 worker 拿到全量包源码路径）", () => {
     expect(UPSTREAM_ARTIFACTS.translate).not.toContain("inventory-index.json")
     expect(UPSTREAM_ARTIFACTS.translate).toContain("packages/*.json")
     expect(UPSTREAM_ARTIFACTS.translate).toContain("subprograms/*.json")
-    // fsd/*/*.md 在分片模式下由 narrowUpstreamForShard 收窄到 fsd/{pkg}/*.md
-    expect(UPSTREAM_ARTIFACTS.translate).toContain("fsd/*/*.md")
   })
 
-  it("plan 不注入 FSD（框架设计不做逐过程翻译，manualReviewList 来自 analysis-packages.translationNotes）", () => {
-    expect(UPSTREAM_ARTIFACTS.plan).not.toContain("fsd/*/*.md")
-    expect(UPSTREAM_ARTIFACTS.plan).toContain("analysis-packages/*.json")
+  it("plan 阶段已移除（Stage C 合并入 scaffold）——UPSTREAM_ARTIFACTS 无 plan 条目", () => {
+    expect(UPSTREAM_ARTIFACTS.plan).toBeUndefined()
+  })
+
+  it("任意阶段都不注入 FSD（FSD 是 translate 末尾 sub-stage 产出的人工审核总结文档，纯末端产物，不作输入）", () => {
+    for (const [phase, artifacts] of Object.entries(UPSTREAM_ARTIFACTS)) {
+      expect(artifacts, `${phase} 不应在 UPSTREAM_ARTIFACTS 注入 fsd`).not.toContain("fsd/*/*.md")
+    }
   })
 
   it("inventory-index.json 不在任意阶段的 UPSTREAM_ARTIFACTS（inventory 自产，下游走 INJECTION_ARTIFACTS）", () => {

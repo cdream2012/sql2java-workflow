@@ -895,6 +895,7 @@ import { Seq_of_statementsContext } from "./PlSqlParser";
 import { Label_declarationContext } from "./PlSqlParser";
 import { StatementContext } from "./PlSqlParser";
 import { Assignment_statementContext } from "./PlSqlParser";
+import { Get_diagnostics_statementContext } from "./PlSqlParser";
 import { Continue_statementContext } from "./PlSqlParser";
 import { Exit_statementContext } from "./PlSqlParser";
 import { Goto_statementContext } from "./PlSqlParser";
@@ -1007,6 +1008,7 @@ import { Order_by_clauseContext } from "./PlSqlParser";
 import { Order_by_elementsContext } from "./PlSqlParser";
 import { Offset_clauseContext } from "./PlSqlParser";
 import { Fetch_clauseContext } from "./PlSqlParser";
+import { Limit_clauseContext } from "./PlSqlParser";
 import { For_update_clauseContext } from "./PlSqlParser";
 import { For_update_of_partContext } from "./PlSqlParser";
 import { For_update_optionsContext } from "./PlSqlParser";
@@ -7473,6 +7475,13 @@ export interface PlSqlParserVisitor<Result> extends ParseTreeVisitor<Result> {
 	visitAssignment_statement?: (ctx: Assignment_statementContext) => Result;
 
 	/**
+	 * Visit a parse tree produced by `PlSqlParser.get_diagnostics_statement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitGet_diagnostics_statement?: (ctx: Get_diagnostics_statementContext) => Result;
+
+	/**
 	 * Visit a parse tree produced by `PlSqlParser.continue_statement`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
@@ -8255,6 +8264,13 @@ export interface PlSqlParserVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitFetch_clause?: (ctx: Fetch_clauseContext) => Result;
+
+	/**
+	 * Visit a parse tree produced by `PlSqlParser.limit_clause`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitLimit_clause?: (ctx: Limit_clauseContext) => Result;
 
 	/**
 	 * Visit a parse tree produced by `PlSqlParser.for_update_clause`.

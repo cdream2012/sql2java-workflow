@@ -28,10 +28,11 @@ const INJECTIONS = [
 const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf-8" }).trim();
 process.chdir(root);
 
-// 2. antlr4ts 生成。shell:true 让 npx 在 Windows(cmd)/unix(sh) 下都能被找到。
+// 2. antlr4ts 生成。用 bunx（环境为 bun，无 npx/npm）。bunx 自动按需拉取 antlr4ts-cli。
+// shell:true 让 bunx 在 Windows(cmd)/unix(sh) 下都能被找到。
 console.log(`[regen] antlr4ts 生成 → ${OUT}`);
-const gen = spawnSync("npx",
-  ["-y", "-p", "antlr4ts-cli@0.5.0-alpha.4", "antlr4ts",
+const gen = spawnSync("bunx",
+  ["antlr4ts-cli@0.5.0-alpha.4",
    "-o", OUT, "-visitor", "-listener", "-Xexact-output-dir", ...GRAMMARS],
   { stdio: "inherit", shell: true });
 if (gen.status !== 0) {

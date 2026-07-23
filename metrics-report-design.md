@@ -192,9 +192,9 @@ interface RunMetrics {
 
 interface RunBusinessData {
   sourcePath?: string
-  oraclePackageCount?: number
-  oracleProcedureCount?: number
-  oracleTableCount?: number
+  plsqlPackageCount?: number
+  plsqlProcedureCount?: number
+  plsqlTableCount?: number
   javaFileCount?: number
   reviewAverageScore?: number
   reviewPassedRate?: number
@@ -548,7 +548,7 @@ WorkflowRun 类型不变，PhaseHistoryEntry 类型不变。所有 metrics 采�
   bash:     8 次
 
 📦 业务数据
-  Oracle 包:     13
+  PL/SQL 包:     13
   表:            28
   触发器:         5
   子程序总数:    89
@@ -593,7 +593,7 @@ Run ID: run-20260605-013119
 └──────────────────────────────────────────────┘
 
 ┌─ 📦 业务汇总 ────────────────────────────────┐
-│  Oracle 包:      13    子程序:    89           │
+│  PL/SQL 包:      13    子程序:    89           │
 │  表:             28    Java 文件:  67          │
 │  Review 均分:   96.2  通过率:  100%            │
 │  编译:          PASS   TODO:      3           │

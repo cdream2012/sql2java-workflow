@@ -349,12 +349,14 @@ function scanTestCompleteness(artifactsDir: string, projectRoot: string, targetS
   if (!existsSync(scaffoldPath)) return findings
   let scaffold: any
   try { scaffold = JSON.parse(readFileSync(scaffoldPath, "utf-8")) } catch { return findings }
+  // per-proc 模型下 scaffold 不再产 testShells/mapperTestShells（已下放 translate-test-gen）。
+  // ?? [] 优雅降级——real run 暂无测试完整性 finding；阶段 4 review 重构改为扫 per-proc 测试目录。
   const shells = [
     ...((scaffold?.generated?.testShells ?? []) as any[]),
     ...((scaffold?.generated?.mapperTestShells ?? []) as any[]),
   ]
   for (const sh of shells) {
-    if (targetSet && sh.oraclePackage && !targetSet.has(String(sh.oraclePackage).toUpperCase())) continue
+    if (targetSet && sh.plsqlPackage && !targetSet.has(String(sh.plsqlPackage).toUpperCase())) continue
     const abs = resolve(projectRoot, sh.file)
     const lines = readFileLines(abs)
     if (lines.length === 0) continue
@@ -367,7 +369,7 @@ function scanTestCompleteness(artifactsDir: string, projectRoot: string, targetS
           severity: "major",
           category: "test-completeness",
           tool: "test-completeness",
-          packageName: String(sh.oraclePackage ?? "UNKNOWN"),
+          packageName: String(sh.plsqlPackage ?? "UNKNOWN"),
           message: "未实现的测试方法占位（// TODO: [test]/[mapper-test]）",
         })
       }
@@ -384,7 +386,7 @@ function scanTestCompleteness(artifactsDir: string, projectRoot: string, targetS
             severity: "major",
             category: "test-completeness",
             tool: "test-completeness",
-            packageName: String(sh.oraclePackage ?? "UNKNOWN"),
+            packageName: String(sh.plsqlPackage ?? "UNKNOWN"),
             message: "空测试方法体（无 arrange→act→assert）",
           })
           break
@@ -494,6 +496,6 @@ export function scanReviewStatic(
 }
 
 // TODO(Stage 3): 接入 #2 scanMyBatisCompleteness（PL/SQL DML ↔ MyBatis statement 对照）、
-// #4 scanTypeMapping（plan.typeMappings ↔ Java 字段类型，需轻量类型解析）、
+// #4 scanTypeMapping（按注入的 Java 代码规约 §3.1 类型表 ↔ Java 字段类型，需轻量类型解析）、
 // #9 scanNamingConsistency（translation.subprogramMethods 过程名↔方法名可追溯性）、
 // #14 scanChineseComments（英文注释，保守 minor，避免噪声）。

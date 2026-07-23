@@ -2,10 +2,10 @@
  * Dependency Graph — 按需推导的调用图工具
  *
  * 从 inventory 阶段产出的 subprograms/{PKG.METHOD}.json 的 directCalls 在内存构建调用图，
- * 提供 callGraph / packageDependency / 闭包 / Tarjan SCC 翻译序 / FUNCTION 属主 / 过程级拓扑序。
+ * 提供 callGraph / packageDependency / 闭包 / Tarjan SCC 翻译序 / 过程级拓扑序。
  *
  * 取代旧 dependency-graph.json（已删）：调用边不再落盘，按需从 directCalls 推导（进程内缓存）。
- * 算法（tarjanSCC / assignFunctionOwnership / buildProcedureOrder）迁移自 analysis-builder。
+ * 算法（tarjanSCC / buildProcedureOrder）迁移自 analysis-builder。
  */
 
 import { readFileSync, readdirSync, existsSync } from "node:fs"
@@ -23,6 +23,8 @@ interface SubprogramFile {
   isPrivate: boolean
   directCalls: { package: string; name: string; line: number; kind: "function" | "procedure" }[]
   packageRefs?: { package: string; name: string; line: number }[]
+  /** body 源码定位（scanner 落盘）；用于按源码行数做分片大小估算 */
+  bodyLocation?: { lineRange?: [number, number] } | null
 }
 
 export interface RefIndexEntry {
@@ -45,10 +47,15 @@ export interface DependencyGraph {
   translationOrder: string[][]
   /** size>1 的 SCC 组 */
   sccGroups: string[][]
-  /** 过程级单元拓扑序（PROCEDURE + 孤儿 FUNCTION 为 unit，依赖在前） */
+  /** 过程级单元拓扑序（每个 subprogram 独立成 unit，依赖在前） */
   procedureOrder: string[][]
-  /** FUNCTION 属主：`PKG.funcRef` → `PKG.ownerProcRef`（仅被拥有的 FUNCTION） */
-  functionOwnership: Record<string, string>
+  /** unit id `PKG.refName` → body 源码行数（取自 bodyLocation.lineRange）；缺则 0。
+   *  供 computeShardPlan 按行数预算切分（避免大 unit 撑爆上下文）。 */
+  unitLines: Record<string, number>
+  /** unit id `PKG.refName` → 拓扑层级（到叶子的最长路径，叶子=0）；多 unit SCC 整体取成员最高层。
+   *  供 computeShardPlan 按层 antichain 批量：同层 unit 互不调用（u→v 必 level(v)≥level(u)+1），
+   *  可安全合并同分片——callee 必在更低层=更早分片已译完。 */
+  unitLevels: Record<string, number>
 }
 
 // ── 读 subprograms/*.json ──────────────────────────────────────────────────────
@@ -160,81 +167,89 @@ export function tarjanSCC(nodes: string[], edges: Map<string, Set<string>>): str
   return sccs
 }
 
-// ── FUNCTION 属主（迁移自 analysis-builder）────────────────────────────────────
-
-export function assignFunctionOwnership(
-  callGraph: Record<string, string[]>,
-  refIndex: Map<string, RefIndexEntry>,
-): Map<string, string> {
-  const ownership = new Map<string, string>()
-  for (const [pkg, info] of refIndex) {
-    const typeOf = new Map<string, "procedure" | "function">()
-    const reverse = new Map<string, string[]>()
-    for (const s of info.subprograms) {
-      const full = `${pkg}.${s.refName}`
-      typeOf.set(full, s.type)
-      reverse.set(full, [])
-    }
-    for (const [s, callees] of Object.entries(callGraph)) {
-      if (pkgOf(s) !== pkg) continue
-      for (const t of callees) {
-        if (pkgOf(t) !== pkg) continue
-        const arr = reverse.get(t)
-        if (arr) arr.push(s)
-      }
-    }
-    for (const s of info.subprograms) {
-      if (s.type !== "function") continue
-      const f = `${pkg}.${s.refName}`
-      const dist = new Map<string, number>([[f, 0]])
-      const queue: string[] = [f]
-      let head = 0
-      while (head < queue.length) {
-        const cur = queue[head++]
-        for (const pred of reverse.get(cur) ?? []) {
-          if (!dist.has(pred)) { dist.set(pred, dist.get(cur)! + 1); queue.push(pred) }
-        }
-      }
-      let best: { ref: string; dist: number } | null = null
-      for (const [node, d] of dist) {
-        if (typeOf.get(node) !== "procedure") continue
-        const cand = { ref: node, dist: d }
-        if (best === null || cand.dist < best.dist || (cand.dist === best.dist && cand.ref < best.ref)) best = cand
-      }
-      if (best) ownership.set(f, best.ref)
-    }
-  }
-  return ownership
-}
-
 // ── 过程级拓扑序（迁移自 analysis-builder）────────────────────────────────────
 
 export function buildProcedureOrder(
   callGraph: Record<string, string[]>,
   refIndex: Map<string, RefIndexEntry>,
-  ownership: Map<string, string>,
 ): string[][] {
-  const unitOf = new Map<string, string>()
+  // 每个 subprogram（过程或函数）各自独立成 unit（unit id = `${pkg}.${refName}`）。
+  // 历史 functionOwnership 折叠已移除——它把 FUNCTION 绑给"属主过程"会制造合成环
+  // （B 调 A 的 cargo 函数 F → 单元边 B→A，叠加 A→B 成环），违背"subprogram = 独立翻译单元"。
+  const unitList: string[] = []
   for (const [pkg, info] of refIndex) {
-    for (const s of info.subprograms) {
-      const full = `${pkg}.${s.refName}`
-      const unit = s.type === "procedure" ? full : (ownership.get(full) ?? full)
-      unitOf.set(full, unit)
-    }
+    for (const s of info.subprograms) unitList.push(`${pkg}.${s.refName}`)
   }
-  const unitList = [...new Set(unitOf.values())]
+  const unitSet = new Set(unitList)
   const edges = new Map<string, Set<string>>()
   for (const u of unitList) edges.set(u, new Set())
   for (const [s, callees] of Object.entries(callGraph)) {
-    const us = unitOf.get(s)
-    if (!us) continue
+    if (!unitSet.has(s)) continue
     for (const t of callees) {
-      const ut = unitOf.get(t)
-      if (!ut || ut === us) continue
-      edges.get(us)!.add(ut)
+      if (t === s || !unitSet.has(t)) continue
+      edges.get(s)!.add(t)
     }
   }
   return tarjanSCC(unitList, edges)
+}
+
+// ── 拓扑层级（迁移自 analysis-builder 的层级推导）──────────────────────────────
+
+/**
+ * 计算每个 unit 的拓扑层级：在 SCC 收缩后的 condensation DAG 上取"到叶子的最长路径"，
+ * 叶子 SCC（无外部出边）= 0，否则 max(后继 SCC 层级) + 1。多 unit SCC 整体取同一层级
+ *（成员共享 sccId），作为"超级 unit"原子不拆。
+ *
+ * 用途：computeShardPlan 按层 antichain 批量。同层 unit 必无 caller→callee 边
+ *  （若 u→v 则 level(v) ≥ level(u)+1，不可能同层）→ 同层 = antichain → 可安全合并同分片。
+ *  condensation 是 DAG（SCC 已收缩），最长路径可记忆化递归，无环终止。
+ */
+export function computeUnitLevels(
+  procedureOrder: string[][],
+  callGraph: Record<string, string[]>,
+): Record<string, number> {
+  // sccId per unit（procedureOrder 每个内层就是一个 SCC）
+  const sccId = new Map<string, number>()
+  procedureOrder.forEach((layer, i) => {
+    if (!layer) return
+    for (const u of layer) sccId.set(u, i)
+  })
+  const sccCount = procedureOrder.length
+  // condensation 外部出边（scc → set of scc），排除自环（SVN 内部边不进 condensation）
+  const out = new Map<number, Set<number>>()
+  for (let i = 0; i < sccCount; i++) out.set(i, new Set())
+  for (const [u, callees] of Object.entries(callGraph)) {
+    const su = sccId.get(u)
+    if (su === undefined) continue
+    for (const v of callees) {
+      const sv = sccId.get(v)
+      if (sv === undefined || sv === su) continue
+      out.get(su)!.add(sv)
+    }
+  }
+  // 记忆化最长路径（DAG，无环）
+  const cache = new Map<number, number>()
+  const levelOfScc = (s: number): number => {
+    const c = cache.get(s)
+    if (c !== undefined) return c
+    const succ = out.get(s)
+    let lv = 0
+    if (succ && succ.size > 0) {
+      let mx = -1
+      for (const t of succ) { const lt = levelOfScc(t); if (lt > mx) mx = lt }
+      lv = mx + 1
+    }
+    cache.set(s, lv)
+    return lv
+  }
+  const unitLevels: Record<string, number> = {}
+  for (let i = 0; i < sccCount; i++) {
+    const layer = procedureOrder[i]
+    if (!layer) continue
+    const lv = levelOfScc(i)
+    for (const u of layer) unitLevels[u] = lv
+  }
+  return unitLevels
 }
 
 // ── 主构建：从 subprograms/*.json directCalls 推导全图 ──────────────────────────
@@ -243,7 +258,7 @@ const cache = new Map<string, DependencyGraph>()
 
 /**
  * 构建（并缓存）依赖图：读 subprograms/*.json 的 directCalls → callGraph + packageDependency +
- * Tarjan SCC 翻译序 + FUNCTION 属主 + 过程级拓扑序。同一 artifactsDir 只构建一次。
+ * Tarjan SCC 翻译序 + 过程级拓扑序。同一 artifactsDir 只构建一次。
  */
 export function buildDependencyGraph(artifactsDir: string): DependencyGraph {
   const cached = cache.get(artifactsDir)
@@ -305,15 +320,23 @@ export function buildDependencyGraph(artifactsDir: string): DependencyGraph {
   const translationOrder: string[][] = sccs.map(c => c)
   const sccGroups: string[][] = sccs.filter(c => c.length > 1).map(c => [...c].sort())
 
-  // 过程级
-  const functionOwnershipMap = assignFunctionOwnership(callGraph, refIndex)
-  const functionOwnership: Record<string, string> = {}
-  for (const [k, v] of functionOwnershipMap) functionOwnership[k] = v
-  const procedureOrder = buildProcedureOrder(callGraph, refIndex, functionOwnershipMap)
+  // 过程级：每个 subprogram 独立成 unit（见 buildProcedureOrder）。
+  const procedureOrder = buildProcedureOrder(callGraph, refIndex)
+
+  // unit id → body 源码行数（供 computeShardPlan 按行数预算切分）。
+  const unitLines: Record<string, number> = {}
+  for (const s of subprograms) {
+    const lr = s.bodyLocation?.lineRange
+    const lines = Array.isArray(lr) && lr.length === 2 ? Math.max(0, Number(lr[1]) - Number(lr[0]) + 1) : 0
+    unitLines[`${s.belongToPackage}.${refNameOf(s)}`] = lines
+  }
+
+  // unit id → 拓扑层级（供 computeShardPlan 按层 antichain 批量）。
+  const unitLevels = computeUnitLevels(procedureOrder, callGraph)
 
   const graph: DependencyGraph = {
     callGraph, packageDependency, packageNames, refIndex,
-    translationOrder, sccGroups, procedureOrder, functionOwnership,
+    translationOrder, sccGroups, procedureOrder, unitLines, unitLevels,
   }
   cache.set(artifactsDir, graph)
   return graph

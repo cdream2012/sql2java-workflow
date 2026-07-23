@@ -503,7 +503,7 @@ match_string
 
 create_function_body
     : CREATE (OR REPLACE)? (EDITIONABLE | NONEDITIONABLE)? FUNCTION function_name (
-        '(' parameter (',' parameter)* ')'
+        '(' (parameter (',' parameter)*)? ')'
     )? RETURN type_spec (SHARING '=' (METADATA | NONE))? (
         invoker_rights_clause
         | accessible_by_clause
@@ -679,7 +679,7 @@ package_obj_spec
     ;
 
 procedure_spec
-    : PROCEDURE identifier ('(' parameter ( ',' parameter)* ')')? (
+    : PROCEDURE identifier ('(' (parameter ( ',' parameter)*)? ')')? (
         accessible_by_clause
         | PARALLEL_ENABLE
         | DETERMINISTIC
@@ -687,7 +687,7 @@ procedure_spec
     ;
 
 function_spec
-    : FUNCTION identifier ('(' parameter ( ',' parameter)* ')')? RETURN type_spec (
+    : FUNCTION identifier ('(' (parameter ( ',' parameter)*)? ')')? RETURN type_spec (
         DETERMINISTIC
         | PIPELINED
         | parallel_enable_clause
@@ -736,7 +736,7 @@ alter_procedure
     ;
 
 function_body
-    : FUNCTION identifier ('(' parameter (',' parameter)* ')')? RETURN type_spec (
+    : FUNCTION identifier ('(' (parameter (',' parameter)*)? ')')? RETURN type_spec (
         PIPELINED
         | DETERMINISTIC
         | invoker_rights_clause
@@ -751,7 +751,7 @@ function_body
     ;
 
 procedure_body
-    : PROCEDURE identifier ('(' parameter (',' parameter)* ')')? (
+    : PROCEDURE identifier ('(' (parameter (',' parameter)*)? ')')? (
         accessible_by_clause
         | PARALLEL_ENABLE
         | DETERMINISTIC
@@ -759,7 +759,7 @@ procedure_body
     ;
 
 create_procedure_body
-    : CREATE (OR REPLACE)? PROCEDURE procedure_name ('(' parameter (',' parameter)* ')')? invoker_rights_clause? (PARALLEL_ENABLE | DETERMINISTIC)* (
+    : CREATE (OR REPLACE)? PROCEDURE procedure_name ('(' (parameter (',' parameter)*)? ')')? invoker_rights_clause? (PARALLEL_ENABLE | DETERMINISTIC)* (
         IS
         | AS
     ) (DECLARE? seq_of_declare_specs? body | call_spec | EXTERNAL)
@@ -5813,6 +5813,7 @@ statement
     | return_statement
     | case_statement
     | sql_statement
+    | get_diagnostics_statement
     | call_statement
     | pipe_row_statement
     | grant_statement
@@ -5820,6 +5821,13 @@ statement
 
 assignment_statement
     : (general_element | bind_variable) ASSIGN_OP expression
+    ;
+
+// GaussDB/openGauss 过程语句：GET [CURRENT] DIAGNOSTICS var = ROW_COUNT;
+// （Oracle 用 SQL%ROWCOUNT）。DIAGNOSTICS/ROW_COUNT 非关键字，用 id_expression 匹配
+// 避免污染关键字表。置于 statement 的 call_statement 之前，防 GET 被当 routine_name 误抽为调用。
+get_diagnostics_statement
+    : GET CURRENT? id_expression id_expression '=' id_expression
     ;
 
 continue_statement
@@ -6181,7 +6189,7 @@ query_block
     : SELECT (DISTINCT | UNIQUE | ALL)? selected_list into_clause? from_clause? where_clause? (
         hierarchical_query_clause
         | group_by_clause
-    )* model_clause? order_by_clause? offset_clause? fetch_clause?
+    )* model_clause? order_by_clause? offset_clause? fetch_clause? limit_clause?
     ;
 
 selected_list
@@ -6402,6 +6410,13 @@ fetch_clause
     : FETCH (FIRST | NEXT) (expression PERCENT_KEYWORD?)? (ROW | ROWS) (ONLY | WITH TIES)
     ;
 
+// GaussDB/openGauss/MySQL 风格分页（Oracle 用 fetch_clause）。LIMIT 已是 lexer token。
+// 形式：LIMIT count | LIMIT ALL | LIMIT offset, count | LIMIT count OFFSET offset
+// OFFSET 此处不带 ROW|ROWS（GaussDB 风格），与 Oracle offset_clause 区分。
+limit_clause
+    : LIMIT (ALL | expression (',' expression)? (OFFSET expression)?)
+    ;
+
 for_update_clause
     : FOR UPDATE for_update_of_part? for_update_options?
     ;
@@ -6600,6 +6615,11 @@ logical_expression
     : unary_logical_expression
     | logical_expression AND logical_expression
     | logical_expression OR logical_expression
+    // GaussDB 方言：|| 作逻辑或（项目代码非标准写法，用 || 代 OR）。
+    // 与 concatenation 的 ||（字符串拼接）靠操作数层级区分：拼接操作数在 concatenation 层
+    // （字符串/变量/字面量）被 concatenation 先消费；逻辑或操作数是 IS NULL / 比较等
+    // （relational 及以上，在 logical 层），其后的 || 由本规则消费为逻辑或。
+    | logical_expression BAR BAR logical_expression
     ;
 
 unary_logical_expression
@@ -6790,6 +6810,7 @@ atom
     | general_element outer_join_sign?
     | '(' subquery ')' subquery_operation_part*
     | '(' expressions_ ')'
+    | atom DOUBLE_COLON type_spec
     ;
 
 quantified_expression
@@ -7488,8 +7509,9 @@ argument
     ;
 
 type_spec
-    : datatype
-    | REF? type_name (PERCENT_ROWTYPE | PERCENT_TYPE)?
+    : (datatype | REF? type_name (PERCENT_ROWTYPE | PERCENT_TYPE)?) (
+        '[' UNSIGNED_INTEGER? ']'
+    )*
     ;
 
 datatype

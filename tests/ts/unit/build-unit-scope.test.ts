@@ -1,10 +1,8 @@
 /**
  * build-unit-scope.test.ts — 分片「单元读取清单」生成测试
  *
- * 验证 buildUnitScopeBlock 按 subprograms.bodyLocation + 依赖图.functionOwnership
- * 为每个 targetUnit 输出精准的切片目录 + cargo FUNCTION + FSD/依赖路径。
- *
- * 新形状：functionOwnership 由 buildDependencyGraph 从 subprograms.directCalls 按需推导（不再读 dependency-graph.json）。
+ * 验证 buildUnitScopeBlock 按 subprograms.bodyLocation
+ * 为每个 targetUnit 输出精准的切片目录 + FSD/依赖路径。
  */
 
 import { describe, it, expect, beforeAll } from "vitest"
@@ -42,29 +40,37 @@ function writeSub(
 }
 
 describe("buildUnitScopeBlock", () => {
-  it("analyze：切片目录 + cargo FSD 输出路径（Phase 1 切片模式，不再 sed -n）", () => {
+  it.skip("analyze：切片目录 + FSD 输出路径（FUNCTION 独立成 unit，不再作 cargo）", () => {
+    // analyze phase 已砍，buildUnitScopeBlock 仅 translate；用例待成套删。
     const art = join(dir, "a")
     mkdirSync(art, { recursive: true })
-    // proc1 调 calc_total（FUNCTION）→ 推导 calc_total 归属 proc1（cargo）
+    // proc1 调 calc_total（FUNCTION）→ calc_total 独立成 unit（不再归属 proc1 作 cargo）
     writeSub(art, "PKG_A", "proc1", "proc1", "PROCEDURE", [{ package: "PKG_A", name: "calc_total", line: 1, kind: "function" }])
     writeSub(art, "PKG_A", "calc_total", "calc_total", "FUNCTION")
 
+    // proc1 的 scope block：只含 proc1 自身，不含 calc_total（独立 unit）
     const out = buildUnitScopeBlock(art, ["PKG_A.proc1"], "analyze", [])
     expect(out).toContain("PKG_A.proc1")
     // 切片目录引用（取代 sed -n）
     expect(out).toContain("shard-inputs/PKG_A/proc1/")
-    expect(out).toContain("source.sql + inventory-slice.json + meta.json")
-    // 输出路径仍精确枚举（含 cargo FSD）
+    expect(out).toContain("source.sql + meta.json")
+    // 输出路径仅 proc1 自身（calc_total 独立成 unit，不再作 cargo 出现在此 block）
     expect(out).toContain("analysis-packages/PKG_A/proc1.json")
     expect(out).toContain("fsd/PKG_A/proc1.md")
-    expect(out).toContain("fsd/PKG_A/calc_total.md")
+    expect(out).not.toContain("fsd/PKG_A/calc_total.md")
     expect(out).not.toContain("{cargoRef}")
     // analyze 切片模式不再出现 sed -n / translate 专属的 FSD 输入
     expect(out).not.toContain("sed -n")
     expect(out).not.toContain("FSD 输入")
+
+    // calc_total 作为独立 unit 的 scope block：含自己的 FSD
+    const calcOut = buildUnitScopeBlock(art, ["PKG_A.calc_total"], "analyze", [])
+    expect(calcOut).toContain("PKG_A.calc_total")
+    expect(calcOut).toContain("fsd/PKG_A/calc_total.md")
   })
 
-  it("重载子程序：refName __序号 切片目录对齐", () => {
+  it.skip("重载子程序：refName __序号 切片目录对齐", () => {
+    // analyze phase 已砍；translate 路径的重载对齐由其它用例覆盖。
     const art = join(dir, "b")
     mkdirSync(art, { recursive: true })
     // 两个同名 get → refNamesForPackage 推导 get__1 / get__2
@@ -78,7 +84,7 @@ describe("buildUnitScopeBlock", () => {
     expect(out2).toContain("shard-inputs/PKG_A/get__2/")
   })
 
-  it("translate：切片目录 + FSD 输入 + 输出 + 依赖签名引用（Phase 2 切片模式）", () => {
+  it("translate：切片目录 + 输出 + 依赖签名引用（Phase 2 切片模式；FSD 已移出 upstream）", () => {
     const art = join(dir, "c")
     mkdirSync(art, { recursive: true })
     writeSub(art, "PKG_A", "proc1", "proc1", "PROCEDURE", [{ package: "PKG_B", name: "other", line: 1, kind: "procedure" }])
@@ -87,9 +93,10 @@ describe("buildUnitScopeBlock", () => {
     const out = buildUnitScopeBlock(art, ["PKG_A.proc1"], "translate", ["PKG_B.other"])
     // 切片目录（取代 sed -n / 整包）
     expect(out).toContain("shard-inputs/PKG_A/proc1/")
-    expect(out).toContain("analysis-slice.json")
-    expect(out).toContain("FSD 输入")
-    expect(out).toContain("fsd/PKG_A/proc1.md")
+    expect(out).toContain("source.sql + meta.json")
+    // FSD 已移出 upstream（末端产物不作输入），清单不再列 FSD 输入
+    expect(out).not.toContain("FSD 输入")
+    expect(out).not.toContain("fsd/")
     // per-unit 输出
     expect(out).toContain("translations/PKG_A/proc1.json")
     // 依赖签名引用预注入块（不再列 translation.json 路径）
@@ -129,7 +136,8 @@ describe("buildUnitScopeBlock", () => {
     expect(out).not.toContain("translations/PKG_B/translation.json")
   })
 
-  it("analyze 切片模式：清单引用切片目录，不泄漏相对 bodyPath 路径", () => {
+  it.skip("analyze 切片模式：清单引用切片目录，不泄漏相对 bodyPath 路径", () => {
+    // analyze phase 已砍，buildUnitScopeBlock 仅 translate；用例待成套删。
     const art = join(dir, "g")
     mkdirSync(art, { recursive: true })
     writeSub(art, "PKG_A", "proc1", "proc1", "PROCEDURE")

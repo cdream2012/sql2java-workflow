@@ -45,26 +45,35 @@ describe("PHASE_PREREQUISITES OR-group（fix 的 summary 二选一）", () => {
 })
 
 describe("PHASE_PREREQUISITES 关键前置项", () => {
-  it("review 依赖 plan + scaffold + analysis", () => {
+  it("review 依赖 scaffold（plan 已合并入 scaffold，Stage C）", () => {
     const review = PHASE_PREREQUISITES.review!
-    expect(review).toContain("plan.json")
     expect(review).toContain("scaffold.json")
-    expect(review).toContain("analysis-packages")
+    expect(review).not.toContain("plan.json")
   })
 
-  it("verify 依赖 plan + scaffold", () => {
+  it("verify 依赖 scaffold + dedup", () => {
     const verify = PHASE_PREREQUISITES.verify!
-    expect(verify).toContain("plan.json")
     expect(verify).toContain("scaffold.json")
+    expect(verify).toContain("dedup.json")
+    expect(verify).not.toContain("plan.json")
   })
 
-  it("translate 依赖 inventory + analysis + plan + scaffold", () => {
+  it("translate 依赖 inventory + scaffold", () => {
     const translate = PHASE_PREREQUISITES.translate!
     expect(translate).toContain("inventory.json")
     expect(translate).toContain("packages")
     expect(translate).toContain("subprograms")
-    expect(translate).toContain("analysis-packages")
-    expect(translate).toContain("plan.json")
     expect(translate).toContain("scaffold.json")
+    expect(translate).not.toContain("plan.json")
+  })
+
+  it("scaffold 依赖 inventory（首个 Java 阶段，plan 已合并）", () => {
+    const scaffold = PHASE_PREREQUISITES.scaffold!
+    expect(scaffold).toContain("inventory.json")
+    expect(scaffold).not.toContain("plan.json")
+  })
+
+  it("plan 阶段已移除（Stage C 合并入 scaffold）", () => {
+    expect(PHASE_PREREQUISITES.plan).toBeUndefined()
   })
 })

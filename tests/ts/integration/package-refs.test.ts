@@ -85,7 +85,6 @@ describe("跨包非调用引用 packageRefs", () => {
     const analysis = {
       callGraph: g.callGraph,
       packageDependency: g.packageDependency,
-      functionOwnership: g.functionOwnership,
     } as any
     const cl = scopeClosure(analysis, "CALLER_PKG.USE_CONST")
     expect(cl.scopePackages).toContain("CONST_PKG")

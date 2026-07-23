@@ -20,7 +20,7 @@ import { writeFileSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
 import type { CaseConfig } from "../../harness"
 import { assertGeneratedFileExists, assertJavaMatches, assertDecision } from "../../harness"
-import { makePlan, makePackageArtifact, writeArtifactJson } from "../../../ts/helpers/artifact-factory"
+import { makePackageArtifact, writeArtifactJson } from "../../../ts/helpers/artifact-factory"
 
 const PACKAGE = "EXC_PKG"
 const SOURCE_DIR_REL = "src-sql"
@@ -35,7 +35,7 @@ const config: CaseConfig = {
   // ── mock 桩：translate 前置 artifact（writeArtifactJson 走跨平台原子写 + 自动建子目录） ──
   prepareArtifacts: dir => {
     writeArtifactJson(dir, "inventory.json", {
-      sourcePath: SOURCE_DIR_REL, packageNames: [PACKAGE], tables: [{ name: "T_APP_LOG", columns: [{ name: "MESSAGE", oracleType: "VARCHAR2", nullable: true, isPrimaryKey: false }] }], standaloneProcedures: [], triggers: [], views: [], sequences: [],
+      sourcePath: SOURCE_DIR_REL, packageNames: [PACKAGE], tables: [{ name: "T_APP_LOG", columns: [{ name: "MESSAGE", plsqlType: "VARCHAR2", nullable: true, isPrimaryKey: false }] }], standaloneProcedures: [], triggers: [], views: [], sequences: [],
     })
 
     // packages（新形状：packages/{PKG}.json，PackageArtifactSchema；redesign 后取代 inventory-packages/）
@@ -50,20 +50,22 @@ const config: CaseConfig = {
       complexity: { score: 3, patterns: ["exception-block"], riskLevel: "low" },
     }))
 
-    writeArtifactJson(dir, "plan.json", makePlan({
-      packageMappings: [
-        { oraclePackage: PACKAGE, javaPackage: "com.example.exc", mapperInterface: "ExcMapper", serviceClass: "ExcService", serviceImplClass: "ExcServiceImpl" },
-      ],
-    }))
-
     writeArtifactJson(dir, "scaffold.json", {
+      targetProject: {
+        groupId: "com.example",
+        javaVersion: "1.8", springBootVersion: "2.7.x",
+      },
+      packageMappings: [
+        { plsqlPackage: PACKAGE, components: [{ role: "service" }, { role: "service-impl" }, { role: "mapper" }] },
+      ],
       projectRoot: PROJECT_ROOT_REL,
-      structure: { directories: ["src/main/java/com/example/exc/service/impl"], pomXml: "pom.xml" },
+      structure: { directories: ["src/main/java/service/impl", "src/main/java/mapper"], pomXml: "pom.xml" },
       generated: {
-        entities: [{ file: "src/main/java/com/example/exc/entity/AppLog.java", tableName: "T_APP_LOG" }],
-        mapperInterfaces: [{ file: "src/main/java/com/example/exc/mapper/ExcMapper.java", oraclePackage: PACKAGE }],
-        serviceShells: [{ file: "src/main/java/com/example/exc/service/impl/ExcServiceImpl.java", oraclePackage: PACKAGE }],
-        commonClasses: [{ file: "src/main/java/com/example/exc/exception/AppException.java", purpose: "业务异常基类" }],
+        entities: [{ file: "src/main/java/entity/AppLog.java", tableName: "T_APP_LOG" }],
+        procClassNames: [{ plsqlSchema: "", plsqlPackage: PACKAGE, refName: "SAVE_MSG", className: "SaveMsg" }],
+        constants: [],
+        stateDtos: [],
+        commonClasses: [{ file: "src/main/java/exception/AppException.java", purpose: "业务异常基类" }],
       },
       conventions: "Standard conventions",
     })
@@ -73,7 +75,7 @@ const config: CaseConfig = {
       subprograms: [
         {
           name: "SAVE_MSG",
-          blocks: [{ type: "exception-block", oracleLine: 6, description: "EXCEPTION WHEN OTHERS：回滚 + 记录 + 重抛", dependencies: [] }],
+          blocks: [{ type: "exception-block", plsqlLine: 6, description: "EXCEPTION WHEN OTHERS：回滚 + 记录 + 重抛", dependencies: [] }],
           variables: [],
           cursors: [],
           exceptionHandlers: [{ name: "OTHERS", actions: ["ROLLBACK", "log_error(SQLERRM)", "RAISE"] }],

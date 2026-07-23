@@ -1,6 +1,6 @@
 -- BOM 单层组件对象 + 嵌套表
 -- F_BOM 比较两个 BOM 版本差异时用 multiset except/intersect，需要可比较的元素类型
--- 元素相等性由 oracle 按对象所有属性逐一比较，这里刻意只放参与"是否同一组件用量"的字段
+-- 元素相等性由 PL/SQL 按对象所有属性逐一比较，这里刻意只放参与"是否同一组件用量"的字段
 -- (不含 line_id 这类代理键，否则 multiset 比较永远全不等)
 
 CREATE OR REPLACE TYPE MFG_ERP.t_bom_comp_obj FORCE AS OBJECT (

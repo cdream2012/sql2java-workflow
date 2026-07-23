@@ -25,7 +25,7 @@ import { formatZodIssues } from "./engine-core"
 import { getLogger } from "./workflow-logger"
 import { refNameOf } from "./refname"
 import { clearDependencyGraphCache } from "./dependency-graph"
-import { locateSubprogramRange, storedFilePath } from "./plsql-file-scanner"
+import { locateSubprogramRange, storedFilePath, normalizeFullwidthSyntax } from "./plsql-file-scanner"
 import type {
   PackageInfo, SubprogramInfo, TableIndex, TriggerIndex, ViewIndex, SequenceIndex, InventoryIndex,
 } from "./plsql-scanner"
@@ -64,7 +64,7 @@ export function buildInventoryFromIndex(artifactsDir: string, idx: InventoryInde
   // 且 return 用 idx.warnings 不含运行时 push 的项。现统一本地数组。）
   const warnings: string[] = [...(idx.warnings ?? [])]
 
-  // 0) 补齐 AST 漏抽的 headerLocation/bodyLocation（语法错误恢复致子程序节点缺失，见 parseFileAst 注释）。
+  // 0) 补齐漏抽的 headerLocation/bodyLocation（regex 主路径通常已抽，缺失时 regex 补齐作 source.sql 切片用）。
   repairMissingLocations(idx, warnings)
 
   // 1) packages/{PKG}.json
@@ -75,7 +75,7 @@ export function buildInventoryFromIndex(artifactsDir: string, idx: InventoryInde
     }
     // 软校验：包声明了子程序（procedures/functions 非空）但 bodyPath=null —— 无法翻译过程体。
     // 旧 InventoryPackageSchema 的 refine(procedures⇒bodyFile) 是硬门控，但会误伤合法的 spec-only 包
-    //（Oracle 允许仅 spec 声明），故此处降为非阻塞警告：scanner 漏收 body / 手写产物缺 body 时可见。
+    //（PL/SQL 允许仅 spec 声明），故此处降为非阻塞警告：scanner 漏收 body / 手写产物缺 body 时可见。
     const subCount = (Array.isArray(p.procedures) ? p.procedures.length : 0) + (Array.isArray(p.functions) ? p.functions.length : 0)
     if (subCount > 0 && !p.bodyPath) {
       warnings.push(`包 ${p.packageName} 声明了 ${subCount} 个子程序但 bodyPath 为空（无法翻译过程体，检查 body 文件是否漏收集）`)
@@ -175,7 +175,7 @@ function repairMissingLocations(idx: InventoryIndex, warnings: string[]): void {
     if (!file) return null
     if (codeCache.has(file)) return codeCache.get(file) ?? null
     let code: string | null = null
-    try { code = readFileSync(file, "utf-8").replace(/\r\n?/g, "\n") } catch { code = null }
+    try { code = normalizeFullwidthSyntax(readFileSync(file, "utf-8").replace(/\r\n?/g, "\n")) } catch { code = null }
     codeCache.set(file, code)
     return code
   }
@@ -208,3 +208,10 @@ function repairMissingLocations(idx: InventoryIndex, warnings: string[]): void {
     }
   }
 }
+
+/**
+ * 正则兜底补齐 directCalls 为空的子程序调用关系。
+ *
+ * 已移除：scan 阶段 scanFileSetRegex 已用 extractCallsByRegex 抽 directCalls（不收窄，救 lazy 闭包
+ * 扩展），generateInventory 阶段兜底冗余。保留 repairMissingLocations（补 bodyLocation 给 source.sql 切片）。
+ */

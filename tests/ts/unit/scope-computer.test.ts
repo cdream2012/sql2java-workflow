@@ -121,19 +121,17 @@ const ANALYSIS: AnalysisLike = {
     COMMON_PKG: [],          // 仅常量/类型被引用，无 unit 被调用（const-only）
     ORPHAN_PKG: [],
   },
-  functionOwnership: {
-    "ORDER_PKG.calc_total": "ORDER_PKG.process_order", // owned FUNCTION → 折叠进 owner unit
-  },
 }
 
 describe("computeClosure", () => {
   const closure = computeClosure(ANALYSIS, "ORDER_PKG.process_order")
 
-  it("scopeUnits = 入口 unit + 调用可达 unit（owned FUNCTION 折叠进 owner）", () => {
-    // process_order 调 calc_total(owned→process_order unit) + helper + INVENTORY_PKG.deduct
-    // calc_total 折叠进 process_order，故 unit 不重复
+  it("scopeUnits = 入口 unit + 调用可达 unit（FUNCTION 独立成 unit，不折叠进 owner）", () => {
+    // process_order 调 calc_total + helper + INVENTORY_PKG.deduct
+    // calc_total 独立成 unit（不再折叠进 process_order），故单独列出
     expect(closure.scopeUnits.sort()).toEqual([
       "INVENTORY_PKG.deduct",
+      "ORDER_PKG.calc_total",
       "ORDER_PKG.helper",
       "ORDER_PKG.process_order",
     ])
@@ -161,10 +159,11 @@ describe("computeClosure", () => {
     expect(closure.scopeUnits.some(u => u.startsWith("ORPHAN_PKG."))).toBe(false)
   })
 
-  it("入口为 owned FUNCTION → entryUnit 取 owner unit", () => {
+  it("入口为 FUNCTION → entryUnit = 入口自身（独立 unit，不再取 owner）", () => {
     const c = computeClosure(ANALYSIS, "ORDER_PKG.calc_total")
-    expect(c.entryUnit).toBe("ORDER_PKG.process_order") // calc_total 折叠进 owner
-    expect(c.scopeUnits).toContain("ORDER_PKG.process_order")
+    expect(c.entryUnit).toBe("ORDER_PKG.calc_total")
+    expect(c.scopeUnits).toContain("ORDER_PKG.calc_total")
+    expect(c.scopeUnits).not.toContain("ORDER_PKG.process_order")
   })
 
   it("环不导致死循环（visited 防环）", () => {
@@ -175,7 +174,6 @@ describe("computeClosure", () => {
         "B.q1": [],
       },
       packageDependency: { A: ["B"], B: [] },
-      functionOwnership: {},
     }
     const c = computeClosure(cyclic, "A.p1")
     expect(c.scopeUnits.sort()).toEqual(["A.p1", "A.p2", "B.q1"])

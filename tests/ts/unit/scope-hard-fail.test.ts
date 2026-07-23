@@ -16,13 +16,13 @@ import { buildDependencyGraphFromIndex } from "@workflow/analysis-builder"
 import { validateArtifactOnDisk } from "@plugins/workflow-engine"
 import type { WorkflowRun } from "@workflow/engine-core"
 
-const FIXTURE_TINY = resolve(import.meta.dirname, "../fixtures/sql/tiny")
+const FIXTURE_MFG = resolve(import.meta.dirname, "../../../resources/MFG_ERP")
 const RUN_ID = `test-scope-hardfail-${process.pid}`
 const ARTIFACTS_DIR = join(".workflow-artifacts", RUN_ID)
 
 beforeAll(async () => {
   mkdirSync(ARTIFACTS_DIR, { recursive: true })
-  const index = await scanSource(FIXTURE_TINY)
+  const index = await scanSource(FIXTURE_MFG)
   buildInventoryFromIndex(ARTIFACTS_DIR, index)
   buildDependencyGraphFromIndex(ARTIFACTS_DIR) // inventory advance 校验前 complexity/兜底须就绪
 }, 60000)
@@ -49,19 +49,14 @@ describe("过程级 mainEntry 不可解析 → 硬失败（P2-1）", () => {
   })
 
   it("子程序不存在 → 返回错误", () => {
-    // CORE_PKG 存在于 tiny fixture，但 no_such_proc 不是其子程序
-    const err = validateArtifactOnDisk(makeRun("CORE_PKG.no_such_proc"))
+    // MFG_ERP.F_ITEM 存在于 MFG_ERP fixture，但 no_such_proc 不是其子程序
+    const err = validateArtifactOnDisk(makeRun("MFG_ERP.F_ITEM.no_such_proc"))
     expect(err).not.toBeNull()
     expect(err).toMatch(/mainEntry 校验失败/)
   })
 
   it("无 mainEntry → 返回 null（全量翻译，合法）", () => {
     const err = validateArtifactOnDisk(makeRun(undefined))
-    expect(err).toBeNull()
-  })
-
-  it("纯包名 mainEntry（非过程级）→ 返回 null（旧门面包语义，全量）", () => {
-    const err = validateArtifactOnDisk(makeRun("CORE_PKG"))
     expect(err).toBeNull()
   })
 })

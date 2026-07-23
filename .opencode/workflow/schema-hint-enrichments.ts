@@ -34,7 +34,7 @@ export const REFINE_CONSTRAINTS: Record<string, string[]> = {
     "packages/{PKG}.json 的 procedures/functions 仅为名字数组（详情在 subprograms/{PKG.METHOD}.json）；有子程序的包应有 bodyPath（procedure 实现体在 body 中）",
   ],
   translate: [
-    "subprogramMethods.oracleName 必须唯一（重载子程序用 {name}__序号 区分，禁用裸名重复）",
+    "subprogramMethods.plsqlName 必须唯一（重载子程序用 {name}__序号 区分，禁用裸名重复）",
   ],
   review: [
     "passed 与 mustFix 必须一致：passed=true 时 mustFix 必须为空，passed=false 时 mustFix 必须非空",
@@ -68,14 +68,6 @@ export const NON_ZOD_VALIDATION_RULES: { phases: string[]; message: string }[] =
     message: "inventory.json 的 packageNames 必须覆盖 packages/ 下所有包文件（含 header-only 包：只有 constants/exceptions/variables/types 而没有 procedures/functions 的包，bodyPath 为 null）",
   },
   {
-    phases: ["analyze"],
-    message: "analysis-packages/{PKG}.json: packageName 必须与文件名一致（大小写不敏感）",
-  },
-  {
-    phases: ["analyze"],
-    message: "依赖图（按需从 subprograms.directCalls 推导）的 packageNames 必须与 inventory 包名一致",
-  },
-  {
     phases: ["scaffold"],
     message: "scaffold.json 的 projectRoot 必须是 Runtime Context / workOrder 注入的 projectRoot 值（绝对路径 generated/{artifactId}，原样使用，勿自行编造）",
   },
@@ -93,11 +85,7 @@ export const NON_ZOD_VALIDATION_RULES: { phases: string[]; message: string }[] =
   },
   {
     phases: ["scaffold"],
-    message: "scaffold.json 的 mapperTestShells 中的 oraclePackage 必须与 plan.json 的 packageMappings 一致",
-  },
-  {
-    phases: ["scaffold"],
-    message: "scaffold.json 的 h2SchemaFile 指向的文件必须存在于磁盘",
+    message: "scaffold.json 的 generated.entities / h2SchemaFile 由引擎确定性生成并 patch（DO + schema-h2.sql 落盘 projectRoot）——LLM 不填这两个字段",
   },
 ]
 
@@ -138,15 +126,11 @@ export const CROSS_SCHEMA_HINTS: Record<string, string[]> = {
     "callGraph 的 key/value 必须为 PKG.refName 格式；refName 须落在该包 subprograms 推导的合法集合内（非重载=裸名，重载={name}__序号，大小写不敏感计数重载）",
     "translationOrder 必须覆盖所有包",
   ],
-  analyze: [
-    "依赖图（按需推导）的 packageNames 必须与 inventory 包名一致（大小写不敏感）",
-    "callGraph 的 key 必须为 PKG.refName 格式；重载子程序用 {name}__序号",
-  ],
-  plan: [
-    "plan.packageMappings 必须覆盖所有 inventory 包的 oraclePackage",
+  scaffold: [
+    "scaffold.packageMappings 必须覆盖所有 inventory 包的 plsqlPackage（scope 模式下覆盖 scopePackages）",
   ],
   translate: [
-    "subprogramMethods.oracleName 必须唯一且符合 refName 规范（重载用 {name}__序号）",
+    "subprogramMethods.plsqlName 必须唯一且符合 refName 规范（重载用 {name}__序号）",
   ],
   dedup: [
     "extractedModules.affectedPackages 和 packageChanges.packageName 必须引用 inventory 中存在的包",
@@ -175,39 +159,23 @@ export const COMMON_PITFALLS: Record<string, string[]> = {
     'packages/{PKG}.json 的 procedures/functions 仅为名字数组；子程序详情（parameters/bodyLocation/directCalls）在 subprograms/{PKG.METHOD}.json',
     'Schema 允许额外字段（.passthrough()）——可添加不在 schema 中的 optional 字段帮助下游阶段，额外字段会透传不被剥离',
   ],
-  analyze: [
-    'riskLevel 自动 normalize 为小写：任意大小写均可通过',
-    'fetchMode 推荐大写："BULK" / "ONE_BY_ONE" / "FOR_UPDATE" / "OTHER"',
-    'callGraph key 格式为 PKG.refName；重载子程序用 {name}__序号（如 CALC__1），不能用裸名',
-    'block.type 推荐为以下之一（小写）："loop" / "cursor" / "if-else" / "exception-block" / "sql-statement" / "assignment" / "call"（不限死，但推荐使用这些值）',
-    'subprograms[].translationNotes 是 string[]（每条注意事项一个元素），不是单个字符串——如 ["注意空值处理", "循环边界需验证"]',
-    'Schema 允许额外字段（.passthrough()）——可添加不在 schema 中的 optional 字段帮助下游阶段，额外字段会透传不被剥离',
-  ],
-  plan: [
-    'namingConvention 推荐值：camelCase / keep-oracle / mixed（不限死）',
-    'nullHandling 推荐值：optional / nullable / throw-empty',
-    'exceptionStrategy 推荐值：spring-data / custom-business / oracle-mirror',
-    'logFramework 推荐值：slf4j / log4j2',
-    'Schema 允许额外字段（.passthrough()）——可添加不在 schema 中的 optional 字段帮助下游阶段，额外字段会透传不被剥离',
-  ],
   scaffold: [
     'commonModules.classes.category 推荐全小写，如 "type-mapper" / "mybatis-fragment" / "mapper-interface" / "test-base"（不限死）',
     'projectRoot 为绝对路径（generated/{artifactId}），必须原样使用 Runtime Context / workOrder 注入的 projectRoot 值，勿自行编造路径',
-    'mapperTestShells 中的 testClass 命名必须为 {MapperInterface}IntegrationTest',
-    'mapperTestShells 中的 oraclePackage 必须与 plan.json 的 packageMappings 一致',
-    'h2SchemaFile 指向的文件必须存在于磁盘（src/test/resources/schema-h2.sql）',
-    'schema-h2.sql 必须覆盖 inventory.json 中所有 tables 和 sequences',
-    'schema-h2.sql 中 UDT 列必须跳过并加注释（-- H2 不支持 Oracle UDT），不能生成 H2 不支持的类型',
+    'constants 为 per-package {Pkg}Constant 常量类清单、stateDtos 为 per-package {Pkg}StateDTO 变量 DTO 清单（{file, plsqlSchema, plsqlPackage}），scaffold 从 inventory constants / variables 分别生成',
+    'procClassNames 为 per-proc 去重类名映射（{plsqlSchema, plsqlPackage, refName, className}），跨包同名碰撞加数字后缀；translate 据此 + 角色后缀派生类名，跨包调用按 service.{className}Service 派生',
+    'packageMappings.components 为 per-proc 角色集模板（{role}，无 className），类名由 procClassNames 去重基名 + {RoleSuffix} 派生',
+    'DO 实体（generated.entities）+ schema-h2.sql（generated.h2SchemaFile）由引擎在 scaffold 完成后确定性生成并 patch——LLM 不生成 DO/schema-h2、不填这两个字段、不读 tables 数据',
     'Schema 允许额外字段（.passthrough()）——可添加不在 schema 中的 optional 字段帮助下游阶段，额外字段会透传不被剥离',
   ],
   translate: [
     'status 推荐值："completed" / "partial"（不限死，允许其他状态值）',
     'files.role 推荐值："mapper-interface" / "mapper-xml" / "service" / "service-impl" / "dto" / "exception" / "test" / "mapper-integration-test"（不限死）',
     'confidence 推荐小写："high" / "medium" / "low"',
-    'subprogramMethods.oracleName：重载子程序必须用 {name}__序号，禁止裸名重复',
+    'subprogramMethods.plsqlName：重载子程序必须用 {name}__序号，禁止裸名重复',
     'totalSubprograms 等数字字段支持字符串自动转换（写 "5" 等同 5）',
     'files.role 使用 "mapper-integration-test" 标识 Mapper 集成测试文件',
-    '生产 Mapper XML 保持 Oracle 原生语法不变',
+    '生产 Mapper XML 保持 PL/SQL 原生语法不变',
     'H2 确实不兼容的 SQL 标 @Disabled（不修改 Mapper XML）',
     '测试数据 INSERT 使用硬编码 ID 值（不使用 SEQ.NEXTVAL）',
     'JdbcTemplate INSERT 测试数据的列必须与 schema-h2.sql 一致',

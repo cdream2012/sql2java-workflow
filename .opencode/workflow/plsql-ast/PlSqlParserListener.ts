@@ -895,6 +895,7 @@ import { Seq_of_statementsContext } from "./PlSqlParser";
 import { Label_declarationContext } from "./PlSqlParser";
 import { StatementContext } from "./PlSqlParser";
 import { Assignment_statementContext } from "./PlSqlParser";
+import { Get_diagnostics_statementContext } from "./PlSqlParser";
 import { Continue_statementContext } from "./PlSqlParser";
 import { Exit_statementContext } from "./PlSqlParser";
 import { Goto_statementContext } from "./PlSqlParser";
@@ -1007,6 +1008,7 @@ import { Order_by_clauseContext } from "./PlSqlParser";
 import { Order_by_elementsContext } from "./PlSqlParser";
 import { Offset_clauseContext } from "./PlSqlParser";
 import { Fetch_clauseContext } from "./PlSqlParser";
+import { Limit_clauseContext } from "./PlSqlParser";
 import { For_update_clauseContext } from "./PlSqlParser";
 import { For_update_of_partContext } from "./PlSqlParser";
 import { For_update_optionsContext } from "./PlSqlParser";
@@ -11041,6 +11043,17 @@ export interface PlSqlParserListener extends ParseTreeListener {
 	exitAssignment_statement?: (ctx: Assignment_statementContext) => void;
 
 	/**
+	 * Enter a parse tree produced by `PlSqlParser.get_diagnostics_statement`.
+	 * @param ctx the parse tree
+	 */
+	enterGet_diagnostics_statement?: (ctx: Get_diagnostics_statementContext) => void;
+	/**
+	 * Exit a parse tree produced by `PlSqlParser.get_diagnostics_statement`.
+	 * @param ctx the parse tree
+	 */
+	exitGet_diagnostics_statement?: (ctx: Get_diagnostics_statementContext) => void;
+
+	/**
 	 * Enter a parse tree produced by `PlSqlParser.continue_statement`.
 	 * @param ctx the parse tree
 	 */
@@ -12271,6 +12284,17 @@ export interface PlSqlParserListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	exitFetch_clause?: (ctx: Fetch_clauseContext) => void;
+
+	/**
+	 * Enter a parse tree produced by `PlSqlParser.limit_clause`.
+	 * @param ctx the parse tree
+	 */
+	enterLimit_clause?: (ctx: Limit_clauseContext) => void;
+	/**
+	 * Exit a parse tree produced by `PlSqlParser.limit_clause`.
+	 * @param ctx the parse tree
+	 */
+	exitLimit_clause?: (ctx: Limit_clauseContext) => void;
 
 	/**
 	 * Enter a parse tree produced by `PlSqlParser.for_update_clause`.

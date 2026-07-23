@@ -64,7 +64,7 @@ describe("validateCrossSchema — subprogramMethods 校验 (dedup 阶段)", () =
   let ctx: ReturnType<typeof createEngineWithTempDir>
   afterEach(() => ctx?.cleanup())
 
-  it("重复 oracleName → warning", () => {
+  it("重复 plsqlName → warning", () => {
     ctx = createEngineWithTempDir()
     setupOverloadedUtilPkg(ctx.dir)
     writeArtifact(ctx.dir, RUN_ID, "translations/UTIL_PKG/translation.json", {
@@ -72,18 +72,18 @@ describe("validateCrossSchema — subprogramMethods 校验 (dedup 阶段)", () =
       completedSubprograms: ["get_by_id__1"], totalSubprograms: 2,
       files: [], decisions: [], todos: [],
       subprogramMethods: [
-        { oracleName: "get_by_id__1", javaClass: "UtilService", javaMethod: "a" },
-        { oracleName: "get_by_id__1", javaClass: "UtilService", javaMethod: "b" },
+        { plsqlName: "get_by_id__1", javaClass: "UtilService", javaMethod: "a" },
+        { plsqlName: "get_by_id__1", javaClass: "UtilService", javaMethod: "b" },
       ],
     })
 
     const findings: CrossSchemaFinding[] = ctx.engine.validateCrossSchema(makeRun("dedup"), "dedup")
-    const dup = findings.find((f) => f.message.includes("重复 oracleName"))
+    const dup = findings.find((f) => f.message.includes("重复 plsqlName"))
     expect(dup).toBeTruthy()
     expect(dup!.severity).toBe("warning")
   })
 
-  it("oracleName 用裸名引用重载子程序 → warning", () => {
+  it("plsqlName 用裸名引用重载子程序 → warning", () => {
     ctx = createEngineWithTempDir()
     setupOverloadedUtilPkg(ctx.dir)
     writeArtifact(ctx.dir, RUN_ID, "translations/UTIL_PKG/translation.json", {
@@ -91,7 +91,7 @@ describe("validateCrossSchema — subprogramMethods 校验 (dedup 阶段)", () =
       completedSubprograms: ["get_by_id"], totalSubprograms: 2,
       files: [], decisions: [], todos: [],
       subprogramMethods: [
-        { oracleName: "get_by_id", javaClass: "UtilService", javaMethod: "a" },
+        { plsqlName: "get_by_id", javaClass: "UtilService", javaMethod: "a" },
       ],
     })
 
@@ -109,8 +109,8 @@ describe("validateCrossSchema — subprogramMethods 校验 (dedup 阶段)", () =
       completedSubprograms: ["get_by_id__1", "get_by_id__2"], totalSubprograms: 2,
       files: [], decisions: [], todos: [],
       subprogramMethods: [
-        { oracleName: "get_by_id__1", javaClass: "UtilService", javaMethod: "a" },
-        { oracleName: "get_by_id__2", javaClass: "UtilService", javaMethod: "b" },
+        { plsqlName: "get_by_id__1", javaClass: "UtilService", javaMethod: "a" },
+        { plsqlName: "get_by_id__2", javaClass: "UtilService", javaMethod: "b" },
       ],
     })
 
@@ -123,7 +123,7 @@ describe("validateCrossSchema — subprogramMethods 校验 (translate 阶段，t
   let ctx: ReturnType<typeof createEngineWithTempDir>
   afterEach(() => ctx?.cleanup())
 
-  it("translate 完成时重复 oracleName 即告警（即时反馈，不必等到 dedup）", () => {
+  it("translate 完成时重复 plsqlName 即告警（即时反馈，不必等到 dedup）", () => {
     ctx = createEngineWithTempDir()
     setupOverloadedUtilPkg(ctx.dir)
     writeArtifact(ctx.dir, RUN_ID, "translations/UTIL_PKG/translation.json", {
@@ -131,12 +131,12 @@ describe("validateCrossSchema — subprogramMethods 校验 (translate 阶段，t
       completedSubprograms: ["get_by_id__1"], totalSubprograms: 2,
       files: [], decisions: [], todos: [],
       subprogramMethods: [
-        { oracleName: "get_by_id__1", javaClass: "UtilService", javaMethod: "a" },
-        { oracleName: "get_by_id__1", javaClass: "UtilService", javaMethod: "b" },
+        { plsqlName: "get_by_id__1", javaClass: "UtilService", javaMethod: "a" },
+        { plsqlName: "get_by_id__1", javaClass: "UtilService", javaMethod: "b" },
       ],
     })
 
     const findings: CrossSchemaFinding[] = ctx.engine.validateCrossSchema(makeRun("translate"), "translate")
-    expect(findings.some((f) => f.message.includes("重复 oracleName"))).toBe(true)
+    expect(findings.some((f) => f.message.includes("重复 plsqlName"))).toBe(true)
   })
 })

@@ -26,41 +26,37 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
       tools: ["read", "bash", "write", "workflow"],
     },
     {
-      name: "analyze",
-      description: "子程序结构解析 + FSD 生成（分片 map；依赖图 meta 已由 inventory 代码产出）",
-      agentFile: "agent/sql-analyst.md",
-      temperature: 0.1,
-      maxRetries: 2,
-      needsCrossSchemaValidation: true,
-      maxPackagesPerShard: 1,
-      tools: ["read", "bash", "write", "workflow"],
-    },
-    {
-      name: "plan",
-      description: "Java 架构规划",
-      agentFile: "agent/java-architect.md",
-      temperature: 0.2,
-      maxRetries: 1,
-      needsCrossSchemaValidation: true,
-      tools: ["read", "bash", "write", "edit", "workflow"],
-    },
-    {
       name: "scaffold",
-      description: "Spring Boot 项目骨架生成",
+      description: "Spring Boot 项目骨架生成（含原 plan 的 targetProject + packageMappings 决策，Stage C 合并）",
       agentFile: "agent/java-architect.md",
       temperature: 0.2,
       maxRetries: 1,
+      needsCrossSchemaValidation: true,
       tools: ["read", "bash", "write", "edit", "workflow"],
     },
     {
       name: "translate",
-      description: "PL/SQL → Java/MyBatis 逐包翻译",
+      description: "PL/SQL → Java/MyBatis 逐 unit 翻译（主从架构：translator master 每 shard 派 6 slave 子 agent 串行跑 skeleton → translate-core → test-gen → static-check → compile → fsd）",
       agentFile: "agent/translator.md",
       temperature: 0.1,
       maxRetries: 3,
       needsCrossSchemaValidation: true,
       maxPackagesPerShard: 1,
       tools: ["read", "bash", "write", "edit", "workflow"],
+      // translate 主从架构：subStages 仅供 getSubagentNames（slave 识别为 worker）+ subdispatch 渲染 slave workOrder。
+      // master（translator.md）每 shard 派 6 slave 串行跑；引擎 advance 直走 G1-unit + crossSchema + shard advance（不再逐 sub-stage 推进）。
+      // 1 unit = 1 shard（dispatch 强制 maxUnitsPerShard=1），sub-stage 天然 per-unit。
+      // fsd（compile 后）模板填空生成 FSD 说明书，孤立产出（FSD 是末尾 sub-stage 产出的人工审核总结文档，
+      // 纯末端产物——任何阶段都不读 FSD 作输入，故 translate UPSTREAM 不含 fsd，translate-core 不读 FSD）。
+      // fix 阶段复用 translator.md（master 不派 slave，一次性 prompt 修复）。
+      subStages: [
+        { name: "skeleton",       agentFile: "agent/translate-skeleton.md" },
+        { name: "translate-core", agentFile: "agent/translate-core.md" },
+        { name: "test-gen",       agentFile: "agent/translate-test.md" },
+        { name: "static-check",   agentFile: "agent/translate-lint.md" },
+        { name: "compile",        agentFile: "agent/translate-compile.md" },
+        { name: "fsd",            agentFile: "agent/translate-fsd.md" },
+      ],
     },
     {
       name: "dedup",
@@ -99,10 +95,8 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
   ],
 
   transitions: [
-    // ── 主线：无条件前进 ──
-    { from: "inventory",  condition: "always",  to: "analyze" },
-    { from: "analyze",    condition: "always",  to: "plan" },
-    { from: "plan",       condition: "always",  to: "scaffold" },
+    // ── 主线：无条件前进（Stage C：plan 阶段已合并入 scaffold，inventory→scaffold 直连）──
+    { from: "inventory",  condition: "always",  to: "scaffold" },
     { from: "scaffold",   condition: "always",  to: "translate" },
     { from: "translate",  condition: "always",  to: "dedup" },
     { from: "dedup",      condition: "always",  to: "review" },
@@ -126,36 +120,31 @@ export const SQL2JAVA_WORKFLOW: WorkflowDefinition = {
 // + 顶层 inventory.json（轻量索引）。调用图由 dependency-graph.ts 按需从 subprograms.directCalls
 // 推导，不再落盘 dependency-graph.json。inventory-index.json 已不再落盘（scan→generateInventory 经内存 cache 交接）。
 const _INV_BASE = ["inventory.json", "packages/*.json", "subprograms/*.json", "tables/*.json"] as const
-const _ANALYSIS = ["analysis-packages/*.json"] as const
-const _PLAN = ["plan.json"] as const
 const _SCAFFOLD = ["scaffold.json"] as const
 const _DEDUP = ["dedup.json"] as const
 const _TRANSLATIONS = ["translations/*/translation.json"] as const
-const _FSD = ["fsd/*/*.md"] as const
 
 /** 每个 phase 需要读取的上游 artifact 路径模板 */
 export const UPSTREAM_ARTIFACTS: Record<string, string[]> = {
   // inventory 无外部 upstream：scan action 扫描源码产出内存 InventoryIndex，generateInventory 据此落盘
   // packages/+subprograms/+tables/+inventory.json。inventory-index.json 不再落盘。
   inventory: [],
-  // analyze：本包子程序详情从 subprograms/{PKG}.*.json 取（已收窄到本分片）；
-  // 表结构从 tables/{TABLE}.json + inventory.json.tableNames；调用图由 dependency-graph.ts 按需推导。
-  analyze: [..._INV_BASE, ..._ANALYSIS],
-  // plan 是框架设计（包映射/类型映射/规则/约定/manualReviewList），不做逐过程翻译，
-  // 不需要 FSD（FSD 是 per-procedure 业务翻译说明书，给 translate 用）。manualReviewList
-  // 的高风险项来自 analysis-packages.translationNotes，不依赖 FSD。
-  plan: [..._INV_BASE, ..._ANALYSIS],
-  scaffold: [..._PLAN, ..._INV_BASE],
-  // translate：fsd/*/*.md 会在分片模式下被 narrowUpstreamForShard 收窄到 fsd/{pkg}/*.md（本包 FSD）。
-  translate: [..._INV_BASE, ..._PLAN, ..._ANALYSIS, ..._SCAFFOLD, ..._FSD],
-  dedup: [..._PLAN, ..._SCAFFOLD, ..._INV_BASE, ..._ANALYSIS, ..._TRANSLATIONS, "dedup-duplicates.json"],
+  // Stage C：plan 阶段已合并入 scaffold。scaffold 自行从 scaffold-input + 注入规约推导 targetProject +
+  // packageMappings（含组件类名），写入 scaffold.json。原 plan.json 不复存在。
+  // scaffold 不读原始 _INV_BASE：dispatch 前 engine 跑 generateScaffoldInput 聚合 inventory/packages/tables
+  // 的窄字段成 scaffold-input.json，scaffold 只读这一份（subprograms 完全不消费，packages/tables 噪声字段丢弃）。
+  scaffold: ["scaffold-input.json"],
+  // translate：FSD 是末尾 fsd sub-stage 产出的人工审核总结文档，纯末端产物——任何阶段都不读 FSD 作输入，
+  // 故 translate UPSTREAM 不含 fsd。translate 读 source.sql 翻译（不读 analysis-slice，analyze 已砍）。
+  translate: [..._INV_BASE, ..._SCAFFOLD],
+  dedup: [..._SCAFFOLD, ..._INV_BASE, ..._TRANSLATIONS, "dedup-duplicates.json"],
   // TODO (F9): translations/*/translation.json 在 dedup/review/verify 三阶段重复读取，
   // artifactCache 每次 advance 清空导致无法跨阶段缓存。考虑支持只读 artifact 的跨阶段缓存。
   // review-static.json：dispatch 前 engine 写入的项目级静态扫描产物；顶层文件不被 narrowUpstreamForShard 收窄。
-  review: [..._PLAN, ..._SCAFFOLD, ..._ANALYSIS, ..._DEDUP, ..._TRANSLATIONS, "review-static.json"],
-  verify: [..._PLAN, ..._SCAFFOLD, ..._DEDUP, ..._TRANSLATIONS],
+  review: [..._SCAFFOLD, ..._DEDUP, ..._TRANSLATIONS, "review-static.json"],
+  verify: [..._SCAFFOLD, ..._DEDUP, ..._TRANSLATIONS],
   fix: [
-    ..._ANALYSIS, ..._PLAN, ..._SCAFFOLD, ..._DEDUP,
+    ..._SCAFFOLD, ..._DEDUP,
     // 动态路径：取决于触发阶段（review 或 verify），plugin 注入时需根据 branchedFrom 拼接
     "review-summary.json", "verify-summary.json",
     // review 改项目级单文件：fix 读 review.json(语义 mustFix) + review-static.json(静态 finding)
@@ -178,15 +167,13 @@ export type PrerequisiteItem = string | string[]
 
 /** 目标阶段 → 必须存在的 artifact 文件名（string=必须，string[]=OR组） */
 export const PHASE_PREREQUISITES: Record<string, PrerequisiteItem[]> = {
-  analyze: ["inventory.json", "packages", "subprograms", "analysis-packages"],
-  plan: ["inventory.json", "packages", "subprograms", "analysis-packages"],
-  scaffold: ["plan.json", "inventory.json", "packages"],
-  translate: ["inventory.json", "packages", "subprograms", "analysis-packages", "plan.json", "scaffold.json"],
-  dedup: ["inventory.json", "plan.json", "scaffold.json", "translations"],
-  review: ["plan.json", "scaffold.json", "analysis-packages"],
-  verify: ["plan.json", "scaffold.json", "dedup.json"],
+  scaffold: ["inventory.json", "packages"],
+  translate: ["inventory.json", "packages", "subprograms", "scaffold.json"],
+  dedup: ["inventory.json", "scaffold.json", "translations"],
+  review: ["scaffold.json"],
+  verify: ["scaffold.json", "dedup.json"],
   fix: [
-    "analysis-packages", "plan.json", "scaffold.json", "dedup.json",
+    "scaffold.json", "dedup.json",
     // 触发阶段的 summary：review-summary.json 或 verify-summary.json，至少一个
     ["review-summary.json", "verify-summary.json"],
     "translations",

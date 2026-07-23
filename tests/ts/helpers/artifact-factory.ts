@@ -65,7 +65,7 @@ export function makeInventory(overrides: Record<string, unknown> = {}) {
   return {
     sourcePath: "/test/source",
     packageNames: ["CORE_PKG", "BASE_PKG"],
-    tables: [{ name: "ITEMS", ddlFile: "schema/tables.sql", columns: [{ name: "ITEM_ID", oracleType: "NUMBER", nullable: false, isPrimaryKey: true }] }],
+    tables: [{ name: "ITEMS", ddlFile: "schema/tables.sql", columns: [{ name: "ITEM_ID", plsqlType: "NUMBER", nullable: false, isPrimaryKey: true }] }],
     standaloneProcedures: [],
     triggers: [],
     views: [],
@@ -114,74 +114,48 @@ export function makeSubprogramArtifact(overrides: Record<string, unknown> = {}) 
   }
 }
 
-// ── Plan ─────────────────────────────────────────────────────
+// ── Scaffold ─────────────────────────────────────────────────
 
-export function makePlan(overrides: Record<string, unknown> = {}) {
+/** scaffold.json — 对齐 ScaffoldSchema（Stage C：吸收原 plan 的 targetProject + packageMappings） */
+export function makeScaffold(overrides: Record<string, unknown> = {}) {
   return {
     targetProject: {
-      artifactId: "item-service",
       groupId: "com.example",
-      packageBase: "com.example.item",
       javaVersion: "1.8",
       springBootVersion: "2.7.x",
     },
     packageMappings: [
       {
-        oraclePackage: "CORE_PKG",
-        javaPackage: "com.example.item.core",
-        mapperInterface: "ItemMapper",
-        accessIntf: "ItemAccessIntf",
-        accessImpl: "ItemAccessImpl",
-        processor: "ItemProcessor",
-        aggregate: "ItemAggregate",
-        builder: "ItemBuilder",
-        validator: "ItemValidator",
+        plsqlSchema: "",
+        plsqlPackage: "CORE_PKG",
+        components: [
+          { role: "service" },
+          { role: "service-impl" },
+          { role: "mapper" },
+        ],
       },
     ],
-    rules: {
-      namingConvention: "camelCase",
-      nullHandling: "optional",
-      exceptionStrategy: "custom-business",
-      logFramework: "common-log",
-    },
-    typeMappings: {},
-    manualReviewList: [],
-    conventions: "Standard conventions",
-    ...overrides,
-  }
-}
-
-// ── Scaffold ─────────────────────────────────────────────────
-
-/** scaffold.json — 对齐 ScaffoldSchema */
-export function makeScaffold(overrides: Record<string, unknown> = {}) {
-  return {
+    coverageExcludes: ["exception/", "entity/", "config/", "util/", "constant/", "dto/"],
     projectRoot: "/abs/path/generated/item-service",
     structure: {
-      directories: ["src/main/java/com/example/item"],
+      directories: ["src/main/java/mapper", "src/main/java/service"],
       pomXml: "pom.xml",
     },
     generated: {
       entities: [],
-      mapperInterfaces: [{ file: "src/main/java/com/example/item/mapper/ItemMapper.java", oraclePackage: "CORE_PKG" }],
-      serviceShells: [
-        { file: "src/main/java/com/example/item/core/access/ItemAccessIntf.java", oraclePackage: "CORE_PKG" },
-        { file: "src/main/java/com/example/item/core/access/impl/ItemAccessImpl.java", oraclePackage: "CORE_PKG" },
-        { file: "src/main/java/com/example/item/core/processor/ItemProcessor.java", oraclePackage: "CORE_PKG" },
-        { file: "src/main/java/com/example/item/core/domain/aggregate/ItemAggregate.java", oraclePackage: "CORE_PKG" },
-        { file: "src/main/java/com/example/item/core/domain/builder/ItemBuilder.java", oraclePackage: "CORE_PKG" },
-        { file: "src/main/java/com/example/item/core/domain/validator/ItemValidator.java", oraclePackage: "CORE_PKG" },
-      ],
+      procClassNames: [{ plsqlSchema: "", plsqlPackage: "CORE_PKG", refName: "GET_ITEM", className: "GetItem" }],
+      constants: [{ file: "src/main/java/constant/CorePkgConstant.java", plsqlSchema: "", plsqlPackage: "CORE_PKG" }],
+      stateDtos: [{ file: "src/main/java/dto/CorePkgStateDTO.java", plsqlSchema: "", plsqlPackage: "CORE_PKG" }],
       commonClasses: [
-        { file: "src/main/java/com/example/item/common/infrastructure/TranFailException.java", purpose: "统一业务异常" },
-        { file: "src/main/java/com/example/item/common/infrastructure/CommonLog.java", purpose: "统一日志门面" },
+        { file: "src/main/java/exception/BusinessException.java", purpose: "业务异常基类" },
+        { file: "src/main/java/exception/DataNotFoundException.java", purpose: "数据未找到" },
       ],
       commonModules: {
         classes: [
-          { file: "src/main/java/com/example/item/common/infrastructure/TranFailException.java", purpose: "统一业务异常", category: "infrastructure" },
-          { file: "src/main/java/com/example/item/common/infrastructure/CommonLog.java", purpose: "统一日志门面", category: "infrastructure" },
+          { file: "src/main/java/exception/BusinessException.java", purpose: "业务异常基类", category: "exception" },
+          { file: "src/main/java/exception/DataNotFoundException.java", purpose: "数据未找到", category: "exception" },
         ],
-        directories: ["src/main/java/com/example/item/common/infrastructure"],
+        directories: ["src/main/java/exception"],
       },
     },
     conventions: "Standard conventions",
@@ -198,7 +172,7 @@ export function makeAnalysisPackage(overrides: Record<string, unknown> = {}) {
     subprograms: [
       {
         name: "GET_ITEM",
-        blocks: [{ type: "sql-statement" as const, oracleLine: 12, description: "SELECT INTO 查询", dependencies: [] }],
+        blocks: [{ type: "sql-statement" as const, plsqlLine: 12, description: "SELECT INTO 查询", dependencies: [] }],
         variables: [],
         cursors: [],
         exceptionHandlers: [],
@@ -222,7 +196,7 @@ export function makeTranslation(overrides: Record<string, unknown> = {}) {
     decisions: [],
     todos: [],
     subprogramMethods: [
-      { oracleName: "GET_ITEM", javaClass: "com.example.item.core.access.ItemAccessIntf", javaMethod: "getItem" },
+      { plsqlName: "GET_ITEM", javaClass: "com.example.item.core.access.ItemAccessIntf", javaMethod: "getItem" },
     ],
     ...overrides,
   }

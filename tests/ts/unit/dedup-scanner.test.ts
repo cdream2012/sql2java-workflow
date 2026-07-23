@@ -124,7 +124,7 @@ describe("buildFileIndex", () => {
         { path: "src/main/java/a/OrderMapper.xml", role: "mapper-xml" },
       ],
       subprogramMethods: [
-        { oracleName: "do_x", javaClass: "com.x.AAccessIntf", javaMethod: "doX", javaFile: "src/main/java/a/AAccessIntf.java" },
+        { plsqlName: "do_x", javaClass: "com.x.AAccessIntf", javaMethod: "doX", javaFile: "src/main/java/a/AAccessIntf.java" },
       ],
     }), "utf-8")
     const idx = buildFileIndex(art, projectRoot)

@@ -48,22 +48,27 @@ describe("mergeUnitTranslations", () => {
     const pkgDir = join(art, "translations", "PKG_A")
     mkdirSync(pkgDir, { recursive: true })
     mkdirSync(art, { recursive: true })
-    // p1 调 f1（FUNCTION）→ f1 归属 p1，procedureOrder 的 PKG_A unit = {p1, p2}（f1 折叠）
+    // p1 调 f1（FUNCTION）→ f1 独立成 unit（不再折叠进 p1），procedureOrder 的 PKG_A unit = {p1, p2, f1}
     writePkgSubs(art, "PKG_A", [
       { name: "p1", type: "PROCEDURE", directCalls: [{ package: "PKG_A", name: "f1", line: 1, kind: "function" }] },
       { name: "p2", type: "PROCEDURE" },
       { name: "f1", type: "FUNCTION" },
     ])
-    // per-unit 文件
+    // per-unit 文件（每个 subprogram 独立一个 unit 文件，含 f1）
     writeFileSync(join(pkgDir, "p1.json"), JSON.stringify({
       unitRefName: "p1", packageName: "PKG_A", status: "completed",
       completedSubprograms: ["p1"], files: [], decisions: [], todos: [],
-      subprogramMethods: [{ oracleName: "p1", javaClass: "com.x.AService", javaMethod: "p1" }],
+      subprogramMethods: [{ plsqlName: "p1", javaClass: "com.x.AService", javaMethod: "p1" }],
     }), "utf-8")
     writeFileSync(join(pkgDir, "p2.json"), JSON.stringify({
       unitRefName: "p2", packageName: "PKG_A", status: "completed",
       completedSubprograms: ["p2"], files: [], decisions: [], todos: [],
-      subprogramMethods: [{ oracleName: "p2", javaClass: "com.x.AService", javaMethod: "p2" }],
+      subprogramMethods: [{ plsqlName: "p2", javaClass: "com.x.AService", javaMethod: "p2" }],
+    }), "utf-8")
+    writeFileSync(join(pkgDir, "f1.json"), JSON.stringify({
+      unitRefName: "f1", packageName: "PKG_A", status: "completed",
+      completedSubprograms: ["f1"], files: [], decisions: [], todos: [],
+      subprogramMethods: [{ plsqlName: "f1", javaClass: "com.x.AService", javaMethod: "f1" }],
     }), "utf-8")
 
     const err = mergeUnitTranslations(art, "PKG_A")
@@ -71,9 +76,9 @@ describe("mergeUnitTranslations", () => {
     const agg = JSON.parse(readFileSync(join(pkgDir, "translation.json"), "utf-8"))
     expect(agg.packageName).toBe("PKG_A")
     expect(agg.status).toBe("completed")
-    expect(agg.units.map((u: any) => u.refName).sort()).toEqual(["p1", "p2"])
-    expect(agg.completedSubprograms.sort()).toEqual(["p1", "p2"])
-    expect(agg.subprogramMethods.map((m: any) => m.oracleName).sort()).toEqual(["p1", "p2"])
+    expect(agg.units.map((u: any) => u.refName).sort()).toEqual(["f1", "p1", "p2"])
+    expect(agg.completedSubprograms.sort()).toEqual(["f1", "p1", "p2"])
+    expect(agg.subprogramMethods.map((m: any) => m.plsqlName).sort()).toEqual(["f1", "p1", "p2"])
     expect(agg.totalSubprograms).toBe(3) // subprograms 文件数（p1/p2/f1）
   })
 
@@ -90,14 +95,14 @@ describe("mergeUnitTranslations", () => {
     writeFileSync(join(pkgDir, "p1.json"), JSON.stringify({
       unitRefName: "p1", packageName: "PKG_B", status: "completed",
       completedSubprograms: ["p1"], files: [], decisions: [], todos: [],
-      subprogramMethods: [{ oracleName: "p1", javaClass: "com.x.BService", javaMethod: "p1" }],
+      subprogramMethods: [{ plsqlName: "p1", javaClass: "com.x.BService", javaMethod: "p1" }],
     }), "utf-8")
 
     const err = mergeUnitTranslations(art, "PKG_B")
     expect(err).toBeNull()
     const agg = JSON.parse(readFileSync(join(pkgDir, "translation.json"), "utf-8"))
     expect(agg.status).toBe("partial")
-    expect(agg.subprogramMethods.map((m: any) => m.oracleName)).toEqual(["p1"])
+    expect(agg.subprogramMethods.map((m: any) => m.plsqlName)).toEqual(["p1"])
   })
 
   it("per-unit 文件 Zod 校验失败 → 返回错误", () => {
@@ -137,7 +142,7 @@ describe("mergeUnitTranslations", () => {
     writeFileSync(join(pkgDir, "p1.json"), JSON.stringify({
       unitRefName: "p1", packageName: "PKG_E", status: "completed",
       completedSubprograms: ["p1"], files: [], decisions: [], todos: [],
-      subprogramMethods: [{ oracleName: "p1", javaClass: "com.x.EService", javaMethod: "p1" }],
+      subprogramMethods: [{ plsqlName: "p1", javaClass: "com.x.EService", javaMethod: "p1" }],
     }), "utf-8")
     // 同目录的 review.json（fix 阶段会存在）——形状是 ReviewSchema，非 UnitTranslationSchema
     writeFileSync(join(pkgDir, "review.json"), JSON.stringify({
@@ -148,6 +153,6 @@ describe("mergeUnitTranslations", () => {
     expect(err).toBeNull()
     const agg = JSON.parse(readFileSync(join(pkgDir, "translation.json"), "utf-8"))
     expect(agg.status).toBe("completed")
-    expect(agg.subprogramMethods.map((m: any) => m.oracleName)).toEqual(["p1"])
+    expect(agg.subprogramMethods.map((m: any) => m.plsqlName)).toEqual(["p1"])
   })
 })

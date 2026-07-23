@@ -22,10 +22,18 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-function setup(packages: string[], opts: { mappings?: any[]; files?: Record<string, string[]> } = {}) {
-  writeFileSync(join(dir, "scaffold.json"), JSON.stringify({ projectRoot: "/tmp/proj" }), "utf-8")
+function setup(packages: string[], opts: { mappings?: any[]; procClassNames?: any[]; files?: Record<string, string[]> } = {}) {
+  // Stage C：packageMappings 从 plan.json 移到 scaffold.json（verify 读 scaffold.json）
+  writeFileSync(
+    join(dir, "scaffold.json"),
+    JSON.stringify({
+      projectRoot: "/tmp/proj",
+      packageMappings: opts.mappings ?? [],
+      generated: { procClassNames: opts.procClassNames ?? [] },
+    }),
+    "utf-8",
+  )
   writeFileSync(join(dir, "inventory.json"), JSON.stringify({ packageNames: packages }), "utf-8")
-  writeFileSync(join(dir, "plan.json"), JSON.stringify({ packageMappings: opts.mappings ?? [] }), "utf-8")
   for (const pkg of packages) {
     mkdirSync(join(dir, "translations", pkg), { recursive: true })
     writeFileSync(
@@ -76,15 +84,18 @@ describe("buildVerifySummary", () => {
     expect(summary.compilation.errors.length).toBe(1)
   })
 
-  it("测试失败按 serviceImplClass 前缀归因到包 → 该包 passed=false", () => {
+  it("测试失败按 procClassNames 归因到包 → 该包 passed=false", () => {
     setup(
       ["PKG_A"],
-      { mappings: [{ oraclePackage: "PKG_A", serviceImplClass: "AServiceImpl" }] },
+      {
+        mappings: [{ plsqlSchema: "", plsqlPackage: "PKG_A", components: [{ role: "service-impl" }] }],
+        procClassNames: [{ plsqlSchema: "", plsqlPackage: "PKG_A", refName: "CREATE_ORDER", className: "CreateOrder" }],
+      },
     )
     writeCompileLog("[INFO] BUILD SUCCESS")
     writeTestLog([
       "Tests run: 2, Failures: 1, Errors: 0, Skipped: 0",
-      "<<< FAILURE! - [com.a.AServiceImplTest.createOrder_shouldComplete]",
+      "<<< FAILURE! - [service.impl.CreateOrderServiceImplTest.createOrder_shouldComplete]",
     ].join("\n"))
     const r = buildVerifySummary(dir)
     expect(r.testsPassed).toBe(1)
@@ -93,15 +104,18 @@ describe("buildVerifySummary", () => {
     expect(summary.testExecution.testErrors[0].testType).toBe("unit")
   })
 
-  it("DDD: 测试失败按 accessImpl 前缀归因到包 → 该包 passed=false", () => {
+  it("测试失败按 procClassNames 归因到包 → 该包 passed=false（per-proc）", () => {
     setup(
       ["PKG_A"],
-      { mappings: [{ oraclePackage: "PKG_A", accessImpl: "AAccessImpl", aggregate: "AAggregate" }] },
+      {
+        mappings: [{ plsqlSchema: "", plsqlPackage: "PKG_A", components: [{ role: "service-impl" }] }],
+        procClassNames: [{ plsqlSchema: "", plsqlPackage: "PKG_A", refName: "CREATE_ORDER", className: "CreateOrder" }],
+      },
     )
     writeCompileLog("[INFO] BUILD SUCCESS")
     writeTestLog([
       "Tests run: 2, Failures: 1, Errors: 0, Skipped: 0",
-      "<<< FAILURE! - [com.a.AAggregateTest.createOrder_shouldComplete]",
+      "<<< FAILURE! - [service.impl.CreateOrderServiceImplTest.createOrder_shouldComplete]",
     ].join("\n"))
     const r = buildVerifySummary(dir)
     expect(r.testsPassed).toBe(1)
@@ -110,34 +124,44 @@ describe("buildVerifySummary", () => {
     expect(summary.testExecution.testErrors[0].testType).toBe("unit")
   })
 
-  it("DDD: 跨包前缀碰撞不误归因（ItemAggregate 不命中 ItemAggregateV2Test）", () => {
+  it("跨包同名过程去重隔离不误归因（PKG_B 的 Process2 测试不命中 PKG_A 的 Process）", () => {
     setup(
       ["PKG_A", "PKG_B"],
-      { mappings: [
-        { oraclePackage: "PKG_A", aggregate: "ItemAggregate" },
-        { oraclePackage: "PKG_B", aggregate: "ItemAggregateV2" },
-      ] },
+      {
+        mappings: [
+          { plsqlSchema: "", plsqlPackage: "PKG_A", components: [{ role: "service-impl" }] },
+          { plsqlSchema: "", plsqlPackage: "PKG_B", components: [{ role: "service-impl" }] },
+        ],
+        // 跨包同名 PROCESS 碰撞：PKG_A 首现 Process，PKG_B 去重为 Process2
+        procClassNames: [
+          { plsqlSchema: "", plsqlPackage: "PKG_A", refName: "PROCESS", className: "Process" },
+          { plsqlSchema: "", plsqlPackage: "PKG_B", refName: "PROCESS", className: "Process2" },
+        ],
+      },
     )
     writeCompileLog("[INFO] BUILD SUCCESS")
     writeTestLog([
       "Tests run: 1, Failures: 1, Errors: 0, Skipped: 0",
-      "<<< FAILURE! - [com.b.ItemAggregateV2Test.process_shouldComplete]",
+      "<<< FAILURE! - [service.impl.Process2ServiceImplTest.process_shouldComplete]",
     ].join("\n"))
     const r = buildVerifySummary(dir)
     expect(r.testsPassed).toBe(0)
     const summary = JSON.parse(readFileSync(join(dir, "verify-summary.json"), "utf-8"))
     const a = summary.packageResults.find((p: any) => p.packageName === "PKG_A")
     const b = summary.packageResults.find((p: any) => p.packageName === "PKG_B")
-    expect(a.passed).toBe(true)   // 不应被 ItemAggregateV2Test 误命中
+    expect(a.passed).toBe(true)   // Process2 不应命中 PKG_A 的 Process
     expect(b.passed).toBe(false)  // 真正失败的包
   })
 
   it("IntegrationTest 失败 → testType=integration", () => {
-    setup(["PKG_A"], { mappings: [{ oraclePackage: "PKG_A", serviceImplClass: "AMapper" }] })
+    setup(["PKG_A"], {
+      mappings: [{ plsqlSchema: "", plsqlPackage: "PKG_A", components: [{ role: "mapper" }] }],
+      procClassNames: [{ plsqlSchema: "", plsqlPackage: "PKG_A", refName: "SELECT_BY_ID", className: "SelectById" }],
+    })
     writeCompileLog("BUILD SUCCESS")
     writeTestLog([
       "Tests run: 1, Failures: 0, Errors: 1, Skipped: 0",
-      "<<< ERROR! - [com.a.AMapperIntegrationTest.selectById]",
+      "<<< ERROR! - [mapper.SelectByIdMapperIntegrationTest.selectById]",
     ].join("\n"))
     buildVerifySummary(dir)
     const summary = JSON.parse(readFileSync(join(dir, "verify-summary.json"), "utf-8"))

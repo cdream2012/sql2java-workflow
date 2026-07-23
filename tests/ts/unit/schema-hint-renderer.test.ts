@@ -9,7 +9,7 @@ import { REFINE_CONSTRAINTS, QUALITY_GATE_HINTS, CROSS_SCHEMA_HINTS, COMMON_PITF
 // ═══════════════════════════════════════════════════════════════
 
 describe("renderSchemaHint", () => {
-  const ALL_PHASES = ["inventory", "analyze", "plan", "scaffold", "translate", "dedup", "review", "verify", "fix"]
+  const ALL_PHASES = ["inventory", "scaffold", "translate", "dedup", "review", "verify", "fix"]
 
   it("每个 phase 都产出非空提示", () => {
     for (const phase of ALL_PHASES) {
@@ -64,19 +64,9 @@ describe("renderSchemaHint", () => {
     expect(hint).toContain('"info"')
   })
 
-  it("analyze 阶段不渲染 riskLevel 枚举（complexity.riskLevel 属代码生成的 dependency-graph.json，已从 hint 去掉）", () => {
-    const hint = renderSchemaHint("analyze")
-    // riskLevel 在 DependencyGraphSchema.complexity（dependency-graph.json，代码生成），非 worker 手写，不渲染
-    expect(hint).not.toContain('"low"')
-    expect(hint).not.toContain('"high"')
-    // 但 per-package 的 subprograms 结构仍渲染
-    expect(hint).toContain("subprograms")
-  })
-
-  it("plan 阶段 namingConvention 在 pitfall 中有推荐值", () => {
-    const hint = renderSchemaHint("plan")
-    // schema 已放开为 string，不再包含枚举值，但 pitfall 仍推荐 camelCase
-    expect(hint).toContain("camelCase")
+  it("scaffold 阶段包含 projectRoot 格式要求", () => {
+    const hint = renderSchemaHint("scaffold")
+    expect(hint).toContain("projectRoot")
   })
 
   it("translate 阶段包含 status 枚举", () => {
@@ -93,14 +83,6 @@ describe("renderSchemaHint", () => {
     expect(hint).not.toContain("### Per-Package: inventory-packages/{PKG}.json")
     // 顶层 inventory.json schema 仍渲染
     expect(hint).toContain("### inventory.json")
-  })
-
-  it("analyze 阶段包含 per-unit schema（UnitAnalysisSchema，PROCEDURE 级下沉）", () => {
-    const hint = renderSchemaHint("analyze")
-    expect(hint).toContain("analysis-packages/{pkg}/{unitRef}.json")
-    expect(hint).toContain("unitRefName")
-    // 聚合 analysis-packages/{pkg}.json 由 engine merge（非 agent 手写），不渲染
-    expect(hint).not.toContain("Per-Package: analysis-packages/{pkg}.json")
   })
 
   it("translate/review/verify 阶段包含 per-package schema", () => {
@@ -169,13 +151,8 @@ describe("renderSchemaHint", () => {
 
   // ── 跨 Schema 校验 ──
 
-  it("analyze 阶段包含跨 Schema 校验（needsCrossSchemaValidation=true）", () => {
-    const hint = renderSchemaHint("analyze")
-    expect(hint).toContain("--- 跨 Schema 校验 ---")
-  })
-
-  it("plan 阶段包含跨 Schema 校验", () => {
-    const hint = renderSchemaHint("plan")
+  it("scaffold 阶段包含跨 Schema 校验（Stage C：packageMappings 覆盖校验合并到 scaffold）", () => {
+    const hint = renderSchemaHint("scaffold")
     expect(hint).toContain("--- 跨 Schema 校验 ---")
   })
 
@@ -299,10 +276,10 @@ describe("renderSchemaHint — 常见被拒原因 (COMMON_PITFALLS)", () => {
     expect(hint).toContain("mustFix")
   })
 
-  it("translate 阶段 pitfalls 包含 oracleName 重载序号提示", () => {
+  it("translate 阶段 pitfalls 包含 plsqlName 重载序号提示", () => {
     const hint = renderSchemaHint("translate")
     expect(hint).toContain("⚡ 常见被拒原因")
-    expect(hint).toContain("oracleName")
+    expect(hint).toContain("plsqlName")
     expect(hint).toContain("__序号")
   })
 
@@ -344,16 +321,6 @@ describe("renderSchemaHint — 约束完整性（anyOf/nullable/string 长度）
     const hint = renderSchemaHint("fix")
     // fixedPackages: z.array(z.string().min(1))
     expect(hint).toContain("minLen 1")
-  })
-
-  it("analyze 阶段不渲染顶层 dependency-graph.json schema（代码生成）", () => {
-    const hint = renderSchemaHint("analyze")
-    expect(hint).not.toMatch(/###\s*analysis\.json/)
-  })
-
-  it("analyze 阶段保留 per-unit analysis-packages schema（worker 手写 per-unit 文件）", () => {
-    const hint = renderSchemaHint("analyze")
-    expect(hint).toContain("analysis-packages/{pkg}/{unitRef}.json")
   })
 
   it("inventory 阶段顶层 schema 仍渲染", () => {

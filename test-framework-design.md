@@ -31,7 +31,7 @@
 |------|------|
 | **同源** | 被测对象（agent / engine / command / 规约）一律取自 `.opencode`，测试不另造实现 |
 | **输入可造** | 测试输入（最小 SQL/Java 片段、前置 artifact fixture）允许现造，属"准备用例" |
-| **Oracle 可写** | 判定准则（assertion / judge rubric）是验证手段，可写；但 rubric 必须**引用 `.opencode` 规约条款**（如 java-code-spec "(九)13 禁止空 catch"），不自创新规范 |
+| **PL/SQL 可写** | 判定准则（assertion / judge rubric）是验证手段，可写；但 rubric 必须**引用 `.opencode` 规约条款**（如 java-code-spec "(九)13 禁止空 catch"），不自创新规范 |
 | **单点聚焦** | 用最小 fixture 让一个 phase 的产出聚焦在单一功能点上，实现"单点特性任务" |
 | **执行点 = phase 边界** | 不为"功能点级触发"另造机制，复用 `.opencode` 原生 `--phases`，靠最小 fixture 达到功能点聚焦 |
 
@@ -107,7 +107,7 @@ fixture = 一个仅含 EXCEPTION WHEN OTHERS 块的子程序
 ② 范围    targetPackages = ["EXC_PKG"]                    ← 只处理这一个包（生产增量能力）
 ③ 输入    fixture/EXC_PKG.pkb 只含一个 EXCEPTION WHEN OTHERS 块，无游标/无复杂类型
           → translator 产出的 Java 几乎只有这一处 catch
-④ 判定    translation.json.decisions 里找到 oracleConstruct="EXCEPTION"
+④ 判定    translation.json.decisions 里找到 plsqlConstruct="EXCEPTION"
             → 取其 line → 切出 Java 对应 catch 片段
           断言：catch 块非空（正则）
           judge：只把这段 catch 喂给 LLM，rubric 引用 java-code-spec (九)13
@@ -172,7 +172,7 @@ cases/
                                │ 实际产出
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  判定 Oracle                                                     │
+│  判定 PL/SQL                                                     │
 │    确定性断言：读 artifact 结构化字段 / Java 正则·AST            │
 │    LLM judge  ：读具体产出 + case rubric（引用规约条款）         │
 └──────────────────────────────┬──────────────────────────────────┘
@@ -198,7 +198,7 @@ cases/
 
 ## 6. 需求②：逻辑正确性测试（核心）
 
-### 6.1 判定 Oracle：断言 + judge 配合
+### 6.1 判定 PL/SQL：断言 + judge 配合
 
 | 判定方式 | 适用场景 | 读取对象 |
 |---------|---------|---------|
@@ -254,7 +254,7 @@ reviewer 不是判定 oracle，而是**被测对象**。范式：
 
 - **`--phases` 单阶段执行**（`sql2java.md` 分支 3 + `PHASE_PREREQUISITES`）—— 已是单点执行能力
 - **结构化产出**：
-  - `translation.json.decisions`：`{ line, oracleConstruct, javaConstruct, reason, confidence }` —— 绝佳的判别材料
+  - `translation.json.decisions`：`{ line, plsqlConstruct, javaConstruct, reason, confidence }` —— 绝佳的判别材料
   - `review.json.mustFix`：`{ category, severity, file, line, issue }`
   - `verify.json.mybatisValidation`
 - **规约自动注入**：java-code-spec.md 由引擎注入 agent prompt（reviewer.md L27、translator.md L29）
@@ -412,8 +412,8 @@ export async function judgeExecutionPoint(opts: JudgeExecutionPointOptions): Pro
 assertGeneratedFileExists(ctx, globPattern): AssertionResult
 /** 断言生成的 Java 内容匹配正则（如 catch 块非空） */
 assertJavaMatches(ctx, globPattern, regex): AssertionResult
-/** 断言 translation.json.decisions 含特定 oracleConstruct→javaConstruct 映射 */
-assertDecision(ctx, oracleConstruct, javaConstruct): AssertionResult
+/** 断言 translation.json.decisions 含特定 plsqlConstruct→javaConstruct 映射 */
+assertDecision(ctx, plsqlConstruct, javaConstruct): AssertionResult
 /** 断言 review.json.mustFix 含特定 category 且 severity 达标（用于测 reviewer） */
 assertMustFixFound(ctx, category, minSeverity): AssertionResult
 ```

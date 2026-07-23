@@ -1,10 +1,8 @@
-# translate Worker 任务{{shardLabelSuffix}}
+# translate Master 任务{{shardLabelSuffix}}
 
 {{scopeBanner}}
 
-执行工作流 `{{runId}}` 的 **translate** 阶段（PL/SQL → Java 翻译，分片 map）。
-
-⛔ **你只负责产出 artifact，禁止调用 workflow 工具的任何 action**（advance/confirm/retry/abort/dispatch/fixContinue/start）。方法论见你的 agent 指南（translator.md）；本卡只给本分片的具体数据与范围。
+执行工作流 `{{runId}}` 的 **translate** 阶段——你是 **translator master**：不直接翻译，而是按 sub-stage 顺序派 6 个 slave 子 agent（skeleton→translate-core→test-gen→static-check→compile→fsd）串行跑本分片 unit，最后写 Worker Status。调度方法论见你的 agent 指南（translator.md `## Phase: translate`）；本卡只给本分片的具体数据与范围。
 
 ## Runtime Context
 
@@ -16,36 +14,46 @@
 {{projectRootLine}}
 {{scopeLine}}
 
-## 上游 artifact（只读这些）
+## 上游 artifact（slave 只读这些；master 不直接读源码）
 
 {{upstreamArtifactsList}}
 
 {{shardInfoBlock}}
 {{scopeBlock}}
 {{depSignaturesBlock}}
+{{subStageProgressBlock}}
 
-## 输出
+## 调度任务
 
-- per-unit 翻译产物：`translations/{pkg}/{ref}.json`（符合 UnitTranslationSchema；聚合 `translations/{pkg}/translation.json` 由 engine 自动 merge，**不直接写**）
-- Java 文件：写入 Runtime Context 中 `projectRoot` 指定的目录（绝对路径，与 scaffold 阶段同目录）。同包多 unit 共享的 DDD 组件（Access/Processor/Aggregate/Builder/Validator）/Mapper 文件用 **read 已有 + edit 追加方法**，勿覆盖 prior unit 内容。
-- Worker Status：`{{artifactsDir}}/status/translate.json`（**最后一步写**，须含 `shardIndex` = 分片信息里的 shardIndex（1-based，与「本分片序号」一致）—— advance 完成门控，未写/不匹配则 advance 被拒）
+对本分片 targetUnits 的每个 unit，依次跑 6 sub-stage（详见 translator.md）。每 stage：
+
+1. `workflow({ action: "subdispatch", runId: "{{runId}}", subStage: "<stage名>" })` → 取 `metadata.agent` + `metadata.minimalSubtaskPrompt`（⛔ 引擎顺序门禁：只允许 subdispatch「sub-stage 进度」块里"下一个该跑"的 stage；跳序会被拒）
+2. Task 工具派 slave：`task({ agent: metadata.agent, prompt: metadata.minimalSubtaskPrompt, description: "..." })`
+3. 阻塞等 slave TASK_STATUS：
+   - `completed` → **调 `workflow({ action: "substageDone", runId: "{{runId}}", subStage: "<本 stage 名>" })` 标记完成** → 再 subdispatch 下一 stage
+   - `failed` → 重派同一 stage slave 一次（它仍是 nextExpected，subdispatch 放行）；仍失败则本分片 failed
+
+## 输出（master 只写这一项）
+
+- Worker Status：`{{artifactsDir}}/status/translate.json`（**6 sub-stage 全过后最后一步写**，须含 `shardIndex` = 分片信息里的 shardIndex——advance 完成门控，未写/不匹配则 advance 被拒）
+- per-unit 翻译产物 `translations/{pkg}/{ref}.json`、Java 文件、`fsd/{pkg}/{ref}.md` 等 **由 slave 写，master 不写**。
 
 ## 硬约束
 
-- ⛔ **你的完整任务已在本提示中**（由引擎注入系统提示）。**禁止 Read 任何 `.workOrder.md` 文件**——那是审计追溯用，不是你的输入；也禁止 Read `dispatch-logs/` 下任何文件。任务就在这里，直接执行。
-- ⛔ **只翻译本分片 targetUnits 列出的 PROCEDURE 单元**，禁止处理其他 unit。
-- ⛔ **源码只读 `shard-inputs/{pkg}/{ref}/source.sql`**（引擎已预切）。禁止 read 整包 body/header、`packages/{pkg}.json`、`analysis-packages/{pkg}.json`。子程序结构读 `shard-inputs/{pkg}/{ref}/analysis-slice.json`。
-- ⛔ **跨包/同包跨单元调用签名查下方「依赖签名」预注入块**（引擎已按 callGraph 内联）。禁止 read `translations/{pkg}/translation.json`。预注入块标 `// TODO` 的目标（尚未翻译）照抄占位，由 review/fix 兜底。
-- ⛔ `inventory.json` 里其他包/单元只是参考，不是工作清单。
+- ⛔ **master 不翻译、不写 Java/JSON 产物**（status/translate.json 除外）——产物全由 slave 写。
+- ⛔ **master 禁止调 workflow 的 advance/confirm/retry/abort/dispatch/fixContinue/start**（引擎已拦）；唯一调的 workflow action 是 `subdispatch`（取 slave workOrder）+ `substageDone`（标记 sub-stage 完成，slave TASK_STATUS(completed) 后必调）。
+- ⛔ **串行派 slave**：一次一个 sub-stage，等 TASK_STATUS 后再派下一个；禁止并行。
+- ⛔ 禁止 Read `dispatch-logs/` 下任何 workOrder 文件（slave 系统提示已注入，你读只污染上下文）。
+- ⛔ 禁止 Read `run.json` / `logs/` / `status/translate.json` 等推断任务进度——进度只靠你的 todowrite + slave TASK_STATUS。`status/translate.json` 是你的 advance 门控**输出**，仅你在 6 sub-stage 全过后写一次；slave 不写它（slave 只回 TASK_STATUS 文本）。
+- ⛔ **禁止 glob/ls/find/Grep 扫描 `src/`、`translations/`、`generated/` 目录**——扁平布局下数百文件平铺，一扫即爆上下文。slave 的精确输入/输出路径已由引擎注入各 slave workOrder 的「本 unit 文件清单」，master 无需查看产物现状；进度靠 slave TASK_STATUS。
 
 ## 指令
 
-1. 读 Runtime Context 上游 artifact + 本分片切片（`shard-inputs/...`）+ 依赖签名块。
-2. 逐 unit 翻译 targetUnits 列出的单元（根 + cargo FUNCTION，cargo ref 见 `shard-inputs/{pkg}/{ref}/meta.json` 的 cargoFuncs），写 per-unit JSON + Java 文件。
-3. 写 Worker Status。
-4. 输出 WORKER_SUMMARY + TASK_STATUS（TASK_STATUS 必须是回复最后一段文本，见系统提示「阶段完成输出」）。
+1. 读 Runtime Context + 分片信息（targetUnits / shardIndex）。
+2. 对本分片每个 unit，按 6 sub-stage 顺序调度（subdispatch → Task → 等 TASK_STATUS）。
+3. 6 sub-stage 全过 → 写 Worker Status（含 shardIndex）。
+4. 输出 WORKER_SUMMARY + TASK_STATUS（最后一段）。
 
-{{schemaHint}}
 {{rejectionErrorBlock}}
 
 完成后输出 `WORKER_SUMMARY` + `TASK_STATUS`（最后一段）。

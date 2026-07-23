@@ -14,7 +14,7 @@
 import { describe, it } from "vitest"
 
 // 插件校验函数通过 @plugins 别名访问（实现时取消注释）
-// import { validateArtifactOnDisk, validateInventoryPackages, validateAnalysisPackages, checkPrerequisites } from "@plugins/workflow-engine"
+// import { validateArtifactOnDisk, validateInventoryPackages, checkPrerequisites } from "@plugins/workflow-engine"
 // import { createEngineWithTempDir, writeArtifact } from "../helpers/engine-factory"
 // import {
 //   makeInventoryIndex, makePlan, makeScaffold,
@@ -35,11 +35,6 @@ describe("plugin-validation", () => {
     it.todo("inventory 包文件完整")
     it.todo("缺少 bodyFile → 报错")
     it.todo("headerFile 不存在 → 报错")
-  })
-
-  describe("validateAnalysisPackages", () => {
-    it.todo("analysis 包文件完整")
-    it.todo("analysis-meta 引用的包文件不存在 → 报错")
   })
 
   describe("checkPrerequisites", () => {

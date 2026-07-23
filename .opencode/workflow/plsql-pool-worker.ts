@@ -12,7 +12,7 @@
  * 失败不崩：scanFileAst 内部已 try/catch 收 warning；此处再兜一层，单文件集异常只回 error，
  * 主线程据此决定跳过/fallback，worker 继续存活。
  */
-import { scanFileSet, type FileSetResult } from "./plsql-file-scanner"
+import { scanFileSetRegex, type FileSetResult } from "./plsql-file-scanner"
 
 ;(self as any).postMessage({ kind: "ready" })
 
@@ -21,7 +21,7 @@ import { scanFileSet, type FileSetResult } from "./plsql-file-scanner"
     id: number; fileSet: string[]; primaryBase: string
   }
   try {
-    const result: FileSetResult = scanFileSet(fileSet, primaryBase)
+    const result: FileSetResult = scanFileSetRegex(fileSet, primaryBase)
     ;(self as any).postMessage({ id, ok: true, result })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

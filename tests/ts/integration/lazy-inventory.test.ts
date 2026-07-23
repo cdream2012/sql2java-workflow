@@ -162,7 +162,6 @@ describe("scanSourceLazy 入口闭包惰性扫描", () => {
     const analysis = {
       callGraph: g.callGraph,
       packageDependency: g.packageDependency,
-      functionOwnership: g.functionOwnership,
     } as any
     const cl = scopeClosure(analysis, "CORE_PKG.ENTRY_PROC")
     expect(cl.scopePackages, "scope 含闭包内包").toContain("BASE_PKG")
@@ -314,7 +313,6 @@ describe("scanSourceLazy 断传递（方案 C）", () => {
     const cl = scopeClosure({
       callGraph: g.callGraph,
       packageDependency: g.packageDependency,
-      functionOwnership: g.functionOwnership,
     } as any, "CALLER_PKG.ENTRY_PROC")
 
     // SHARED_PKG 被调用 → call-closure → 进 scopeUnits；其 directCall DEEP_PKG 传递可达
@@ -420,7 +418,6 @@ describe("scanSourceLazy 跨波次升级（const-leaf → call-closure）", () =
     const cl = scopeClosure({
       callGraph: g.callGraph,
       packageDependency: g.packageDependency,
-      functionOwnership: g.functionOwnership,
     } as any, "XCALLER_PKG.ENTRY")
     expect(cl.scopeUnits.some(u => u.startsWith("MIDC_PKG.USE")),
       "MIDC_PKG 升级后 USE 进 scopeUnits").toBe(true)

@@ -2513,6 +2513,15 @@ APPROXIMATE_NUM_LIT : FLOAT_FRAGMENT ('E' ('+' | '-')? (FLOAT_FRAGMENT | [0-9]+)
 // and a superfluous subtoken typecasting of the "QUOTE"
 CHAR_STRING: '\'' (~('\'' | '\r' | '\n') | '\'' '\'' | NEWLINE)* '\'';
 
+// GaussDB/openGauss/PG 美元引用字符串：$$...$$ 或 $tag$...$tag$。
+// 开闭标签不要求一致（lexer 无反向引用），内容可跨行。作为 CHAR_STRING 返回，parser 无需改。
+DOLLAR_QUOTED_STRING
+    : '$' ('$' | [A-Za-z_][A-Za-z_0-9]* '$') .*? '$' (
+        '$'
+        | [A-Za-z_][A-Za-z_0-9]* '$'
+    ) -> type(CHAR_STRING)
+    ;
+
 // See https://livesql.oracle.com/apex/livesql/file/content_CIREYU9EA54EOKQ7LAMZKRF6P.html
 // TODO: context sensitive string quotes (any characted after quote)
 CHAR_STRING_PERL:
@@ -2577,6 +2586,7 @@ TILDE_OPERATOR_PART       : '~';
 EXCLAMATION_OPERATOR_PART : '!';
 GREATER_THAN_OP           : '>';
 LESS_THAN_OP              : '<';
+DOUBLE_COLON              : '::';
 COLON                     : ':';
 SEMICOLON                 : ';';
 

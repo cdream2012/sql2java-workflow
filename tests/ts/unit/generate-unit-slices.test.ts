@@ -5,7 +5,7 @@
  * 源码片段按 bodyLocation.lineRange 抽取（绝对路径 / 相对 sourcePath / standalone 虚拟包），analysis-slice 容错。
  *
  * 新形状：packages/{pkg}.json + subprograms/{pkg}.{ref}.json（bodyLocation.lineRange）；
- * functionOwnership 由 buildDependencyGraph 从 subprograms.directCalls 按需推导（不再读 dependency-graph.json）。
+ * 每个 subprogram 独立成 unit，切片只含本 unit 根源码。
  */
 
 import { describe, it, expect, beforeAll } from "vitest"
@@ -49,47 +49,51 @@ function writePkg(art: string, pkg: string, bodyPath: string, subs: SubSpec[]) {
   }
 }
 
-describe("generateUnitSlices — analyze", () => {
-  it("根 + cargo：source.sql 按 bodyLocation.lineRange 抽片段 + inventory-slice.json + meta.json", () => {
+// analyze 阶段已砍（generateUnitSlices 只 translate），analyze 用例 skip，后续清理删。
+describe.skip("generateUnitSlices — analyze", () => {
+  it("根 only：source.sql 按 bodyLocation.lineRange 抽片段（FUNCTION 独立成 unit，不再作 cargo）", () => {
     const art = join(dir, "a")
     mkdirSync(art, { recursive: true })
     // 源码文件：10 行 proc1，30-40 行 calc_total
     const src = join(art, "PKG_A_BODY.sql")
     writeFileSync(src, Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n"), "utf-8")
-    // proc1 调 calc_total（FUNCTION）→ buildDependencyGraph 推导 calc_total 归属 proc1（cargo）
+    // proc1 调 calc_total（FUNCTION）→ calc_total 独立成 unit（不再归属 proc1 作 cargo）
     writePkg(art, "PKG_A", src, [
       { name: "proc1", type: "PROCEDURE", lineRange: [10, 20], directCalls: [{ package: "PKG_A", name: "calc_total", line: 12, kind: "function" }] },
       { name: "calc_total", type: "FUNCTION", lineRange: [30, 40] },
     ])
 
-    const generated = generateUnitSlices(art, ["PKG_A.proc1"], "analyze", "")
-    // 返回切片相对路径
+    // 两个独立 unit 各自切片
+    const generated = generateUnitSlices(art, ["PKG_A.proc1", "PKG_A.calc_total"], "analyze", "")
     expect(generated).toEqual(expect.arrayContaining(unitSliceRelPaths("PKG_A.proc1", "analyze")))
+    expect(generated).toEqual(expect.arrayContaining(unitSliceRelPaths("PKG_A.calc_total", "analyze")))
 
+    // proc1 切片：仅根（line 10-20），不含 calc_total（line 30-40）
     const sliceDir = join(art, "shard-inputs", "PKG_A", "proc1")
     expect(existsSync(join(sliceDir, "source.sql"))).toBe(true)
     expect(existsSync(join(sliceDir, "inventory-slice.json"))).toBe(true)
     expect(existsSync(join(sliceDir, "meta.json"))).toBe(true)
-
     const sql = readFileSync(join(sliceDir, "source.sql"), "utf-8")
-    // 根片段：line 10-20
     expect(sql).toContain("line 10")
     expect(sql).toContain("line 20")
     expect(sql).not.toContain("line 21")
-    // cargo 片段：line 30-40
-    expect(sql).toContain("line 30")
-    expect(sql).toContain("line 40")
-    expect(sql).toContain("calc_total")
+    expect(sql).not.toContain("line 30")
+    expect(sql).not.toContain("calc_total")
 
     const inv = JSON.parse(readFileSync(join(sliceDir, "inventory-slice.json"), "utf-8"))
     expect(inv.unitId).toBe("PKG_A.proc1")
     expect(inv.root.ref).toBe("proc1")
-    expect(inv.cargo[0].ref).toBe("calc_total")
+    expect(inv.cargo).toEqual([])
 
     const meta = JSON.parse(readFileSync(join(sliceDir, "meta.json"), "utf-8"))
     expect(meta.unitId).toBe("PKG_A.proc1")
-    expect(meta.cargoFuncs).toEqual([{ ref: "calc_total", pkg: "PKG_A" }])
+    expect(meta.cargoFuncs).toEqual([])
     expect(meta.analysisMissing).toBe(false)
+
+    // calc_total 独立切片：自己的 line 30-40
+    const calcSql = readFileSync(join(art, "shard-inputs", "PKG_A", "calc_total", "source.sql"), "utf-8")
+    expect(calcSql).toContain("line 30")
+    expect(calcSql).toContain("line 40")
   })
 
   it("相对 bodyPath + sourcePath → 用绝对路径抽源码", () => {
@@ -139,7 +143,7 @@ describe("generateUnitSlices — analyze", () => {
 })
 
 describe("generateUnitSlices — translate", () => {
-  it("analysis-slice.json 从 analysis-packages 聚合按 name 过滤", () => {
+  it.skip("analysis-slice.json 从 analysis-packages 聚合按 name 过滤（analyze 砍后不再产 analysis-slice）", () => {
     const art = join(dir, "t1")
     mkdirSync(art, { recursive: true })
     const src = join(art, "BODY.sql")
@@ -169,7 +173,7 @@ describe("generateUnitSlices — translate", () => {
     expect(ana.subprograms[0].name).toBe("proc1")
   })
 
-  it("analysis-packages 聚合缺失：analysis-slice.json 写空 + meta.analysisMissing=true", () => {
+  it.skip("analysis-packages 聚合缺失：analysis-slice.json 写空 + meta.analysisMissing=true（analyze 砍后不再产）", () => {
     const art = join(dir, "t2")
     mkdirSync(art, { recursive: true })
     const src = join(art, "BODY.sql")

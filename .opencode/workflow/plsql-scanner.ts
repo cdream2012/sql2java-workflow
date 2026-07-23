@@ -18,7 +18,7 @@ export {
   UpperCaseCharStream, cleanName, normalizeTypeText, ctxLineRange, ctxText,
   stripSqlPlusCommands, parenDelta, SQL_PSEUDO, PlSqlStructListener, extractPackageNames,
   extractTableFromText, extractTriggerFromText, extractViewFromText, extractSequenceFromText,
-  nextStatementBoundary, lineRangeOf, storedFilePath, parseFileAst, scanFileSet,
+  nextStatementBoundary, lineRangeOf, storedFilePath, parseFileAst, scanFileSet, scanFileSetRegex, normalizeFullwidthSyntax,
   type ParamInfo, type LocationInfo, type DirectCall, type PackageRef,
   type SubprogramInfo, type ConstantInfo, type VariableInfo, type ExceptionInfo, type TypeInfo,
   type PackageInfo, type ColumnIndex, type ForeignKeyInfo,
@@ -34,7 +34,7 @@ import { parseMainEntry } from "./scope-computer"
 import { scanFilesParallel, createPoolSession, type PoolSession } from "./plsql-worker-pool"
 import {
   cleanName, extractTriggerFromText, extractTableFromText, extractViewFromText, extractSequenceFromText,
-  extractPackageNames, stripSqlPlusCommands, storedFilePath, scanFileSet,
+  extractPackageNames, stripSqlPlusCommands, storedFilePath, scanFileSet, scanFileSetRegex, normalizeFullwidthSyntax,
   type PackageInfo, type SubprogramInfo, type TableIndex, type TriggerIndex, type ViewIndex, type SequenceIndex,
   type StandaloneProcIndex, type DirectCall, type PackageRef, type InventoryIndex, type FileSetResult,
 } from "./plsql-file-scanner"
@@ -188,12 +188,36 @@ function finalizeInventoryIndex(
       getLogger().warn("[scan]", w)
     }
   }
+  // 未解析调用 warning：callee 非本项目子程序时记一条（去重，按 caller->callee 不含行号），
+  // 供排查简称未命中 / 拼写错 / 外部依赖。**仅对限定调用（2/3 段，c.package !== callerPkg）记
+  // warning**——裸名调用（c.package === callerPkg）含大量类型构造器 t_rec()、集合访问 arr(i)、
+  // 变量方法 obj.ext 等非过程调用噪声，静默丢弃不 warn。PL/SQL SYS 工具包（DBMS_/UTL_/HTP/HTF）
+  // 亦静默。边仍丢弃。仅 directCalls 记 warning——packageRefs 捕获大量 localRecord.field / table.col
+  // 噪声，不记 warning（schema 归一化修复照常生效，仅未解析时静默丢弃）。
+  const warnedUnresolved = new Set<string>()
+  const externalUtilPrefixes = ["DBMS_", "UTL_", "HTP", "HTF"]
+  const isExternalUtilPkg = (pkg: string): boolean => {
+    const last = pkg.split(".").pop() ?? pkg
+    return externalUtilPrefixes.some(p => last.startsWith(p))
+  }
   for (const s of subprogramList) {
     const seen = new Set<string>()
     const filtered: DirectCall[] = []
     for (const c of s.directCalls) {
       const methods = subprogramIndex.get(c.package)
-      if (!methods || !methods.has(c.name)) continue  // callee 非本项目子程序，丢弃
+      if (!methods || !methods.has(c.name)) {
+        // 仅限定调用（跨包 2/3 段写法）记 warning；裸名（同包，含类型构造器/集合访问噪声）静默
+        if (c.package !== s.belongToPackage && !isExternalUtilPkg(c.package)) {
+          const wkey = `${s.belongToPackage}.${s.name}->${c.package}.${c.name}`
+          if (!warnedUnresolved.has(wkey)) {
+            warnedUnresolved.add(wkey)
+            const w = `未解析调用 ${s.belongToPackage}.${s.name} -> ${c.package}.${c.name} (line ${c.line})`
+            warnings.push(w)
+            getLogger().warn("[scan]", w)
+          }
+        }
+        continue  // callee 非本项目子程序，丢弃
+      }
       const key = `${c.package}.${c.name}.${c.line}`
       if (seen.has(key)) continue
       seen.add(key)
@@ -204,7 +228,8 @@ function finalizeInventoryIndex(
 
   // packageRefs 后过滤 + 去重：只保留指向「已知项目包」的跨包引用（排除 localRecord.field /
   // schema.table.col / DBMS_OUTPUT 等外部限定）。已知包 = packages + standalone 虚拟包。
-  // 同包引用不产生 packageDependency 边，丢弃。callGraph 不受影响。
+  // 同包引用不产生 packageDependency 边，丢弃。callGraph 不受影响。schema 归一化已在
+  // recordPackageRef 完成（2 段 pkg.member 补 caller schema → 命中声明键）；未解析静默丢弃不 warn。
   const knownPackages = new Set<string>()
   for (const p of pkgList) knownPackages.add(p.packageName.toUpperCase())
   for (const s of subprogramList) {
@@ -323,7 +348,7 @@ export function partitionFilesByPackage(files: string[]): { fileSets: string[][]
   let totalLines = 0
   for (let i = 0; i < files.length; i++) {
     let code: string
-    try { code = readFileSync(files[i], "utf-8") } catch { continue }
+    try { code = normalizeFullwidthSyntax(readFileSync(files[i], "utf-8")) } catch { continue }
     totalLines += code.split("\n").length
     for (const name of extractPackageNames(code)) {
       let arr = pkgFiles.get(name)
@@ -381,22 +406,22 @@ export function partitionFilesByPackage(files: string[]): { fileSets: string[][]
 export async function scanWithAST(roots: string[], primaryBase: string): Promise<InventoryIndex> {
   const files = collectSourceFiles(roots)
   const { fileSets, totalLines } = partitionFilesByPackage(files)
-  getLogger().info("[scan]", `AST: ${files.length} 文件 / ${totalLines} 行 / ${fileSets.length} file-set → worker 池（含崩溃隔离）`)
-  // 一律走 scanFilesParallel：Worker 可用时每个 file-set 在独立 worker isolate 解析，
-  // antlr4ts 硬崩只死 worker（主进程存活），由池跳过+告警。主进程内串行（serialScanFileSets）
-  // 对硬崩无防护（绕过 try/catch 拖垮主进程），仅 Worker 不可用的测试环境用。
+  getLogger().info("[scan]", `regex 主路径: ${files.length} 文件 / ${totalLines} 行 / ${fileSets.length} file-set → worker 池（scanFileSetRegex，AST 保留不启用）`)
+  // 主路径已切到 scanFileSetRegex（纯 regex，无 antlr）：worker 池内 scanFileSetRegex 抽包/子程序/
+  // directCalls。原 scanFileSet（AST）保留不启用（对照/回退，scanner-merged-parity / plsql-scanner-fields
+  // 直接调 scanFileSet 作 AST 全字段回归）。scannerUsed 标 "regex" 反映实际扫描路径（下游仅展示用）。
   const results = await scanFilesParallel(fileSets, primaryBase)
-  return finalizeFileSetResults(results, primaryBase, "ast")
+  return finalizeFileSetResults(results, primaryBase, "regex")
 }
 
 /** 串行扫描多个 file-set（小工作量 / worker 不可用 fallback 共用）。 */
 async function serialScanFileSets(fileSets: string[][], primaryBase: string): Promise<FileSetResult[]> {
   const results: FileSetResult[] = []
   for (const fs of fileSets) {
-    try { results.push(scanFileSet(fs, primaryBase)) }
+    try { results.push(scanFileSetRegex(fs, primaryBase)) }
     catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      results.push({ packages: [], subprograms: [], standaloneProcedures: [], standaloneSlots: [], tables: [], triggers: [], views: [], sequences: [], warnings: [`scanFileSet 失败: ${msg}`] })
+      results.push({ packages: [], subprograms: [], standaloneProcedures: [], standaloneSlots: [], tables: [], triggers: [], views: [], sequences: [], warnings: [`scanFileSetRegex 失败: ${msg}`] })
     }
   }
   return results
@@ -416,7 +441,7 @@ export function scanWithRegex(roots: string[], primaryBase: string): InventoryIn
   const warnings: string[] = ["regex 兜底模式：仅提取名字，结构字段缺失"]
 
   for (const filePath of files) {
-    const code = readFileSync(filePath, "utf-8").replace(/\r\n?/g, "\n")
+    const code = normalizeFullwidthSyntax(readFileSync(filePath, "utf-8").replace(/\r\n?/g, "\n"))
     const relPath = storedFilePath(filePath)
     extractTableFromText(code, tables, relPath)
     extractTriggerFromText(code, triggers, relPath)
@@ -473,17 +498,17 @@ export async function scanSource(sourceOrOpts: string | ScanSourceOpts): Promise
     getLogger().warn("[plsql-scanner]", `scanSource 收到 entry=${entry}，入口范围扫描请改用 scanSourceLazy；此处忽略，按全量扫描`)
   }
 
-  getLogger().info("[scan]", `开始全量 AST 扫描: ${roots.length} root(s) [${roots.join(", ")}]`)
+  getLogger().info("[scan]", `开始全量扫描（regex 主路径）: ${roots.length} root(s) [${roots.join(", ")}]`)
   try {
     const idx = await scanWithAST(roots, primaryBase)
     getLogger().info(
       "[scan]",
-      `扫描完成(ast): ${idx.packages.length} 包 / ${idx.subprograms.length} 子程序 / ${idx.tables.length} 表 / ${idx.triggers.length} triggers / ${idx.views.length} views / ${idx.sequences.length} seqs / ${idx.warnings.length} warnings`,
+      `扫描完成(regex): ${idx.packages.length} 包 / ${idx.subprograms.length} 子程序 / ${idx.tables.length} 表 / ${idx.triggers.length} triggers / ${idx.views.length} views / ${idx.sequences.length} seqs / ${idx.warnings.length} warnings`,
     )
     return idx
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    getLogger().error("[scan]", `AST 扫描整体失败，降级 regex 兜底: ${msg}`)
+    getLogger().error("[scan]", `regex 主路径失败，降级粗粒度兜底: ${msg}`)
     const idx = scanWithRegex(roots, primaryBase)
     getLogger().warn("[scan]", `regex 兜底完成: ${idx.packages.length} 包 / 0 子程序（regex 仅提包名，无结构字段，仅作最后兜底）`)
     return idx
@@ -547,7 +572,10 @@ export async function scanSourceLazy(opts: ScanSourceLazyOpts): Promise<Inventor
     seenFiles.add(filePath)
     const rawCode = readFileSync(filePath, "utf-8").replace(/\r\n?/g, "\n")
     const relPath = storedFilePath(filePath)
-    const code = stripSqlPlusCommands(rawCode)
+    // 先归一化全角语法符号（恢复被中文输入法全角化的字符串边界/包名引号等，串内内容原样保留），
+    // 再 strip SQL*Plus 命令——全角引号会让 extractPackageNames 的引号标识符 regex 失配 →
+    // 包名抽不出 → lazy Phase 0 建不出 packageFileMap → 入口包找不到 → 整个 lazy 扫描抛错。
+    const code = stripSqlPlusCommands(normalizeFullwidthSyntax(rawCode))
     extractTableFromText(code, tables, relPath)
     extractTriggerFromText(code, triggers, relPath)
     extractViewFromText(code, views, relPath)
@@ -680,10 +708,10 @@ export async function scanSourceLazy(opts: ScanSourceLazyOpts): Promise<Inventor
     session?.close()
   }
 
-  const idx = finalizeInventoryIndex(primaryBase, packages, subprograms, standaloneProcedures, standaloneSlots, tables, triggers, views, sequences, warnings, "ast")
+  const idx = finalizeInventoryIndex(primaryBase, packages, subprograms, standaloneProcedures, standaloneSlots, tables, triggers, views, sequences, warnings, "regex")
   getLogger().info(
     "[scan]",
-    `lazy 扫描完成(ast): 闭包 ${idx.packages.length} 包 / ${idx.subprograms.length} 子程序 / ${idx.tables.length} 表 / ${idx.warnings.length} warnings`,
+    `lazy 扫描完成(regex): 闭包 ${idx.packages.length} 包 / ${idx.subprograms.length} 子程序 / ${idx.tables.length} 表 / ${idx.warnings.length} warnings`,
   )
   return idx
 }

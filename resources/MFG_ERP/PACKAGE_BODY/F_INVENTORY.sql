@@ -415,11 +415,13 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
         v_lot_id   NUMBER;
     BEGIN
         IF ii_new_qty IS NULL OR ii_new_qty < 0 THEN
+            -- 3 段形式 schema.pkg.proc（Form 3）：F_EXC 跨包调用保留全限定
             MFG_ERP.F_EXC.raise_biz_error(
-                MFG_ERP.F_CONST.c_err_stock_negative, MFG_ERP.F_CONST.c_mod_inv, 'adjust_stock',
+                F_CONST.c_err_stock_negative, F_CONST.c_mod_inv, 'adjust_stock',
                 '盘点数量不能为负', TO_CHAR(ii_item_id));
         END IF;
 
+        -- 1 段裸名（Form 1A）：同包内 get_available
         v_cur_qty := get_available(ii_item_id, ii_warehouse_id);
         v_diff    := ii_new_qty - v_cur_qty;
 
@@ -438,20 +440,22 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
                     v_avg_cost := 0;
             END;
 
+            -- 1 段裸名（Form 1A）：同包内 receive_stock
             receive_stock(
                 ii_item_id      => ii_item_id,
                 ii_warehouse_id => ii_warehouse_id,
                 ii_qty          => v_diff,
                 ii_unit_cost    => v_avg_cost,
                 is_lot_no       => NULL,
-                is_ref_doc_type => MFG_ERP.F_CONST.c_txn_adj,
+                -- 2 段形式 pkg.const（Form 2）：省 schema，由 scanner 补当前 schema 解析到 MFG_ERP.F_CONST
+                is_ref_doc_type => F_CONST.c_txn_adj,
                 ii_ref_doc_id   => NULL,
                 oi_lot_id       => v_lot_id,
                 oi_txn_id       => v_dummy);
 
             -- 把 RECV 流水改记成 ADJ 口径(同事务,语义更准)
             UPDATE t_inventory_txn
-               SET txn_type = MFG_ERP.F_CONST.c_txn_adj,
+               SET txn_type = F_CONST.c_txn_adj,
                    remark   = '盘盈 ' || is_reason
              WHERE txn_id = v_dummy;
         ELSE
@@ -459,25 +463,27 @@ CREATE OR REPLACE /*EDITIONABLE*/ PACKAGE BODY MFG_ERP.F_INVENTORY AS
             DECLARE
                 v_alloc t_alloc_tab;
             BEGIN
+                -- 1 段裸名（Form 1A）：同包内 issue_stock
                 issue_stock(
                     ii_item_id      => ii_item_id,
                     ii_warehouse_id => ii_warehouse_id,
                     ii_qty          => -v_diff,
-                    is_ref_doc_type => MFG_ERP.F_CONST.c_txn_adj,
+                    is_ref_doc_type => F_CONST.c_txn_adj,
                     ii_ref_doc_id   => NULL,
                     ot_alloc        => v_alloc);
             END;
 
             UPDATE t_inventory_txn
-               SET txn_type = MFG_ERP.F_CONST.c_txn_adj,
+               SET txn_type = F_CONST.c_txn_adj,
                    remark   = '盘亏 ' || is_reason
              WHERE item_id = ii_item_id
                AND warehouse_id = ii_warehouse_id
-               AND txn_type = MFG_ERP.F_CONST.c_txn_issue
-               AND txn_date = MFG_ERP.F_UTIL.curr_biz_date()
-               AND ref_doc_type = MFG_ERP.F_CONST.c_txn_adj;
+               AND txn_type = F_CONST.c_txn_issue
+               AND txn_date = F_UTIL.curr_biz_date()
+               AND ref_doc_type = F_CONST.c_txn_adj;
         END IF;
 
+        -- 1 段裸名（Form 1A）：同包内 sync_balance
         sync_balance(ii_item_id, ii_warehouse_id);
     END adjust_stock;
 
